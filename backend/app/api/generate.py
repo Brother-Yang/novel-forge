@@ -1,0 +1,110 @@
+from typing import AsyncIterator
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse
+
+from .. import models, schemas
+from ..agents import pipeline
+from ..database import get_db
+from ..tasks import book_generation
+
+router = APIRouter()
+
+
+async def _sse(gen: AsyncIterator[tuple[str, str]]):
+    try:
+        async for event, data in gen:
+            yield {"event": event, "data": data}
+    except Exception as exc:  # noqa: BLE001
+        yield {"event": "error", "data": str(exc)}
+
+
+# ---------- 分层生成(SSE 流式) ----------
+@router.post("/generate/worldbuilding")
+async def generate_worldbuilding(
+    payload: schemas.GenerateWorldbuildingReq, db: Session = Depends(get_db)
+):
+    return EventSourceResponse(_sse(pipeline.gen_worldbuilding(db, payload.book_id)))
+
+
+@router.post("/generate/characters")
+async def generate_characters(
+    payload: schemas.GenerateCharactersReq, db: Session = Depends(get_db)
+):
+    return EventSourceResponse(
+        _sse(pipeline.gen_characters(db, payload.book_id, payload.count))
+    )
+
+
+@router.post("/generate/outline")
+async def generate_outline(
+    payload: schemas.GenerateOutlineReq, db: Session = Depends(get_db)
+):
+    return EventSourceResponse(
+        _sse(pipeline.gen_outline(db, payload.book_id, payload.volume_count))
+    )
+
+
+@router.post("/generate/chapter-outlines")
+async def generate_chapter_outlines(
+    payload: schemas.GenerateChapterOutlinesReq, db: Session = Depends(get_db)
+):
+    return EventSourceResponse(
+        _sse(
+            pipeline.gen_chapter_outlines(
+                db, payload.volume_id, payload.chapter_count
+            )
+        )
+    )
+
+
+@router.post("/generate/chapter")
+async def generate_chapter(
+    payload: schemas.GenerateChapterReq, db: Session = Depends(get_db)
+):
+    return EventSourceResponse(_sse(pipeline.gen_chapter_body(db, payload.chapter_id)))
+
+
+# ---------- 全书批量任务 ----------
+@router.post("/generate/book", response_model=schemas.GenerationTaskOut)
+def generate_book(payload: schemas.GenerateBookReq, db: Session = Depends(get_db)):
+    if not db.get(models.Book, payload.book_id):
+        raise HTTPException(404, "书籍不存在")
+    return book_generation.start_book_generation(db, payload.book_id)
+
+
+@router.get("/books/{book_id}/tasks", response_model=list[schemas.GenerationTaskOut])
+def list_tasks(book_id: int, db: Session = Depends(get_db)):
+    return db.scalars(
+        select(models.GenerationTask)
+        .where(models.GenerationTask.book_id == book_id)
+        .order_by(models.GenerationTask.created_at.desc())
+    ).all()
+
+
+@router.get("/tasks/{task_id}", response_model=schemas.GenerationTaskOut)
+def get_task(task_id: int, db: Session = Depends(get_db)):
+    task = db.get(models.GenerationTask, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    return task
+
+
+@router.post("/tasks/{task_id}/pause")
+def pause_task(task_id: int, db: Session = Depends(get_db)):
+    book_generation.pause_task(db, task_id)
+    return {"ok": True}
+
+
+@router.post("/tasks/{task_id}/resume")
+def resume_task(task_id: int, db: Session = Depends(get_db)):
+    book_generation.resume_task(db, task_id)
+    return {"ok": True}
+
+
+@router.post("/tasks/{task_id}/retry")
+def retry_task(task_id: int, db: Session = Depends(get_db)):
+    book_generation.resume_task(db, task_id)
+    return {"ok": True}
