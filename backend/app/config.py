@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     openai_base_url: str = ""
     openai_api_key: str = ""
 
+    # 阿里云百炼(DashScope,OpenAI 兼容模式)
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    dashscope_api_key: str = ""
+    bailian_generation_model: str = "qwen-plus"
+    bailian_embedding_model: str = "text-embedding-v3"
+
     database_url: str = "sqlite:///./data/novel.db"
     chroma_dir: str = "./data/chroma"
 

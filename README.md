@@ -9,7 +9,10 @@
 - 前端:React + Vite + pnpm + TypeScript + Ant Design + `@uiw/react-md-editor`
 - 后端:Python + FastAPI + SQLAlchemy
 - 存储:SQLite(结构化) + Chroma(向量检索)
-- 模型:Ollama(生成 `qwen2.5:14b`,嵌入 `qwen3-embedding`)
+- 模型:通过 LLM 适配层支持三种提供方,`backend/.env` 中 `LLM_PROVIDER` 切换
+  - `ollama`(本地,默认):生成 `qwen2.5:14b`,嵌入 `qwen3-embedding`
+  - `bailian`(阿里云百炼 / DashScope):生成 `qwen-plus`,嵌入 `text-embedding-v3`
+  - `openai`(任意 OpenAI 兼容 API)
 
 ## 目录结构
 
@@ -32,14 +35,26 @@ novel/
 
 ## 快速开始
 
-### 0. 准备 Ollama 模型
+### 0. 准备模型(二选一)
+
+**方案 A:本地 Ollama(默认)**
 
 ```bash
 ollama pull qwen2.5:14b
 ollama pull qwen3-embedding
 ```
 
-模型名可在 `backend/.env` 中修改(见 `backend/.env.example`)。
+**方案 B:阿里云百炼(DashScope)**
+
+在 `backend/.env` 中设置:
+
+```
+LLM_PROVIDER=bailian
+DASHSCOPE_API_KEY=sk-你的百炼APIKey
+# 可选:BAILIAN_GENERATION_MODEL=qwen-max、BAILIAN_EMBEDDING_MODEL=text-embedding-v3
+```
+
+模型名与提供方均可在 `backend/.env` 中修改(见 `backend/.env.example`)。
 
 ### 1. 启动后端
 
