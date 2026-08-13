@@ -70,13 +70,15 @@ def delete_chapter(chapter_id: int, db: Session = Depends(get_db)):
 
 @router.post("/chapters/reorder")
 def reorder_chapters(payload: schemas.ReorderRequest, db: Session = Depends(get_db)):
-    """拖拽排序:批量更新 order_index 与所属卷。"""
+    """拖拽排序:批量更新 order_index 与所属卷。
+
+    volume_id 按传入值设置(None 表示移到未归卷区),前端每次拖拽都会带上目标卷。
+    """
     for item in payload.items:
         chapter = db.get(models.Chapter, item.id)
         if chapter:
             chapter.order_index = item.order_index
-            if item.volume_id is not None:
-                chapter.volume_id = item.volume_id
+            chapter.volume_id = item.volume_id
     db.commit()
     return {"ok": True}
 
