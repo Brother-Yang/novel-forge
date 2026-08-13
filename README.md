@@ -110,3 +110,14 @@ python tests/e2e_offline.py
 - 向量检索只召回与当前章相关的设定与历史片段。
 - 剧情线程(`plot_threads`)状态机跟踪伏笔的开启/进行/关闭。
 - 全书生成为异步任务,每章独立落库,崩溃后可从 checkpoint 续写。
+
+## 回归测试(离线,不调用真实模型)
+
+使用假 LLM 端到端验证「世界观→人物→大纲→章纲→全书批量正文→断点续写→导出→拖拽排序」
+的全部逻辑,不消耗算力、数据写入临时目录并自动清理:
+
+```bash
+cd backend
+source .venv/bin/activate
+python tests/e2e_offline.py    # 全部通过退出码 0,失败为 1
+```
