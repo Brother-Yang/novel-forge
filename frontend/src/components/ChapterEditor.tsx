@@ -71,7 +71,12 @@ export default function ChapterEditor({ chapterId }: Props) {
             setGenerating(false);
           }
         },
-        onError: () => setGenerating(false),
+        onError: (err) => {
+          if ((err as { name?: string })?.name !== "AbortError") {
+            message.error(err instanceof Error ? err.message : "生成失败");
+          }
+          setGenerating(false);
+        },
       }
     );
   };

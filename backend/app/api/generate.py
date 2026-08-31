@@ -64,12 +64,14 @@ async def generate_chapter_outlines(
 async def generate_chapter(
     payload: schemas.GenerateChapterReq, db: Session = Depends(get_db)
 ):
-    return EventSourceResponse(_sse(pipeline.gen_chapter_body(db, payload.chapter_id)))
+    return EventSourceResponse(
+        _sse(pipeline.gen_chapter_body(db, payload.chapter_id, payload.words))
+    )
 
 
 # ---------- 全书批量任务 ----------
 @router.post("/generate/book", response_model=schemas.GenerationTaskOut)
-def generate_book(payload: schemas.GenerateBookReq, db: Session = Depends(get_db)):
+async def generate_book(payload: schemas.GenerateBookReq, db: Session = Depends(get_db)):
     if not db.get(models.Book, payload.book_id):
         raise HTTPException(404, "书籍不存在")
     return book_generation.start_book_generation(db, payload.book_id)
@@ -99,12 +101,12 @@ def pause_task(task_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/resume")
-def resume_task(task_id: int, db: Session = Depends(get_db)):
+async def resume_task(task_id: int, db: Session = Depends(get_db)):
     book_generation.resume_task(db, task_id)
     return {"ok": True}
 
 
 @router.post("/tasks/{task_id}/retry")
-def retry_task(task_id: int, db: Session = Depends(get_db)):
+async def retry_task(task_id: int, db: Session = Depends(get_db)):
     book_generation.resume_task(db, task_id)
     return {"ok": True}

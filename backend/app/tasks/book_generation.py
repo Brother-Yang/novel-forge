@@ -77,7 +77,13 @@ async def _run(task_id: int) -> None:
 def _launch(task_id: int) -> None:
     if task_id in _running and not _running[task_id].done():
         return
-    _running[task_id] = asyncio.create_task(_run(task_id))
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "全书生成必须在 FastAPI 的 asyncio 事件循环中启动(接口需为 async)"
+        ) from exc
+    _running[task_id] = loop.create_task(_run(task_id))
 
 
 def start_book_generation(db, book_id: int) -> models.GenerationTask:

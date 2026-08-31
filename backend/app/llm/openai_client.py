@@ -27,15 +27,24 @@ class OpenAIClient:
         messages.append({"role": "user", "content": prompt})
         return messages
 
-    async def chat_stream(
-        self, prompt: str, system: str = "", temperature: float = 0.8
-    ) -> AsyncIterator[str]:
+    def _chat_payload(
+        self, prompt: str, system: str, temperature: float, stream: bool
+    ) -> dict:
         payload = {
             "model": self.model,
             "messages": self._messages(prompt, system),
-            "stream": True,
+            "stream": stream,
             "temperature": temperature,
         }
+        extra = getattr(self, "extra_body", None)
+        if extra:
+            payload.update(extra)
+        return payload
+
+    async def chat_stream(
+        self, prompt: str, system: str = "", temperature: float = 0.8
+    ) -> AsyncIterator[str]:
+        payload = self._chat_payload(prompt, system, temperature, stream=True)
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST",
@@ -51,19 +60,18 @@ class OpenAIClient:
                     if data == "[DONE]":
                         break
                     obj = json.loads(data)
-                    delta = obj["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        yield delta
+                    choices = obj.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content") or ""
+                    if content:
+                        yield content
 
     async def chat(
         self, prompt: str, system: str = "", temperature: float = 0.8
     ) -> str:
-        payload = {
-            "model": self.model,
-            "messages": self._messages(prompt, system),
-            "stream": False,
-            "temperature": temperature,
-        }
+        payload = self._chat_payload(prompt, system, temperature, stream=False)
         async with httpx.AsyncClient(timeout=None) as client:
             resp = await client.post(
                 f"{self.base_url}/chat/completions",
@@ -71,7 +79,10 @@ class OpenAIClient:
                 headers=self._headers(),
             )
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            choices = resp.json().get("choices") or []
+            if not choices:
+                return ""
+            return choices[0].get("message", {}).get("content") or ""
 
     async def embed(self, text: str) -> list[float]:
         payload = {"model": self.embedding_model, "input": text}

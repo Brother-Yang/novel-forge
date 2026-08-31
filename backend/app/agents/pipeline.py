@@ -65,7 +65,10 @@ async def gen_worldbuilding(db: Session, book_id: int) -> AsyncIterator[Event]:
         db.add(item)
         db.commit()
         db.refresh(item)
-        await memory.index_worldbuilding(db, item)
+        try:
+            await memory.index_worldbuilding(db, item)
+        except Exception as exc:  # 索引失败不阻断设定落库
+            yield ("log", f"设定《{title}》已保存,索引失败:{exc}")
         count += 1
     yield ("log", f"已生成并索引 {count} 条世界观设定")
     yield ("done", "")

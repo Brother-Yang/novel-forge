@@ -66,7 +66,10 @@ export default function CharacterPanel({ bookId }: { bookId: number }) {
             setGenerating(false);
           }
         },
-        onError: () => setGenerating(false),
+        onError: (err) => {
+          message.error(err instanceof Error ? err.message : "生成失败");
+          setGenerating(false);
+        },
       }
     );
   };

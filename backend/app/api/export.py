@@ -6,6 +6,7 @@ import tempfile
 import uuid
 import zipfile
 from typing import Iterator
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
@@ -167,7 +168,9 @@ def export_book(
             _export_txt(db, book),
             media_type="text/plain; charset=utf-8",
             headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{book.title}.txt"
+                "Content-Disposition": (
+                    f"attachment; filename*=UTF-8''{quote(book.title)}.txt"
+                )
             },
         )
 

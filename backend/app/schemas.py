@@ -213,6 +213,7 @@ class GenerateChapterOutlinesReq(BaseModel):
 
 class GenerateChapterReq(BaseModel):
     chapter_id: int
+    words: int = 2000
 
 
 class GenerateBookReq(BaseModel):

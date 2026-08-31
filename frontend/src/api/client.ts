@@ -56,22 +56,33 @@ export async function sseFetch(
     const decoder = new TextDecoder();
     let buffer = "";
 
+    const dispatch = (raw: string) => {
+      if (!raw.trim()) return;
+      let event = "message";
+      const dataLines: string[] = [];
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+      }
+      handlers.onEvent(event, dataLines.join("\n"));
+    };
+
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      if (value) buffer += decoder.decode(value, { stream: true });
+      if (done) buffer += decoder.decode();
+      // sse-starlette 使用 CRLF(\r\n\r\n) 分隔事件,统一成 \n\n 再拆
+      buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
       let sep: number;
       while ((sep = buffer.indexOf("\n\n")) !== -1) {
         const raw = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
-        let event = "message";
-        const dataLines: string[] = [];
-        for (const line of raw.split("\n")) {
-          if (line.startsWith("event:")) event = line.slice(6).trim();
-          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
-        }
-        handlers.onEvent(event, dataLines.join("\n"));
+        dispatch(raw);
+      }
+      if (done) {
+        dispatch(buffer);
+        break;
       }
     }
   } catch (err) {

@@ -65,7 +65,10 @@ export default function TaskPanel({ bookId }: { bookId: number }) {
           setStage(null);
         }
       },
-      onError: () => setStage(null),
+      onError: (err) => {
+        setLog((p) => p + `\n错误:${err instanceof Error ? err.message : String(err)}\n`);
+        setStage(null);
+      },
     });
   };
 

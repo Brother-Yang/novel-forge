@@ -14,3 +14,5 @@ class BailianClient(OpenAIClient):
         self.api_key = settings.dashscope_api_key
         self.model = settings.bailian_generation_model
         self.embedding_model = settings.bailian_embedding_model
+        # qwen3.x 默认开思考链,短篇测试会拖很久;关闭后只出正文
+        self.extra_body = {"enable_thinking": False}
