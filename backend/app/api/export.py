@@ -5,7 +5,7 @@ import os
 import tempfile
 import uuid
 import zipfile
-from typing import Iterator
+from collections.abc import Iterator
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query

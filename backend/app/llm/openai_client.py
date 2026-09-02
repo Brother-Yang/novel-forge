@@ -1,5 +1,6 @@
 import json
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -10,6 +11,7 @@ class OpenAIClient:
     """OpenAI 兼容 API 客户端(云端切换用)。"""
 
     def __init__(self) -> None:
+        super().__init__()
         self.base_url = (settings.openai_base_url or "https://api.openai.com/v1").rstrip(
             "/"
         )
@@ -17,11 +19,11 @@ class OpenAIClient:
         self.model = settings.generation_model
         self.embedding_model = settings.embedding_model
 
-    def _headers(self) -> dict:
+    def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"}
 
-    def _messages(self, prompt: str, system: str) -> list[dict]:
-        messages = []
+    def _messages(self, prompt: str, system: str) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
@@ -29,7 +31,7 @@ class OpenAIClient:
 
     def _chat_payload(
         self, prompt: str, system: str, temperature: float, stream: bool
-    ) -> dict:
+    ) -> dict[str, Any]:
         payload = {
             "model": self.model,
             "messages": self._messages(prompt, system),

@@ -81,11 +81,13 @@ def _record_ref(
 
 
 def _relevant_characters(db: Session, book_id: int, outline: str) -> list[models.Character]:
-    chars = db.scalars(
-        select(models.Character)
-        .where(models.Character.book_id == book_id)
-        .order_by(models.Character.order_index)
-    ).all()
+    chars = list(
+        db.scalars(
+            select(models.Character)
+            .where(models.Character.book_id == book_id)
+            .order_by(models.Character.order_index)
+        ).all()
+    )
     mentioned = [c for c in chars if c.name and c.name in outline]
     # 若大纲未点名,则回退到前几位主要角色
     return mentioned or chars[:3]
@@ -101,7 +103,7 @@ def _previous_summaries(db: Session, chapter: models.Chapter) -> list[str]:
         .order_by(models.Chapter.order_index.desc())
         .limit(settings.previous_summary_count)
     ).all()
-    summaries = []
+    summaries: list[str] = []
     for ch in reversed(rows):
         s = db.get(models.ChapterSummary, ch.id)
         if s and s.summary:
@@ -122,13 +124,14 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
     book = db.get(models.Book, chapter.book_id)
     parts: list[str] = []
 
-    parts.append(f"# 作品信息\n《{book.title}》 题材:{book.genre} 基调:{book.tone}")
+    if book:
+        parts.append(f"# 作品信息\n《{book.title}》 题材:{book.genre} 基调:{book.tone}")
     parts.append(f"# 本章大纲\n{chapter.outline or '(无,请根据前文自然推进)'}")
 
     # 相关人物卡
     chars = _relevant_characters(db, chapter.book_id, chapter.outline or "")
     if chars:
-        blocks = []
+        blocks: list[str] = []
         for c in chars:
             blocks.append(f"## {c.name}\n{c.md_content}\n当前状态:{c.state_json}")
         parts.append("# 相关人物\n" + "\n\n".join(blocks))
@@ -146,23 +149,26 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
             + "\n".join(f"- ({t.status}) {t.name}: {t.description}" for t in threads)
         )
 
-    # 向量召回:世界观 + 历史相关片段
-    llm = get_llm()
-    query_emb = await llm.embed(chapter.outline or chapter.title)
-    wb_hits = vector_store.query(
-        chapter.book_id, query_emb, top_k=4, where={"source_type": "worldbuilding"}
-    )
-    if wb_hits:
-        parts.append(
-            "# 相关设定(检索)\n" + "\n".join(h["document"] for h in wb_hits)
+    # 向量召回:世界观 + 历史相关片段。检索失败不阻断正文生成。
+    try:
+        llm = get_llm()
+        query_emb = await llm.embed(chapter.outline or chapter.title)
+        wb_hits = vector_store.query(
+            chapter.book_id, query_emb, top_k=4, where={"source_type": "worldbuilding"}
         )
-    sum_hits = vector_store.query(
-        chapter.book_id, query_emb, top_k=4, where={"source_type": "chapter_summary"}
-    )
-    if sum_hits:
-        parts.append(
-            "# 相关历史情节(检索)\n" + "\n".join(h["document"] for h in sum_hits)
+        if wb_hits:
+            parts.append(
+                "# 相关设定(检索)\n" + "\n".join(h["document"] for h in wb_hits)
+            )
+        sum_hits = vector_store.query(
+            chapter.book_id, query_emb, top_k=4, where={"source_type": "chapter_summary"}
         )
+        if sum_hits:
+            parts.append(
+                "# 相关历史情节(检索)\n" + "\n".join(h["document"] for h in sum_hits)
+            )
+    except Exception:
+        pass
 
     # 前情摘要;超预算则降级为卷摘要
     prev = _previous_summaries(db, chapter)

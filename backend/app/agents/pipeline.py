@@ -9,7 +9,7 @@
 """
 
 import re
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -34,7 +34,7 @@ def _split_h1(text: str) -> list[str]:
 
 async def _stream(system: str, user: str) -> AsyncIterator[Event]:
     llm = get_llm()
-    full = []
+    full: list[str] = []
     async for chunk in llm.chat_stream(user, system=system):
         full.append(chunk)
         yield ("token", chunk)
@@ -44,6 +44,9 @@ async def _stream(system: str, user: str) -> AsyncIterator[Event]:
 # ---------- 1. 世界观 ----------
 async def gen_worldbuilding(db: Session, book_id: int) -> AsyncIterator[Event]:
     book = db.get(models.Book, book_id)
+    if not book:
+        yield ("error", "书籍不存在")
+        return
     user = prompts.WORLDBUILDING_USER.format(
         title=book.title, genre=book.genre, tone=book.tone, intro=book.intro
     )
@@ -87,6 +90,9 @@ async def gen_characters(
     db: Session, book_id: int, count: int = 5
 ) -> AsyncIterator[Event]:
     book = db.get(models.Book, book_id)
+    if not book:
+        yield ("error", "书籍不存在")
+        return
     user = prompts.CHARACTERS_USER.format(
         title=book.title,
         genre=book.genre,
@@ -140,6 +146,9 @@ async def gen_outline(
     db: Session, book_id: int, volume_count: int = 3
 ) -> AsyncIterator[Event]:
     book = db.get(models.Book, book_id)
+    if not book:
+        yield ("error", "书籍不存在")
+        return
     user = prompts.OUTLINE_USER.format(
         title=book.title,
         genre=book.genre,
@@ -216,6 +225,9 @@ async def gen_chapter_outlines(
         yield ("error", "卷不存在")
         return
     book = db.get(models.Book, volume.book_id)
+    if not book:
+        yield ("error", "书籍不存在")
+        return
     user = prompts.CHAPTER_OUTLINE_USER.format(
         title=book.title,
         genre=book.genre,
@@ -267,6 +279,9 @@ async def gen_chapter_body(
         yield ("error", "章节不存在")
         return
     book = db.get(models.Book, chapter.book_id)
+    if not book:
+        yield ("error", "书籍不存在")
+        return
     chapter.status = "drafting"
     db.commit()
 

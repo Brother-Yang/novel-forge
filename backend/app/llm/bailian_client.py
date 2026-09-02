@@ -10,6 +10,7 @@ class BailianClient(OpenAIClient):
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self.base_url = settings.dashscope_base_url.rstrip("/")
         self.api_key = settings.dashscope_api_key
         self.model = settings.bailian_generation_model

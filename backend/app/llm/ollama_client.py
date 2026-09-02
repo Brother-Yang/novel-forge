@@ -1,5 +1,5 @@
 import json
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -8,12 +8,13 @@ from ..config import settings
 
 class OllamaClient:
     def __init__(self) -> None:
+        super().__init__()
         self.base_url = settings.ollama_base_url.rstrip("/")
         self.model = settings.generation_model
         self.embedding_model = settings.embedding_model
 
-    def _messages(self, prompt: str, system: str) -> list[dict]:
-        messages = []
+    def _messages(self, prompt: str, system: str) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})

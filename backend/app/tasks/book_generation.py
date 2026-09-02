@@ -8,15 +8,16 @@ import asyncio
 import json
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .. import models
 from ..agents import pipeline
 from ..database import SessionLocal
 
-_running: dict[int, asyncio.Task] = {}
+_running: dict[int, asyncio.Task[None]] = {}
 
 
-def _pending_chapters(db, book_id: int) -> list[int]:
+def _pending_chapters(db: Session, book_id: int) -> list[int]:
     rows = db.scalars(
         select(models.Chapter)
         .where(
@@ -71,7 +72,7 @@ async def _run(task_id: int) -> None:
         db.commit()
     finally:
         db.close()
-        _running.pop(task_id, None)
+        _ = _running.pop(task_id, None)
 
 
 def _launch(task_id: int) -> None:
@@ -86,7 +87,7 @@ def _launch(task_id: int) -> None:
     _running[task_id] = loop.create_task(_run(task_id))
 
 
-def start_book_generation(db, book_id: int) -> models.GenerationTask:
+def start_book_generation(db: Session, book_id: int) -> models.GenerationTask:
     task = models.GenerationTask(
         book_id=book_id, type="book", status="running", progress=0
     )
@@ -97,14 +98,14 @@ def start_book_generation(db, book_id: int) -> models.GenerationTask:
     return task
 
 
-def pause_task(db, task_id: int) -> None:
+def pause_task(db: Session, task_id: int) -> None:
     task = db.get(models.GenerationTask, task_id)
     if task and task.status == "running":
         task.status = "paused"
         db.commit()
 
 
-def resume_task(db, task_id: int) -> None:
+def resume_task(db: Session, task_id: int) -> None:
     task = db.get(models.GenerationTask, task_id)
     if task and task.status in ("paused", "error"):
         task.status = "running"

@@ -1,0 +1,13 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "data",
+    "migrations"
+  ],
+  "typeCheckingMode": "standard",
+  "reportMissingTypeArgument": "error",
+  "reportMissingSuperCall": "warning"
+}
