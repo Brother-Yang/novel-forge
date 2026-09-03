@@ -16,6 +16,7 @@ import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Book } from "../api/types";
+import { paths } from "../router/paths";
 
 export default function BookList() {
   const [books, setBooks] = useState<Book[]>([]);
@@ -54,7 +55,7 @@ export default function BookList() {
           <Col key={b.id} xs={24} sm={12} md={8}>
             <Card
               hoverable
-              onClick={() => navigate(`/books/${b.id}`)}
+              onClick={() => navigate(paths.book(b.id))}
               title={b.title}
               extra={
                 <Popconfirm
@@ -64,10 +65,7 @@ export default function BookList() {
                     load();
                   }}
                 >
-                  <DeleteOutlined
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ color: "#999" }}
-                  />
+                  <DeleteOutlined onClick={(e) => e.stopPropagation()} style={{ color: "#999" }} />
                 </Popconfirm>
               }
             >
@@ -82,9 +80,7 @@ export default function BookList() {
         ))}
         {books.length === 0 && (
           <Col span={24}>
-            <Typography.Text type="secondary">
-              还没有书籍,点击右上角新建一本吧。
-            </Typography.Text>
+            <Typography.Text type="secondary">还没有书籍,点击右上角新建一本吧。</Typography.Text>
           </Col>
         )}
       </Row>

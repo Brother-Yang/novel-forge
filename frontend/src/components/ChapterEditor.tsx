@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { App, Button, Card, Empty, Input, Space, Tag, Typography } from "antd";
 import { SaveOutlined, ThunderboltOutlined, StopOutlined } from "@ant-design/icons";
-import { api } from "../api";
+import { api, sseEndpoints } from "../api";
 import { sseFetch } from "../api/client";
 import type { Chapter } from "../api/types";
 import { useAppStore } from "../store";
@@ -20,11 +20,9 @@ export default function ChapterEditor({ chapterId }: Props) {
   const refreshTree = useAppStore((s) => s.refreshTree);
 
   useEffect(() => {
-    if (!chapterId) {
-      setChapter(null);
-      setBody("");
-      return;
-    }
+    // 父组件用 key={chapterId} 挂载本组件,切换章节时会整体重建,
+    // 这里只需要处理"有 chapterId"的取数逻辑,不需要再手动重置状态。
+    if (!chapterId) return;
     api.getChapter(chapterId).then(setChapter);
     api.getContent(chapterId).then((c) => setBody(c.body));
   }, [chapterId]);
@@ -55,7 +53,7 @@ export default function ChapterEditor({ chapterId }: Props) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     sseFetch(
-      "/generate/chapter",
+      sseEndpoints.chapter,
       { chapter_id: chapter.id },
       {
         signal: ctrl.signal,
@@ -103,11 +101,7 @@ export default function ChapterEditor({ chapterId }: Props) {
               停止
             </Button>
           ) : (
-            <Button
-              type="primary"
-              icon={<ThunderboltOutlined />}
-              onClick={generate}
-            >
+            <Button type="primary" icon={<ThunderboltOutlined />} onClick={generate}>
               生成正文
             </Button>
           )}

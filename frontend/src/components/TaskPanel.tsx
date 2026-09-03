@@ -1,28 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  App,
-  Button,
-  Card,
-  Divider,
-  List,
-  Progress,
-  Select,
-  Space,
-  Tag,
-  Typography,
-} from "antd";
-import { api } from "../api";
+import { App, Button, Card, Divider, List, Progress, Select, Space, Tag, Typography } from "antd";
+import { api, sseEndpoints } from "../api";
 import { sseFetch } from "../api/client";
 import type { BookTree, GenerationTask } from "../api/types";
 import { useAppStore } from "../store";
-
-const statusTag: Record<string, { color: string; text: string }> = {
-  pending: { color: "default", text: "等待" },
-  running: { color: "processing", text: "进行中" },
-  paused: { color: "warning", text: "已暂停" },
-  done: { color: "success", text: "完成" },
-  error: { color: "error", text: "错误" },
-};
+import { TASK_STATUS_TAG } from "../constants/taskStatus";
 
 export default function TaskPanel({ bookId }: { bookId: number }) {
   const [log, setLog] = useState("");
@@ -84,19 +66,21 @@ export default function TaskPanel({ bookId }: { bookId: number }) {
         <Space wrap>
           <Button
             loading={stage === "世界观"}
-            onClick={() => runStage("世界观", "/generate/worldbuilding", { book_id: bookId })}
+            onClick={() => runStage("世界观", sseEndpoints.worldbuilding, { book_id: bookId })}
           >
             1. 生成世界观
           </Button>
           <Button
             loading={stage === "人物"}
-            onClick={() => runStage("人物", "/generate/characters", { book_id: bookId, count: 5 })}
+            onClick={() => runStage("人物", sseEndpoints.characters, { book_id: bookId, count: 5 })}
           >
             2. 生成人物
           </Button>
           <Button
             loading={stage === "全书大纲"}
-            onClick={() => runStage("全书大纲", "/generate/outline", { book_id: bookId, volume_count: 3 })}
+            onClick={() =>
+              runStage("全书大纲", sseEndpoints.outline, { book_id: bookId, volume_count: 3 })
+            }
           >
             3. 生成全书大纲
           </Button>
@@ -114,7 +98,7 @@ export default function TaskPanel({ bookId }: { bookId: number }) {
             disabled={!volumeId}
             loading={stage === "章节大纲"}
             onClick={() =>
-              runStage("章节大纲", "/generate/chapter-outlines", {
+              runStage("章节大纲", sseEndpoints.chapterOutlines, {
                 volume_id: volumeId,
                 chapter_count: 10,
               })
@@ -152,22 +136,34 @@ export default function TaskPanel({ bookId }: { bookId: number }) {
           dataSource={tasks}
           locale={{ emptyText: "暂无任务" }}
           renderItem={(t) => {
-            const s = statusTag[t.status] ?? { color: "default", text: t.status };
+            const s = TASK_STATUS_TAG[t.status] ?? { color: "default", text: t.status };
             return (
               <List.Item
                 actions={[
                   t.status === "running" && (
-                    <Button key="p" size="small" onClick={() => api.pauseTask(t.id).then(loadTasks)}>
+                    <Button
+                      key="p"
+                      size="small"
+                      onClick={() => api.pauseTask(t.id).then(loadTasks)}
+                    >
                       暂停
                     </Button>
                   ),
                   t.status === "paused" && (
-                    <Button key="r" size="small" onClick={() => api.resumeTask(t.id).then(loadTasks)}>
+                    <Button
+                      key="r"
+                      size="small"
+                      onClick={() => api.resumeTask(t.id).then(loadTasks)}
+                    >
                       继续
                     </Button>
                   ),
                   t.status === "error" && (
-                    <Button key="rt" size="small" onClick={() => api.retryTask(t.id).then(loadTasks)}>
+                    <Button
+                      key="rt"
+                      size="small"
+                      onClick={() => api.retryTask(t.id).then(loadTasks)}
+                    >
                       重试
                     </Button>
                   ),
@@ -178,7 +174,11 @@ export default function TaskPanel({ bookId }: { bookId: number }) {
                     <Tag color={s.color}>{s.text}</Tag>
                     <Typography.Text>#{t.id} 全书正文生成</Typography.Text>
                   </Space>
-                  <Progress percent={t.progress} size="small" status={t.status === "error" ? "exception" : undefined} />
+                  <Progress
+                    percent={t.progress}
+                    size="small"
+                    status={t.status === "error" ? "exception" : undefined}
+                  />
                   {t.error && <Typography.Text type="danger">{t.error}</Typography.Text>}
                 </Space>
               </List.Item>

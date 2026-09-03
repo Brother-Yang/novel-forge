@@ -1,78 +1,39 @@
-import { useEffect, useState } from "react";
-import { App, Button, Input, List, Popconfirm, Space, Typography } from "antd";
+import { Button, Input, List, Popconfirm, Space, Typography } from "antd";
 import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import MDEditor from "@uiw/react-md-editor";
-import { api } from "../api";
-import { sseFetch } from "../api/client";
+import { api, sseEndpoints } from "../api";
 import type { Character } from "../api/types";
+import { useMarkdownCardPanel } from "../hooks/useMarkdownCardPanel";
 
 export default function CharacterPanel({ bookId }: { bookId: number }) {
-  const [list, setList] = useState<Character[]>([]);
-  const [current, setCurrent] = useState<Character | null>(null);
-  const [md, setMd] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const { message } = App.useApp();
-
-  const load = () => api.listCharacters(bookId).then(setList);
-  useEffect(() => {
-    load();
-  }, [bookId]);
-
-  const select = (c: Character) => {
-    setCurrent(c);
-    setMd(c.md_content);
-  };
-
-  const add = async () => {
-    const c = await api.createCharacter({
-      book_id: bookId,
-      name: "新人物",
-      md_content: "# 新人物\n\n- 身份:\n- 性格:\n- 外貌:\n- 目标:",
-      order_index: list.length,
-    });
-    await load();
-    select(c);
-  };
-
-  const save = async () => {
-    if (!current) return;
-    const updated = await api.updateCharacter(current.id, { md_content: md });
-    setCurrent(updated);
-    message.success("已保存");
-    load();
-  };
-
-  const remove = async (id: number) => {
-    await api.deleteCharacter(id);
-    if (current?.id === id) {
-      setCurrent(null);
-      setMd("");
-    }
-    load();
-  };
-
-  const generate = () => {
-    setGenerating(true);
-    sseFetch(
-      "/generate/characters",
-      { book_id: bookId, count: 5 },
-      {
-        onEvent: (event, data) => {
-          if (event === "done") {
-            setGenerating(false);
-            load();
-          } else if (event === "error") {
-            message.error(data || "生成失败");
-            setGenerating(false);
-          }
-        },
-        onError: (err) => {
-          message.error(err instanceof Error ? err.message : "生成失败");
-          setGenerating(false);
-        },
-      }
-    );
-  };
+  const {
+    items: list,
+    current,
+    setCurrent,
+    md,
+    setMd,
+    generating,
+    load,
+    select,
+    add,
+    save,
+    remove,
+    generate,
+  } = useMarkdownCardPanel<Character>({
+    bookId,
+    list: api.listCharacters,
+    create: (count) =>
+      api.createCharacter({
+        book_id: bookId,
+        name: "新人物",
+        md_content: "# 新人物\n\n- 身份:\n- 性格:\n- 外貌:\n- 目标:",
+        order_index: count,
+      }),
+    update: (id, patch) => api.updateCharacter(id, patch),
+    remove: (id) => api.deleteCharacter(id),
+    generateEndpoint: sseEndpoints.characters,
+    generateBody: (id) => ({ book_id: id, count: 5 }),
+  });
 
   return (
     <div style={{ display: "flex", height: "100%" }}>
@@ -127,7 +88,11 @@ export default function CharacterPanel({ bookId }: { bookId: number }) {
                 保存人物卡
               </Button>
             </Space>
-            <MDEditor value={md} onChange={(v) => setMd(v ?? "")} height={window.innerHeight - 220} />
+            <MDEditor
+              value={md}
+              onChange={(v) => setMd(v ?? "")}
+              height={window.innerHeight - 220}
+            />
           </>
         ) : (
           <Typography.Text type="secondary">

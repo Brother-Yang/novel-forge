@@ -1,27 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { App, Button, Dropdown, Space, Tree, Typography } from "antd";
 import type { TreeDataNode, TreeProps } from "antd";
-import {
-  PlusOutlined,
-  FileAddOutlined,
-  MoreOutlined,
-} from "@ant-design/icons";
+import { PlusOutlined, FileAddOutlined, MoreOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import type { BookTree } from "../api/types";
 import { useAppStore } from "../store";
+import { CHAPTER_STATUS_COLOR } from "../constants/chapterStatus";
 
 interface Props {
   bookId: number;
   selectedChapter: number | null;
   onSelectChapter: (id: number) => void;
 }
-
-const statusColor: Record<string, string> = {
-  empty: "#bfbfbf",
-  outline: "#faad14",
-  drafting: "#1677ff",
-  done: "#52c41a",
-};
 
 // key 规则:卷 "v-<id>",章 "c-<id>",未归卷根 "loose"
 export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }: Props) {
@@ -43,8 +33,8 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   const addChapter = async (volumeId: number | null) => {
     const count =
       volumeId == null
-        ? tree?.loose_chapters.length ?? 0
-        : tree?.volumes.find((v) => v.id === volumeId)?.chapters.length ?? 0;
+        ? (tree?.loose_chapters.length ?? 0)
+        : (tree?.volumes.find((v) => v.id === volumeId)?.chapters.length ?? 0);
     await api.createChapter({
       book_id: bookId,
       volume_id: volumeId,
@@ -84,9 +74,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   const nodeMenu = (kind: "volume" | "chapter", id: number, title: string) => ({
     items: [
       { key: "rename", label: "重命名" },
-      ...(kind === "volume"
-        ? [{ key: "addChapter", label: "新增章节" }]
-        : []),
+      ...(kind === "volume" ? [{ key: "addChapter", label: "新增章节" }] : []),
       { key: "delete", label: "删除", danger: true },
     ],
     onClick: ({ key, domEvent }: { key: string; domEvent: React.SyntheticEvent }) => {
@@ -99,7 +87,12 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
 
   const treeData: TreeDataNode[] = useMemo(() => {
     if (!tree) return [];
-    const renderChapter = (c: { id: number; title: string; status: string; word_count: number }): TreeDataNode => ({
+    const renderChapter = (c: {
+      id: number;
+      title: string;
+      status: string;
+      word_count: number;
+    }): TreeDataNode => ({
       key: `c-${c.id}`,
       isLeaf: true,
       title: (
@@ -111,7 +104,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
                 width: 6,
                 height: 6,
                 borderRadius: "50%",
-                background: statusColor[c.status] ?? "#bfbfbf",
+                background: CHAPTER_STATUS_COLOR[c.status] ?? "#bfbfbf",
                 marginRight: 6,
               }}
             />

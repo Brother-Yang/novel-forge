@@ -1,9 +1,7 @@
-const BASE = "/api";
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
+const BASE = API_BASE;
 
-async function request<T>(
-  path: string,
-  options: RequestInit = {}
-): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
@@ -37,11 +35,7 @@ export interface SSEHandlers {
  * 通过 POST + fetch ReadableStream 消费 SSE(EventSource 只支持 GET)。
  * 解析 `event:` 与 `data:` 行,支持多行 data。
  */
-export async function sseFetch(
-  path: string,
-  body: unknown,
-  handlers: SSEHandlers
-): Promise<void> {
+export async function sseFetch(path: string, body: unknown, handlers: SSEHandlers): Promise<void> {
   try {
     const res = await fetch(`${BASE}${path}`, {
       method: "POST",

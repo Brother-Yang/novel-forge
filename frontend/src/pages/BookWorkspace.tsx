@@ -16,6 +16,8 @@ import ChapterEditor from "../components/ChapterEditor";
 import CharacterPanel from "../components/CharacterPanel";
 import WorldbuildingPanel from "../components/WorldbuildingPanel";
 import TaskPanel from "../components/TaskPanel";
+import { paths } from "../router/paths";
+import { downloadFile } from "../utils/download";
 
 const { Sider, Content, Header } = Layout;
 
@@ -34,9 +36,7 @@ export default function BookWorkspace() {
   }, [id]);
 
   const exportBook = (format: "txt" | "epub") => {
-    const a = document.createElement("a");
-    a.href = `/api/books/${id}/export?format=${format}`;
-    a.click();
+    downloadFile(api.exportUrl(id, format));
   };
 
   if (!book) return <Spin style={{ margin: 80 }} />;
@@ -53,11 +53,7 @@ export default function BookWorkspace() {
           paddingInline: 16,
         }}
       >
-        <Button
-          icon={<ArrowLeftOutlined />}
-          type="text"
-          onClick={() => navigate("/")}
-        />
+        <Button icon={<ArrowLeftOutlined />} type="text" onClick={() => navigate(paths.home)} />
         <Typography.Title level={4} style={{ margin: 0 }}>
           {book.title}
         </Typography.Title>
@@ -94,7 +90,11 @@ export default function BookWorkspace() {
         </Sider>
 
         {view === "chapters" && (
-          <Sider width={320} theme="light" style={{ borderRight: "1px solid #f0f0f0", overflow: "auto" }}>
+          <Sider
+            width={320}
+            theme="light"
+            style={{ borderRight: "1px solid #f0f0f0", overflow: "auto" }}
+          >
             <CatalogTree
               bookId={id}
               selectedChapter={selectedChapter}
@@ -105,7 +105,11 @@ export default function BookWorkspace() {
 
         <Content style={{ overflow: "auto", background: "#fafafa" }}>
           {view === "chapters" && (
-            <ChapterEditor bookId={id} chapterId={selectedChapter} />
+            <ChapterEditor
+              key={selectedChapter ?? "none"}
+              bookId={id}
+              chapterId={selectedChapter}
+            />
           )}
           {view === "characters" && <CharacterPanel bookId={id} />}
           {view === "world" && <WorldbuildingPanel bookId={id} />}

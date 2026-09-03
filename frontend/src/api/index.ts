@@ -1,4 +1,4 @@
-import { http } from "./client";
+import { API_BASE, http } from "./client";
 import type {
   Book,
   BookTree,
@@ -22,26 +22,22 @@ export const api = {
 
   // volumes
   createVolume: (v: Partial<Volume>) => http.post<Volume>("/volumes", v),
-  updateVolume: (id: number, v: Partial<Volume>) =>
-    http.patch<Volume>(`/volumes/${id}`, v),
+  updateVolume: (id: number, v: Partial<Volume>) => http.patch<Volume>(`/volumes/${id}`, v),
   deleteVolume: (id: number) => http.del(`/volumes/${id}`),
 
   // chapters
   getChapter: (id: number) => http.get<Chapter>(`/chapters/${id}`),
   createChapter: (c: Partial<Chapter>) => http.post<Chapter>("/chapters", c),
-  updateChapter: (id: number, c: Partial<Chapter>) =>
-    http.patch<Chapter>(`/chapters/${id}`, c),
+  updateChapter: (id: number, c: Partial<Chapter>) => http.patch<Chapter>(`/chapters/${id}`, c),
   deleteChapter: (id: number) => http.del(`/chapters/${id}`),
   reorderChapters: (items: { id: number; order_index: number; volume_id?: number | null }[]) =>
     http.post("/chapters/reorder", { items }),
   getContent: (id: number) =>
     http.get<{ chapter_id: number; body: string }>(`/chapters/${id}/content`),
-  saveContent: (id: number, body: string) =>
-    http.put(`/chapters/${id}/content`, { body }),
+  saveContent: (id: number, body: string) => http.put(`/chapters/${id}/content`, { body }),
 
   // characters
-  listCharacters: (bookId: number) =>
-    http.get<Character[]>(`/books/${bookId}/characters`),
+  listCharacters: (bookId: number) => http.get<Character[]>(`/books/${bookId}/characters`),
   createCharacter: (c: Partial<Character>) => http.post<Character>("/characters", c),
   updateCharacter: (id: number, c: Partial<Character>) =>
     http.patch<Character>(`/characters/${id}`, c),
@@ -50,8 +46,7 @@ export const api = {
   // worldbuilding
   listWorldbuilding: (bookId: number) =>
     http.get<Worldbuilding[]>(`/books/${bookId}/worldbuilding`),
-  createWorldbuilding: (w: Partial<Worldbuilding>) =>
-    http.post<Worldbuilding>("/worldbuilding", w),
+  createWorldbuilding: (w: Partial<Worldbuilding>) => http.post<Worldbuilding>("/worldbuilding", w),
   updateWorldbuilding: (id: number, w: Partial<Worldbuilding>) =>
     http.patch<Worldbuilding>(`/worldbuilding/${id}`, w),
   deleteWorldbuilding: (id: number) => http.del(`/worldbuilding/${id}`),
@@ -64,4 +59,16 @@ export const api = {
   retryTask: (id: number) => http.post(`/tasks/${id}/retry`),
   startBookGeneration: (bookId: number) =>
     http.post<GenerationTask>("/generate/book", { book_id: bookId }),
+
+  exportUrl: (bookId: number, format: "txt" | "epub") =>
+    `${API_BASE}/books/${bookId}/export?format=${format}`,
 };
+
+// 供 sseFetch 使用的流式生成接口路径,集中管理避免各组件各自硬编码字符串
+export const sseEndpoints = {
+  worldbuilding: "/generate/worldbuilding",
+  characters: "/generate/characters",
+  outline: "/generate/outline",
+  chapterOutlines: "/generate/chapter-outlines",
+  chapter: "/generate/chapter",
+} as const;
