@@ -30,7 +30,12 @@ novel/
    └─ src/
       ├─ pages/        书籍列表、书籍工作区
       ├─ components/   目录树、章节编辑器、人物/设定面板、任务面板
-      └─ api/          REST 封装 + SSE 消费
+      ├─ api/          REST 封装 + SSE 消费(含 sseEndpoints)
+      ├─ router/       路由定义与路径常量
+      ├─ constants/    状态色/文案等常量
+      ├─ hooks/        可复用业务逻辑(如人物卡/设定卡的增删改)
+      ├─ utils/        通用工具函数
+      └─ store.ts      全局状态(zustand)
 ```
 
 ## 快速开始
@@ -79,6 +84,24 @@ pnpm dev
 
 前端默认 `http://localhost:5173`,已配置 `/api` 代理到后端 `8000` 端口。
 
+质量检查:
+
+```bash
+pnpm lint          # ESLint
+pnpm format:check  # Prettier 检查
+pnpm test          # vitest 单测
+```
+
+### 3. Docker 部署(前端)
+
+`frontend/Dockerfile` 提供多阶段构建:build 阶段产出静态文件,运行阶段用 nginx 提供静态资源并反代 `/api` 到后端。
+
+```bash
+cd frontend
+docker build -t novel-frontend --build-arg VITE_API_BASE_URL=/api .
+docker run -p 8080:80 -e BACKEND_ORIGIN=http://<后端地址>:8000 novel-frontend
+```
+
 ## 生成流程(分层)
 
 1. **世界观**:根据题材/基调生成设定条目,写入向量库。
@@ -110,14 +133,3 @@ python tests/e2e_offline.py
 - 向量检索只召回与当前章相关的设定与历史片段。
 - 剧情线程(`plot_threads`)状态机跟踪伏笔的开启/进行/关闭。
 - 全书生成为异步任务,每章独立落库,崩溃后可从 checkpoint 续写。
-
-## 回归测试(离线,不调用真实模型)
-
-使用假 LLM 端到端验证「世界观→人物→大纲→章纲→全书批量正文→断点续写→导出→拖拽排序」
-的全部逻辑,不消耗算力、数据写入临时目录并自动清理:
-
-```bash
-cd backend
-source .venv/bin/activate
-python tests/e2e_offline.py    # 全部通过退出码 0,失败为 1
-```

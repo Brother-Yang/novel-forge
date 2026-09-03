@@ -25,7 +25,7 @@
 
 - 新代码放入符合现有分层的目录,不要在根目录或错误层级新建文件:
   - 后端按领域分层:`api/`(路由)、`agents/`(生成业务逻辑)、`llm/`(模型适配)、`memory/`(向量库/上下文)、`tasks/`(异步任务)。
-  - 前端按职责分层:`api/`(请求层)、`components/`(展示/交互组件)、`pages/`(路由页面)、`store.ts`(全局状态)。
+  - 前端按职责分层:`api/`(请求层)、`components/`(展示/交互组件)、`pages/`(路由页面)、`router/`(路由定义与路径常量)、`constants/`(状态色/文案等常量)、`hooks/`(可复用业务逻辑)、`utils/`(通用工具函数)、`store.ts`(全局状态)。
 - 严禁将编译产物、缓存、临时文件提交到 git(如 `*.tsbuildinfo`、`vite.config.js`/`.d.ts`、`__pycache__/`、`.pytest_cache/`、`data/`)。新增此类产物先检查 `.gitignore` 是否已覆盖,没有则补充规则,而不是删完再手动清理。
 - 不要新建空的"占位"目录/文件(例如未接入 Alembic 的空 `migrations/versions/`)。要么完整实现,要么不创建。
 - TypeScript 保持 `strict: true`,禁止使用 `any`;Python 保持类型标注,遵循 `pyrightconfig.json` 的检查级别。
@@ -43,13 +43,17 @@
 ### 前端
 
 - 所有对 `api.*` 的调用必须处理失败情况(`.catch` 或 try/catch),并给用户可见的错误提示(如 antd `message.error`),禁止让请求静默失败导致页面卡在 loading 或白屏。
-- 保持 `api/`(请求)、`components/`(UI)、`pages/`(路由)三层分离,不要在组件里直接拼接 fetch URL,统一走 `src/api/`。
+- 保持 `api/`(请求)、`components/`(UI)、`pages/`(路由)三层分离,不要在组件里直接拼接 fetch URL 或硬编码后端路径字符串,统一走 `src/api/`(REST 用 `api.*`,SSE 路径集中放在 `api/index.ts` 的 `sseEndpoints`)。
+- 页面跳转统一用 `src/router/paths.ts` 里的 `paths.*`,不要在组件里手写路由字符串;新增路由需要同时更新 `paths.ts` 与 `router/index.tsx` 的 `routePatterns`。
+- 多处组件重复出现的状态色/文案映射放入 `src/constants/`,重复的业务逻辑(如列表增删改+生成的 CRUD 流程)优先抽成 `src/hooks/` 里的自定义 hook,而不是复制粘贴。
 - 新增页面/组件遵循已有的 antd + TypeScript 风格,Props 需要显式接口定义,不使用隐式 `any`。
+- 新增/修改逻辑需要有对应的 vitest 测试,测试文件与源文件同目录并以 `*.test.ts`/`*.test.tsx` 命名(参考现有的 `store.test.ts`、`api/client.test.ts`、`pages/BookList.test.tsx`);提交前跑 `pnpm lint`、`pnpm test`、`pnpm build` 确认通过。
+- 修改前端端口、环境变量或构建方式时,同步更新 `Dockerfile`、`nginx.conf.template`、`.env.example`,避免容器构建与本地开发脱节。
 
 ## 三、其他工程规范建议
 
-- **CI**:新增/修改代码后,如条件允许,建议补充 GitHub Actions 跑 `pnpm build`(前端)与 `pytest` / `e2e_offline.py`(后端),作为合并前的门禁。
-- **Lint/格式化**:前端目前缺少 ESLint/Prettier 配置,新增代码时先与已有代码风格保持一致(缩进、引号、命名);如需引入 lint 工具,先与用户确认后再改动配置。
+- **CI**:目前仍没有 `.github/workflows`,新增/修改代码后如条件允许,建议补充 GitHub Actions 跑 `pnpm lint && pnpm test && pnpm build`(前端)与 `pytest` / `e2e_offline.py`(后端),作为合并前的门禁。
+- **Lint/格式化**:前端已有 ESLint(`eslint.config.js`)+ Prettier(`.prettierrc.json`)配置,新增代码前跑 `pnpm lint` / `pnpm format:check`,不要绕开或再改动这套配置。
 - **Git 提交**:每次改动只做与需求直接相关的最小变更,不顺手"优化"未涉及的代码;提交信息说明改动原因而非罗列改了什么文件。
 - **文档同步**:目录结构、启动方式、环境变量发生变化时,同步更新根目录 `README.md`,避免文档与实际结构脱节。
 
