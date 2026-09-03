@@ -42,7 +42,7 @@ async def _stream(system: str, user: str) -> AsyncIterator[Event]:
 
 
 # ---------- 1. 世界观 ----------
-async def gen_worldbuilding(db: Session, book_id: int) -> AsyncIterator[Event]:
+async def gen_worldbuilding(db: Session, book_id: str) -> AsyncIterator[Event]:
     book = db.get(models.Book, book_id)
     if not book:
         yield ("error", "书籍不存在")
@@ -78,7 +78,7 @@ async def gen_worldbuilding(db: Session, book_id: int) -> AsyncIterator[Event]:
 
 
 # ---------- 2. 人物 ----------
-def _world_digest(db: Session, book_id: int, limit: int = 1500) -> str:
+def _world_digest(db: Session, book_id: str, limit: int = 1500) -> str:
     items = db.scalars(
         select(models.Worldbuilding).where(models.Worldbuilding.book_id == book_id)
     ).all()
@@ -87,7 +87,7 @@ def _world_digest(db: Session, book_id: int, limit: int = 1500) -> str:
 
 
 async def gen_characters(
-    db: Session, book_id: int, count: int = 5
+    db: Session, book_id: str, count: int = 5
 ) -> AsyncIterator[Event]:
     book = db.get(models.Book, book_id)
     if not book:
@@ -135,7 +135,7 @@ async def gen_characters(
 
 
 # ---------- 3. 全书大纲 + 剧情线程 ----------
-def _character_digest(db: Session, book_id: int, limit: int = 1200) -> str:
+def _character_digest(db: Session, book_id: str, limit: int = 1200) -> str:
     chars = db.scalars(
         select(models.Character).where(models.Character.book_id == book_id)
     ).all()
@@ -143,7 +143,7 @@ def _character_digest(db: Session, book_id: int, limit: int = 1200) -> str:
 
 
 async def gen_outline(
-    db: Session, book_id: int, volume_count: int = 3
+    db: Session, book_id: str, volume_count: int = 3
 ) -> AsyncIterator[Event]:
     book = db.get(models.Book, book_id)
     if not book:

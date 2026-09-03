@@ -8,13 +8,13 @@ interface MarkdownCard {
 }
 
 interface UseMarkdownCardPanelOptions<T extends MarkdownCard> {
-  bookId: number;
-  list: (bookId: number) => Promise<T[]>;
+  bookId: string;
+  list: (bookId: string) => Promise<T[]>;
   create: (currentCount: number) => Promise<T>;
   update: (id: number, patch: Partial<T>) => Promise<T>;
   remove: (id: number) => Promise<unknown>;
   generateEndpoint: string;
-  generateBody: (bookId: number) => unknown;
+  generateBody: (bookId: string) => unknown;
 }
 
 /**

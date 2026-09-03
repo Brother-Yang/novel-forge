@@ -25,7 +25,7 @@ class BookUpdate(BaseModel):
 
 
 class BookOut(ORMModel):
-    id: int
+    id: str
     title: str
     intro: str
     genre: str
@@ -36,7 +36,7 @@ class BookOut(ORMModel):
 
 # ---------- Volume ----------
 class VolumeCreate(BaseModel):
-    book_id: int
+    book_id: str
     title: str
     order_index: int = 0
     summary: str = ""
@@ -50,7 +50,7 @@ class VolumeUpdate(BaseModel):
 
 class VolumeOut(ORMModel):
     id: int
-    book_id: int
+    book_id: str
     title: str
     order_index: int
     summary: str
@@ -58,7 +58,7 @@ class VolumeOut(ORMModel):
 
 # ---------- Chapter ----------
 class ChapterCreate(BaseModel):
-    book_id: int
+    book_id: str
     volume_id: int | None = None
     title: str
     order_index: int = 0
@@ -75,7 +75,7 @@ class ChapterUpdate(BaseModel):
 
 class ChapterOut(ORMModel):
     id: int
-    book_id: int
+    book_id: str
     volume_id: int | None
     title: str
     order_index: int
@@ -126,7 +126,7 @@ class BookTree(BaseModel):
 
 # ---------- Character ----------
 class CharacterCreate(BaseModel):
-    book_id: int
+    book_id: str
     name: str
     md_content: str = ""
     order_index: int = 0
@@ -141,7 +141,7 @@ class CharacterUpdate(BaseModel):
 
 class CharacterOut(ORMModel):
     id: int
-    book_id: int
+    book_id: str
     name: str
     order_index: int
     md_content: str
@@ -150,7 +150,7 @@ class CharacterOut(ORMModel):
 
 # ---------- Worldbuilding ----------
 class WorldbuildingCreate(BaseModel):
-    book_id: int
+    book_id: str
     category: str = "general"
     title: str
     md_content: str = ""
@@ -164,7 +164,7 @@ class WorldbuildingUpdate(BaseModel):
 
 class WorldbuildingOut(ORMModel):
     id: int
-    book_id: int
+    book_id: str
     category: str
     title: str
     md_content: str
@@ -173,7 +173,7 @@ class WorldbuildingOut(ORMModel):
 # ---------- PlotThread ----------
 class PlotThreadOut(ORMModel):
     id: int
-    book_id: int
+    book_id: str
     name: str
     status: str
     description: str
@@ -182,7 +182,7 @@ class PlotThreadOut(ORMModel):
 # ---------- GenerationTask ----------
 class GenerationTaskOut(ORMModel):
     id: int
-    book_id: int
+    book_id: str
     type: str
     target_id: int | None
     status: str
@@ -193,16 +193,16 @@ class GenerationTaskOut(ORMModel):
 
 # ---------- Generate 请求 ----------
 class GenerateWorldbuildingReq(BaseModel):
-    book_id: int
+    book_id: str
 
 
 class GenerateCharactersReq(BaseModel):
-    book_id: int
+    book_id: str
     count: int = 5
 
 
 class GenerateOutlineReq(BaseModel):
-    book_id: int
+    book_id: str
     volume_count: int = 3
 
 
@@ -217,4 +217,4 @@ class GenerateChapterReq(BaseModel):
 
 
 class GenerateBookReq(BaseModel):
-    book_id: int
+    book_id: str

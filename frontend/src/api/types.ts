@@ -1,5 +1,5 @@
 export interface Book {
-  id: number;
+  id: string;
   title: string;
   intro: string;
   genre: string;
@@ -10,7 +10,7 @@ export interface Book {
 
 export interface Volume {
   id: number;
-  book_id: number;
+  book_id: string;
   title: string;
   order_index: number;
   summary: string;
@@ -18,7 +18,7 @@ export interface Volume {
 
 export interface Chapter {
   id: number;
-  book_id: number;
+  book_id: string;
   volume_id: number | null;
   title: string;
   order_index: number;
@@ -49,7 +49,7 @@ export interface BookTree {
 
 export interface Character {
   id: number;
-  book_id: number;
+  book_id: string;
   name: string;
   order_index: number;
   md_content: string;
@@ -58,7 +58,7 @@ export interface Character {
 
 export interface Worldbuilding {
   id: number;
-  book_id: number;
+  book_id: string;
   category: string;
   title: string;
   md_content: string;
@@ -66,7 +66,7 @@ export interface Worldbuilding {
 
 export interface PlotThread {
   id: number;
-  book_id: number;
+  book_id: string;
   name: string;
   status: string;
   description: string;
@@ -74,7 +74,7 @@ export interface PlotThread {
 
 export interface GenerationTask {
   id: number;
-  book_id: number;
+  book_id: string;
   type: string;
   target_id: number | null;
   status: string;

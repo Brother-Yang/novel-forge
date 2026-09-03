@@ -13,12 +13,12 @@ import type {
 export const api = {
   // books
   listBooks: () => http.get<Book[]>("/books"),
-  getBook: (id: number) => http.get<Book>(`/books/${id}`),
+  getBook: (id: string) => http.get<Book>(`/books/${id}`),
   createBook: (b: Partial<Book>) => http.post<Book>("/books", b),
-  updateBook: (id: number, b: Partial<Book>) => http.patch<Book>(`/books/${id}`, b),
-  deleteBook: (id: number) => http.del(`/books/${id}`),
-  getTree: (id: number) => http.get<BookTree>(`/books/${id}/tree`),
-  listPlotThreads: (id: number) => http.get<PlotThread[]>(`/books/${id}/plot_threads`),
+  updateBook: (id: string, b: Partial<Book>) => http.patch<Book>(`/books/${id}`, b),
+  deleteBook: (id: string) => http.del(`/books/${id}`),
+  getTree: (id: string) => http.get<BookTree>(`/books/${id}/tree`),
+  listPlotThreads: (id: string) => http.get<PlotThread[]>(`/books/${id}/plot_threads`),
 
   // volumes
   createVolume: (v: Partial<Volume>) => http.post<Volume>("/volumes", v),
@@ -37,14 +37,14 @@ export const api = {
   saveContent: (id: number, body: string) => http.put(`/chapters/${id}/content`, { body }),
 
   // characters
-  listCharacters: (bookId: number) => http.get<Character[]>(`/books/${bookId}/characters`),
+  listCharacters: (bookId: string) => http.get<Character[]>(`/books/${bookId}/characters`),
   createCharacter: (c: Partial<Character>) => http.post<Character>("/characters", c),
   updateCharacter: (id: number, c: Partial<Character>) =>
     http.patch<Character>(`/characters/${id}`, c),
   deleteCharacter: (id: number) => http.del(`/characters/${id}`),
 
   // worldbuilding
-  listWorldbuilding: (bookId: number) =>
+  listWorldbuilding: (bookId: string) =>
     http.get<Worldbuilding[]>(`/books/${bookId}/worldbuilding`),
   createWorldbuilding: (w: Partial<Worldbuilding>) => http.post<Worldbuilding>("/worldbuilding", w),
   updateWorldbuilding: (id: number, w: Partial<Worldbuilding>) =>
@@ -52,15 +52,15 @@ export const api = {
   deleteWorldbuilding: (id: number) => http.del(`/worldbuilding/${id}`),
 
   // tasks
-  listTasks: (bookId: number) => http.get<GenerationTask[]>(`/books/${bookId}/tasks`),
+  listTasks: (bookId: string) => http.get<GenerationTask[]>(`/books/${bookId}/tasks`),
   getTask: (id: number) => http.get<GenerationTask>(`/tasks/${id}`),
   pauseTask: (id: number) => http.post(`/tasks/${id}/pause`),
   resumeTask: (id: number) => http.post(`/tasks/${id}/resume`),
   retryTask: (id: number) => http.post(`/tasks/${id}/retry`),
-  startBookGeneration: (bookId: number) =>
+  startBookGeneration: (bookId: string) =>
     http.post<GenerationTask>("/generate/book", { book_id: bookId }),
 
-  exportUrl: (bookId: number, format: "txt" | "epub") =>
+  exportUrl: (bookId: string, format: "txt" | "epub") =>
     `${API_BASE}/books/${bookId}/export?format=${format}`,
 };
 

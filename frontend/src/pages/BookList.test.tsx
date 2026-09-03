@@ -35,7 +35,7 @@ describe("BookList", () => {
   it("加载到书籍列表后渲染书名", async () => {
     const books: Book[] = [
       {
-        id: 1,
+        id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         title: "剑起苍穹",
         genre: "玄幻",
         tone: "热血",

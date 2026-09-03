@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -12,11 +13,19 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db_base import Base
 
+BOOK_ID_LEN = 36
+
+
+def new_book_id() -> str:
+    return str(uuid.uuid4())
+
 
 class Book(Base):
     __tablename__ = "books"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_book_id
+    )
     title: Mapped[str] = mapped_column(String(255))
     intro: Mapped[str] = mapped_column(Text, default="")
     genre: Mapped[str] = mapped_column(String(128), default="")
@@ -39,7 +48,9 @@ class Volume(Base):
     __tablename__ = "volumes"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    book_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
+    )
     title: Mapped[str] = mapped_column(String(255))
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     summary: Mapped[str] = mapped_column(Text, default="")
@@ -56,7 +67,9 @@ class Chapter(Base):
     __tablename__ = "chapters"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    book_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
+    )
     volume_id: Mapped[int | None] = mapped_column(
         ForeignKey("volumes.id", ondelete="SET NULL"), nullable=True
     )
@@ -102,7 +115,9 @@ class Character(Base):
     __tablename__ = "characters"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    book_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
+    )
     name: Mapped[str] = mapped_column(String(128))
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     md_content: Mapped[str] = mapped_column(Text, default="")  # 人物卡 markdown
@@ -115,7 +130,9 @@ class Worldbuilding(Base):
     __tablename__ = "worldbuilding"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    book_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
+    )
     category: Mapped[str] = mapped_column(String(64), default="general")
     title: Mapped[str] = mapped_column(String(255))
     md_content: Mapped[str] = mapped_column(Text, default="")
@@ -125,7 +142,9 @@ class PlotThread(Base):
     __tablename__ = "plot_threads"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    book_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
+    )
     name: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32), default="open")  # open/active/closed
     description: Mapped[str] = mapped_column(Text, default="")
@@ -135,7 +154,9 @@ class GenerationTask(Base):
     __tablename__ = "generation_tasks"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    book_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
+    )
     type: Mapped[str] = mapped_column(String(64))  # book/chapter/outline...
     target_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")
@@ -152,7 +173,9 @@ class EmbeddingRef(Base):
     __tablename__ = "embeddings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    book_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
+    )
     source_type: Mapped[str] = mapped_column(String(32))  # chapter_summary/worldbuilding
     source_id: Mapped[int] = mapped_column(Integer)
     chroma_id: Mapped[str] = mapped_column(String(128))

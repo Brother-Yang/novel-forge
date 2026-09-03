@@ -40,3 +40,16 @@ def init_db() -> None:
     from . import models  # noqa: F401  确保模型被注册
 
     Base.metadata.create_all(bind=engine)
+    # SQLite 下连接池里残留的连接会占锁，导致 Alembic 批量改表卡住
+    engine.dispose()
+    _run_alembic_upgrade()
+
+
+def _run_alembic_upgrade() -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg = Config(os.path.join(here, "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", settings.database_url)
+    command.upgrade(cfg, "head")

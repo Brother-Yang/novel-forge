@@ -78,7 +78,7 @@ async def generate_book(payload: schemas.GenerateBookReq, db: Session = Depends(
 
 
 @router.get("/books/{book_id}/tasks", response_model=list[schemas.GenerationTaskOut])
-def list_tasks(book_id: int, db: Session = Depends(get_db)):
+def list_tasks(book_id: str, db: Session = Depends(get_db)):
     return db.scalars(
         select(models.GenerationTask)
         .where(models.GenerationTask.book_id == book_id)

@@ -20,7 +20,7 @@ from ..database import get_db
 router = APIRouter()
 
 
-def _ordered_chapters(db: Session, book_id: int) -> Iterator[tuple[str | None, models.Chapter]]:
+def _ordered_chapters(db: Session, book_id: str) -> Iterator[tuple[str | None, models.Chapter]]:
     """按卷顺序、卷内章顺序产出 (卷标题或None, 章);未归卷章节置于最后。"""
     volumes = db.scalars(
         select(models.Volume)
@@ -155,7 +155,7 @@ def _build_epub(db: Session, book: models.Book) -> str:
 
 @router.get("/books/{book_id}/export")
 def export_book(
-    book_id: int,
+    book_id: str,
     format: str = Query("txt", pattern="^(txt|epub)$"),
     db: Session = Depends(get_db),
 ):

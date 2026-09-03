@@ -25,21 +25,22 @@ type View = "chapters" | "characters" | "world" | "tasks";
 
 export default function BookWorkspace() {
   const { bookId } = useParams();
-  const id = Number(bookId);
   const navigate = useNavigate();
   const [book, setBook] = useState<Book | null>(null);
   const [view, setView] = useState<View>("chapters");
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
 
   useEffect(() => {
-    api.getBook(id).then(setBook);
-  }, [id]);
+    if (!bookId) return;
+    api.getBook(bookId).then(setBook);
+  }, [bookId]);
 
   const exportBook = (format: "txt" | "epub") => {
-    downloadFile(api.exportUrl(id, format));
+    if (!bookId) return;
+    downloadFile(api.exportUrl(bookId, format));
   };
 
-  if (!book) return <Spin style={{ margin: 80 }} />;
+  if (!book || !bookId) return <Spin style={{ margin: 80 }} />;
 
   return (
     <Layout style={{ height: "100vh" }}>
@@ -96,7 +97,7 @@ export default function BookWorkspace() {
             style={{ borderRight: "1px solid #f0f0f0", overflow: "auto" }}
           >
             <CatalogTree
-              bookId={id}
+              bookId={bookId}
               selectedChapter={selectedChapter}
               onSelectChapter={setSelectedChapter}
             />
@@ -107,13 +108,13 @@ export default function BookWorkspace() {
           {view === "chapters" && (
             <ChapterEditor
               key={selectedChapter ?? "none"}
-              bookId={id}
+              bookId={bookId}
               chapterId={selectedChapter}
             />
           )}
-          {view === "characters" && <CharacterPanel bookId={id} />}
-          {view === "world" && <WorldbuildingPanel bookId={id} />}
-          {view === "tasks" && <TaskPanel bookId={id} />}
+          {view === "characters" && <CharacterPanel bookId={bookId} />}
+          {view === "world" && <WorldbuildingPanel bookId={bookId} />}
+          {view === "tasks" && <TaskPanel bookId={bookId} />}
         </Content>
       </Layout>
     </Layout>

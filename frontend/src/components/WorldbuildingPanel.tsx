@@ -5,7 +5,7 @@ import { api, sseEndpoints } from "../api";
 import type { Worldbuilding } from "../api/types";
 import { useMarkdownCardPanel } from "../hooks/useMarkdownCardPanel";
 
-export default function WorldbuildingPanel({ bookId }: { bookId: number }) {
+export default function WorldbuildingPanel({ bookId }: { bookId: string }) {
   const {
     items: list,
     current,

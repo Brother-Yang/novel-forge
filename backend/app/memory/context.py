@@ -60,7 +60,7 @@ async def index_chapter_summary(
 
 
 def _record_ref(
-    db: Session, book_id: int, source_type: str, source_id: int, chroma_id: str
+    db: Session, book_id: str, source_type: str, source_id: int, chroma_id: str
 ) -> None:
     exists = db.scalar(
         select(models.EmbeddingRef).where(
@@ -80,7 +80,7 @@ def _record_ref(
         db.commit()
 
 
-def _relevant_characters(db: Session, book_id: int, outline: str) -> list[models.Character]:
+def _relevant_characters(db: Session, book_id: str, outline: str) -> list[models.Character]:
     chars = list(
         db.scalars(
             select(models.Character)

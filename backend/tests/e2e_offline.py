@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import tempfile
+import uuid
 import zipfile
 
 # 保证可从 backend 根目录导入 app,并使用独立的临时数据目录
@@ -106,6 +107,12 @@ async def main() -> None:
     db.add(book)
     db.commit()
     db.refresh(book)
+    try:
+        uuid.UUID(book.id)
+        id_ok = True
+    except ValueError:
+        id_ok = False
+    check(id_ok, f"书籍 id 应为 UUID,实际 {book.id!r}")
 
     print("\n[1] 世界观")
     await consume(pipeline.gen_worldbuilding(db, book.id))

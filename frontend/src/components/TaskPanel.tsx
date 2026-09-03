@@ -6,7 +6,7 @@ import type { BookTree, GenerationTask } from "../api/types";
 import { useAppStore } from "../store";
 import { TASK_STATUS_TAG } from "../constants/taskStatus";
 
-export default function TaskPanel({ bookId }: { bookId: number }) {
+export default function TaskPanel({ bookId }: { bookId: string }) {
   const [log, setLog] = useState("");
   const [stage, setStage] = useState<string | null>(null);
   const [tree, setTree] = useState<BookTree | null>(null);

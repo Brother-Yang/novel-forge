@@ -11,7 +11,7 @@ router = APIRouter()
 @router.get(
     "/books/{book_id}/worldbuilding", response_model=list[schemas.WorldbuildingOut]
 )
-def list_worldbuilding(book_id: int, db: Session = Depends(get_db)):
+def list_worldbuilding(book_id: str, db: Session = Depends(get_db)):
     return db.scalars(
         select(models.Worldbuilding).where(models.Worldbuilding.book_id == book_id)
     ).all()

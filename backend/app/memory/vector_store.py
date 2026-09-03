@@ -45,12 +45,12 @@ def _client() -> ClientAPI:
     return chromadb.PersistentClient(path=settings.chroma_dir)
 
 
-def _collection(book_id: int):
+def _collection(book_id: str):
     return _client().get_or_create_collection(name=f"book_{book_id}")
 
 
 def upsert(
-    book_id: int,
+    book_id: str,
     doc_id: str,
     embedding: list[float],
     document: str,
@@ -67,7 +67,7 @@ def upsert(
 
 
 def query(
-    book_id: int,
+    book_id: str,
     embedding: list[float],
     top_k: int = 5,
     where: dict[str, Any] | None = None,

@@ -8,7 +8,7 @@ import { useAppStore } from "../store";
 import { CHAPTER_STATUS_COLOR } from "../constants/chapterStatus";
 
 interface Props {
-  bookId: number;
+  bookId: string;
   selectedChapter: number | null;
   onSelectChapter: (id: number) => void;
 }

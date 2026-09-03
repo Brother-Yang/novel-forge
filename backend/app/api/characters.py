@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 @router.get("/books/{book_id}/characters", response_model=list[schemas.CharacterOut])
-def list_characters(book_id: int, db: Session = Depends(get_db)):
+def list_characters(book_id: str, db: Session = Depends(get_db)):
     return db.scalars(
         select(models.Character)
         .where(models.Character.book_id == book_id)

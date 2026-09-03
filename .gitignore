@@ -14,3 +14,4 @@ frontend/.env
 
 # 杂项
 .DS_Store
+.pytest_cache/

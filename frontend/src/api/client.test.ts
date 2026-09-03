@@ -74,7 +74,7 @@ describe("sseFetch", () => {
     const events: { event: string; data: string }[] = [];
     await sseFetch(
       "/generate/worldbuilding",
-      { book_id: 1 },
+      { book_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
       {
         onEvent: (event, data) => events.push({ event, data }),
       }

@@ -10,7 +10,7 @@ router = APIRouter()
 
 @router.get("/books/{book_id}/chapters", response_model=list[schemas.ChapterOut])
 def list_chapters(
-    book_id: int,
+    book_id: str,
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),

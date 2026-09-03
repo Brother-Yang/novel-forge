@@ -23,7 +23,7 @@ def create_book(payload: schemas.BookCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/books/{book_id}", response_model=schemas.BookOut)
-def get_book(book_id: int, db: Session = Depends(get_db)):
+def get_book(book_id: str, db: Session = Depends(get_db)):
     book = db.get(models.Book, book_id)
     if not book:
         raise HTTPException(404, "书籍不存在")
@@ -32,7 +32,7 @@ def get_book(book_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/books/{book_id}", response_model=schemas.BookOut)
 def update_book(
-    book_id: int, payload: schemas.BookUpdate, db: Session = Depends(get_db)
+    book_id: str, payload: schemas.BookUpdate, db: Session = Depends(get_db)
 ):
     book = db.get(models.Book, book_id)
     if not book:
@@ -45,7 +45,7 @@ def update_book(
 
 
 @router.delete("/books/{book_id}")
-def delete_book(book_id: int, db: Session = Depends(get_db)):
+def delete_book(book_id: str, db: Session = Depends(get_db)):
     book = db.get(models.Book, book_id)
     if not book:
         raise HTTPException(404, "书籍不存在")
@@ -55,7 +55,7 @@ def delete_book(book_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/books/{book_id}/tree", response_model=schemas.BookTree)
-def get_book_tree(book_id: int, db: Session = Depends(get_db)):
+def get_book_tree(book_id: str, db: Session = Depends(get_db)):
     """卷 + 章目录树,不含正文;按上千章设计,只返回轻量字段。"""
     if not db.get(models.Book, book_id):
         raise HTTPException(404, "书籍不存在")
@@ -101,7 +101,7 @@ def get_book_tree(book_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/books/{book_id}/plot_threads", response_model=list[schemas.PlotThreadOut])
-def list_plot_threads(book_id: int, db: Session = Depends(get_db)):
+def list_plot_threads(book_id: str, db: Session = Depends(get_db)):
     return db.scalars(
         select(models.PlotThread).where(models.PlotThread.book_id == book_id)
     ).all()

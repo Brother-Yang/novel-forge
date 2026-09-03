@@ -5,7 +5,7 @@ import { api, sseEndpoints } from "../api";
 import type { Character } from "../api/types";
 import { useMarkdownCardPanel } from "../hooks/useMarkdownCardPanel";
 
-export default function CharacterPanel({ bookId }: { bookId: number }) {
+export default function CharacterPanel({ bookId }: { bookId: string }) {
   const {
     items: list,
     current,

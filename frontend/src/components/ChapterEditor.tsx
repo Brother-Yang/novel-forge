@@ -7,7 +7,7 @@ import type { Chapter } from "../api/types";
 import { useAppStore } from "../store";
 
 interface Props {
-  bookId: number;
+  bookId: string;
   chapterId: number | null;
 }
 
