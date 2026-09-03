@@ -8,7 +8,7 @@ import {
   ThunderboltOutlined,
   DownloadOutlined,
 } from "@ant-design/icons";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import type { Book } from "../api/types";
 import CatalogTree from "../components/CatalogTree";
@@ -25,15 +25,32 @@ type View = "chapters" | "characters" | "world" | "tasks";
 
 export default function BookWorkspace() {
   const { bookId } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [book, setBook] = useState<Book | null>(null);
-  const [view, setView] = useState<View>("chapters");
+  const [view, setView] = useState<View>(
+    searchParams.get("view") === "tasks" ? "tasks" : "chapters"
+  );
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
 
   useEffect(() => {
     if (!bookId) return;
-    api.getBook(bookId).then(setBook);
+    api
+      .getBook(bookId)
+      .then(setBook)
+      .catch(() => {});
   }, [bookId]);
+
+  useEffect(() => {
+    if (!bookId || view !== "tasks") return;
+    const timer = setInterval(() => {
+      api
+        .getBook(bookId)
+        .then(setBook)
+        .catch(() => {});
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [bookId, view]);
 
   const exportBook = (format: "txt" | "epub") => {
     if (!bookId) return;

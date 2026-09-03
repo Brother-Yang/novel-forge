@@ -9,6 +9,9 @@ from .database import init_db
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    from .tasks.book_generation import recover_running_tasks
+
+    recover_running_tasks()
     yield
 
 

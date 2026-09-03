@@ -6,9 +6,11 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from .. import models, schemas
-from ..agents import pipeline
+from ..agents import pipeline, planner
 from ..database import get_db
 from ..tasks import book_generation
+from ..tasks import novel_generation
+from ..tasks.book_generation import BookBusyError
 
 router = APIRouter()
 
@@ -74,7 +76,56 @@ async def generate_chapter(
 async def generate_book(payload: schemas.GenerateBookReq, db: Session = Depends(get_db)):
     if not db.get(models.Book, payload.book_id):
         raise HTTPException(404, "书籍不存在")
-    return book_generation.start_book_generation(db, payload.book_id)
+    try:
+        return book_generation.start_book_generation(db, payload.book_id)
+    except BookBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/generate/novel", response_model=schemas.NovelGenerationOut)
+async def generate_novel(payload: schemas.GenerateNovelReq, db: Session = Depends(get_db)):
+    brief = payload.brief.strip()
+    if not brief:
+        raise HTTPException(400, "请填写一段故事想法")
+    title = (payload.title or "").strip() or planner.fallback_title(brief)
+    book = models.Book(
+        title=title,
+        intro="",
+        brief=brief,
+        genre=payload.genre.strip(),
+        tone=payload.tone.strip(),
+        target_words=payload.target_words,
+    )
+    db.add(book)
+    db.commit()
+    db.refresh(book)
+    try:
+        task = novel_generation.start_novel_generation(db, book.id)
+    except BookBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return schemas.NovelGenerationOut(
+        book=schemas.BookOut.model_validate(book),
+        task=schemas.GenerationTaskOut.model_validate(task),
+    )
+
+
+@router.post("/generate/novel/from-book", response_model=schemas.GenerationTaskOut)
+async def generate_novel_from_book(
+    payload: schemas.GenerateNovelFromBookReq, db: Session = Depends(get_db)
+):
+    book = db.get(models.Book, payload.book_id)
+    if not book:
+        raise HTTPException(404, "书籍不存在")
+    brief = (book.brief or book.intro or "").strip()
+    if not brief:
+        raise HTTPException(400, "请先填写简介,或从首页使用一句话出书")
+    if not book.brief:
+        book.brief = brief
+        db.commit()
+    try:
+        return novel_generation.start_novel_generation(db, book.id)
+    except BookBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/books/{book_id}/tasks", response_model=list[schemas.GenerationTaskOut])

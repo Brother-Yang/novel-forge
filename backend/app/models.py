@@ -28,6 +28,7 @@ class Book(Base):
     )
     title: Mapped[str] = mapped_column(String(255))
     intro: Mapped[str] = mapped_column(Text, default="")
+    brief: Mapped[str] = mapped_column(Text, default="")  # 一句话出书的原始输入
     genre: Mapped[str] = mapped_column(String(128), default="")
     tone: Mapped[str] = mapped_column(String(128), default="")
     target_words: Mapped[int] = mapped_column(Integer, default=100000)

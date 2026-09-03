@@ -2,6 +2,7 @@ export interface Book {
   id: string;
   title: string;
   intro: string;
+  brief: string;
   genre: string;
   tone: string;
   target_words: number;
@@ -80,5 +81,11 @@ export interface GenerationTask {
   status: string;
   progress: number;
   error: string;
+  checkpoint_json: string;
   created_at: string;
+}
+
+export interface NovelGenerationResult {
+  book: Book;
+  task: GenerationTask;
 }

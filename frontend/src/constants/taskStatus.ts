@@ -6,3 +6,29 @@ export const TASK_STATUS_TAG: Record<string, { color: string; text: string }> = 
   done: { color: "success", text: "完成" },
   error: { color: "error", text: "错误" },
 };
+
+export const TASK_TYPE_LABEL: Record<string, string> = {
+  novel: "全书自动生成",
+  book: "全书正文生成",
+};
+
+export const TASK_STAGE_LABEL: Record<string, string> = {
+  planner: "规划书目",
+  worldbuilding: "生成世界观",
+  characters: "生成人物",
+  outline: "生成全书大纲",
+  chapter_outlines: "生成章节大纲",
+  chapter_bodies: "生成正文",
+  done: "完成",
+};
+
+export function taskStageLabel(checkpointJson: string | undefined): string {
+  if (!checkpointJson) return "";
+  try {
+    const ckpt = JSON.parse(checkpointJson) as { stage?: string };
+    if (!ckpt.stage) return "";
+    return TASK_STAGE_LABEL[ckpt.stage] ?? ckpt.stage;
+  } catch {
+    return "";
+  }
+}

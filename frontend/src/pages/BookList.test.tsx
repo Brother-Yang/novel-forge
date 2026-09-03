@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -8,6 +9,9 @@ import BookList from "./BookList";
 vi.mock("../api", () => ({
   api: {
     listBooks: vi.fn(),
+    startNovelGeneration: vi.fn(),
+    createBook: vi.fn(),
+    deleteBook: vi.fn(),
   },
 }));
 
@@ -29,7 +33,7 @@ describe("BookList", () => {
   it("没有书籍时展示空状态提示", async () => {
     vi.mocked(api.listBooks).mockResolvedValue([]);
     renderWithProviders();
-    expect(await screen.findByText("还没有书籍,点击右上角新建一本吧。")).toBeInTheDocument();
+    expect(await screen.findByText(/还没有书籍/)).toBeInTheDocument();
   });
 
   it("加载到书籍列表后渲染书名", async () => {
@@ -40,6 +44,7 @@ describe("BookList", () => {
         genre: "玄幻",
         tone: "热血",
         intro: "一个关于剑的故事",
+        brief: "",
         target_words: 100000,
         created_at: "2026-01-01T00:00:00Z",
       },
@@ -47,5 +52,42 @@ describe("BookList", () => {
     vi.mocked(api.listBooks).mockResolvedValue(books);
     renderWithProviders();
     expect(await screen.findByText("剑起苍穹")).toBeInTheDocument();
+  });
+
+  it("提交一句话出书会调用自动生成接口", async () => {
+    vi.mocked(api.listBooks).mockResolvedValue([]);
+    vi.mocked(api.startNovelGeneration).mockResolvedValue({
+      book: {
+        id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+        title: "少年觉醒",
+        intro: "",
+        brief: "一个少年觉醒血脉的故事",
+        genre: "",
+        tone: "",
+        target_words: 100000,
+        created_at: "2026-01-01T00:00:00Z",
+      },
+      task: {
+        id: 1,
+        book_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+        type: "novel",
+        target_id: null,
+        status: "running",
+        progress: 0,
+        error: "",
+        checkpoint_json: "{}",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    });
+    const user = userEvent.setup();
+    renderWithProviders();
+    await user.click(await screen.findByRole("button", { name: /一句话出书/ }));
+    const textarea = await screen.findByPlaceholderText(/少年林逸/);
+    await user.type(textarea, "一个少年觉醒血脉的故事");
+    await user.click(screen.getByRole("button", { name: /开始生成/ }));
+    expect(api.startNovelGeneration).toHaveBeenCalledWith({
+      brief: "一个少年觉醒血脉的故事",
+      target_words: 100000,
+    });
   });
 });

@@ -3,6 +3,7 @@
 export const paths = {
   home: "/",
   book: (bookId: number | string) => `/books/${bookId}`,
+  bookTasks: (bookId: number | string) => `/books/${bookId}?view=tasks`,
 } as const;
 
 // 供 <Route path=... /> 使用的路由匹配模式

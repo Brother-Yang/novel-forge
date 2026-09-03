@@ -1,3 +1,40 @@
+PLANNER_SYSTEM = (
+    "你是长篇小说策划。根据用户的一段故事想法,产出结构化书目规划。"
+    "只输出 JSON,不要 Markdown 围栏或解释。"
+)
+
+PLANNER_USER = """根据下面的创作想法,规划一部长篇小说的书目信息与规模。
+
+用户想法:
+{brief}
+
+可选约束(为空表示由你决定):
+- 书名:{title}
+- 题材:{genre}
+- 基调:{tone}
+- 目标总字数:{target_words}
+
+请只输出一个 JSON 对象,字段如下:
+{{
+  "title": "书名",
+  "genre": "题材,如玄幻/都市/科幻",
+  "tone": "基调,如热血/轻松/悬疑",
+  "intro": "200字以内的作品简介",
+  "volume_count": 3,
+  "chapters_per_volume": 10,
+  "words_per_chapter": 2500,
+  "character_count": 5
+}}
+
+规模约束:
+- volume_count 为 1 到 12 的整数
+- chapters_per_volume 为 1 到 20 的整数
+- words_per_chapter 为 2000 到 4000 的整数
+- character_count 为 3 到 8 的整数
+- 卷数×每卷章数×每章字数应接近目标总字数
+若用户已给书名/题材/基调,请沿用,不要擅自改掉。"""
+
+
 WORLDBUILDING_SYSTEM = "你是资深小说世界观架构师。输出简体中文,结构清晰。"
 
 WORLDBUILDING_USER = """为下面的小说构建世界观设定。

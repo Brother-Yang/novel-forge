@@ -5,6 +5,7 @@ import type {
   Chapter,
   Character,
   GenerationTask,
+  NovelGenerationResult,
   PlotThread,
   Volume,
   Worldbuilding,
@@ -59,6 +60,15 @@ export const api = {
   retryTask: (id: number) => http.post(`/tasks/${id}/retry`),
   startBookGeneration: (bookId: string) =>
     http.post<GenerationTask>("/generate/book", { book_id: bookId }),
+  startNovelGeneration: (payload: {
+    brief: string;
+    title?: string;
+    genre?: string;
+    tone?: string;
+    target_words?: number;
+  }) => http.post<NovelGenerationResult>("/generate/novel", payload),
+  startNovelFromBook: (bookId: string) =>
+    http.post<GenerationTask>("/generate/novel/from-book", { book_id: bookId }),
 
   exportUrl: (bookId: string, format: "txt" | "epub") =>
     `${API_BASE}/books/${bookId}/export?format=${format}`,

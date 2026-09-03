@@ -11,6 +11,7 @@ class ORMModel(BaseModel):
 class BookCreate(BaseModel):
     title: str
     intro: str = ""
+    brief: str = ""
     genre: str = ""
     tone: str = ""
     target_words: int = 100000
@@ -19,6 +20,7 @@ class BookCreate(BaseModel):
 class BookUpdate(BaseModel):
     title: str | None = None
     intro: str | None = None
+    brief: str | None = None
     genre: str | None = None
     tone: str | None = None
     target_words: int | None = None
@@ -28,6 +30,7 @@ class BookOut(ORMModel):
     id: str
     title: str
     intro: str
+    brief: str
     genre: str
     tone: str
     target_words: int
@@ -188,6 +191,7 @@ class GenerationTaskOut(ORMModel):
     status: str
     progress: int
     error: str
+    checkpoint_json: str
     created_at: datetime
 
 
@@ -218,3 +222,20 @@ class GenerateChapterReq(BaseModel):
 
 class GenerateBookReq(BaseModel):
     book_id: str
+
+
+class GenerateNovelReq(BaseModel):
+    brief: str
+    title: str | None = None
+    genre: str = ""
+    tone: str = ""
+    target_words: int = 100000
+
+
+class GenerateNovelFromBookReq(BaseModel):
+    book_id: str
+
+
+class NovelGenerationOut(BaseModel):
+    book: BookOut
+    task: GenerationTaskOut

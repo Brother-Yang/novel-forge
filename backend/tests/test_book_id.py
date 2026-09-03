@@ -93,8 +93,10 @@ def test_alembic_keeps_existing_integer_ids_as_strings(tmp_path, monkeypatch) ->
         book_id, title = conn.execute(text("SELECT id, title FROM books")).one()
         volume_book_id = conn.execute(text("SELECT book_id FROM volumes")).scalar_one()
         id_type = conn.execute(text("SELECT typeof(id) FROM books")).scalar_one()
+        brief = conn.execute(text("SELECT brief FROM books")).scalar_one()
 
     assert title == "旧书"
     assert str(book_id) == "1"
     assert str(volume_book_id) == "1"
     assert id_type == "text"
+    assert brief == ""
