@@ -163,7 +163,11 @@ async def tool_write_chapter(
         chapter.revision_approved = False
         db.commit()
     words = _clamp_int(args.get("words"), 2500, 1000, 6000)
-    logs = await _consume_pipeline(pipeline.gen_chapter_body(db, chapter_id, words))
+    is_ending_raw = args.get("is_ending")
+    is_ending = bool(is_ending_raw) if is_ending_raw is not None else None
+    logs = await _consume_pipeline(
+        pipeline.gen_chapter_body(db, chapter_id, words, is_ending=is_ending)
+    )
     db.refresh(chapter)
     return {"ok": True, "logs": logs, "word_count": chapter.word_count, "status": chapter.status}
 
@@ -385,6 +389,12 @@ registry.register(
             "properties": {
                 "chapter_id": {"type": "integer", "description": "目标章节 id"},
                 "words": {"type": "integer", "description": "目标字数,1000-6000"},
+                "is_ending": {
+                    "type": "boolean",
+                    "description": "是否是全书最后一章(结局章)。若为 true,会要求写出"
+                    "明确、完整的结局,主线冲突收束、不留开放式悬念。不填时按章节顺序"
+                    "自动判断是否为末章。",
+                },
             },
             "required": ["chapter_id", "words"],
         },

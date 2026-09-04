@@ -150,7 +150,7 @@ async def test_write_chapter_allows_rewrite_once_after_revision_approved(db, mon
     db.commit()
     db.refresh(chapter)
 
-    async def _fake_gen_chapter_body(db, chapter_id, words):
+    async def _fake_gen_chapter_body(db, chapter_id, words, is_ending=None):
         ch = db.get(models.Chapter, chapter_id)
         ch.status = "done"
         ch.word_count = 999

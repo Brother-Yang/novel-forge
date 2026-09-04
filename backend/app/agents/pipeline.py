@@ -11,7 +11,7 @@
 import re
 from collections.abc import AsyncIterator
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -238,11 +238,18 @@ async def gen_chapter_outlines(
     if not book:
         yield ("error", "书籍不存在")
         return
+    max_volume_order = db.scalar(
+        select(func.max(models.Volume.order_index)).where(
+            models.Volume.book_id == book.id
+        )
+    )
+    is_final_volume = max_volume_order is not None and volume.order_index >= max_volume_order
     user = prompts.CHAPTER_OUTLINE_USER.format(
         **_book_prompt(book),
         volume_title=_esc(volume.title),
         volume_summary=_esc(volume.summary),
         chapter_count=chapter_count,
+        ending_hint=(prompts.CHAPTER_OUTLINE_ENDING_HINT if is_final_volume else ""),
     )
     full = ""
     async for ev, data in _stream(prompts.CHAPTER_OUTLINE_SYSTEM, user):
@@ -281,7 +288,7 @@ async def gen_chapter_outlines(
 
 # ---------- 5+6. 章节正文 + 一致性回写 ----------
 async def gen_chapter_body(
-    db: Session, chapter_id: int, words: int = 2000
+    db: Session, chapter_id: int, words: int = 2000, is_ending: bool | None = None
 ) -> AsyncIterator[Event]:
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
@@ -294,9 +301,23 @@ async def gen_chapter_body(
     chapter.status = "drafting"
     db.commit()
 
+    if is_ending is None:
+        # 未显式指定时,按结构自动判断:全书 order_index 最大的章节即末章,
+        # 兜底覆盖固定流水线(novel_generation)不会显式传 is_ending 的情况。
+        max_chapter_order = db.scalar(
+            select(func.max(models.Chapter.order_index)).where(
+                models.Chapter.book_id == chapter.book_id
+            )
+        )
+        is_ending = max_chapter_order is not None and chapter.order_index >= max_chapter_order
+
     ctx = await memory.build_chapter_context(db, chapter)
     user = prompts.CHAPTER_BODY_USER.format(
-        title=book.title, chapter_title=chapter.title, context=ctx, words=words
+        title=book.title,
+        chapter_title=chapter.title,
+        context=ctx,
+        words=words,
+        ending_note=(prompts.CHAPTER_BODY_ENDING_NOTE if is_ending else ""),
     )
 
     full = ""
