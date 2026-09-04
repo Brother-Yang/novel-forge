@@ -58,6 +58,7 @@ async def test_ensure_plan_does_not_treat_brief_snippet_as_user_title(db, monkey
             chapters_per_volume=3,
             words_per_chapter=2000,
             character_count=3,
+            key_elements=[],
         )
 
     monkeypatch.setattr(planner, "plan_novel", fake_plan_novel)

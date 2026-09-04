@@ -49,11 +49,11 @@ def _clamp_int(value: object, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
-def _require_int(value: object, field: str) -> int:
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        raise ToolError(f"参数 {field} 必须是整数,实际收到 {value!r}") from None
+def _require_str(value: object, field: str) -> str:
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        raise ToolError(f"参数 {field} 不能为空,实际收到 {value!r}") from None
+    return text
 
 
 # ---------- 状态感知 ----------
@@ -124,7 +124,7 @@ async def tool_create_outline(
 async def tool_create_chapter_outlines(
     db: Session, book_id: str, args: dict[str, object]
 ) -> dict[str, object]:
-    volume_id = _require_int(args.get("volume_id"), "volume_id")
+    volume_id = _require_str(args.get("volume_id"), "volume_id")
     volume = db.get(models.Volume, volume_id)
     if not volume or volume.book_id != book_id:
         raise ToolError(f"volume_id={volume_id} 不存在或不属于本书")
@@ -148,7 +148,7 @@ async def tool_create_chapter_outlines(
 async def tool_write_chapter(
     db: Session, book_id: str, args: dict[str, object]
 ) -> dict[str, object]:
-    chapter_id = _require_int(args.get("chapter_id"), "chapter_id")
+    chapter_id = _require_str(args.get("chapter_id"), "chapter_id")
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter or chapter.book_id != book_id:
         raise ToolError(f"chapter_id={chapter_id} 不存在或不属于本书")
@@ -176,7 +176,7 @@ async def tool_write_chapter(
 async def tool_replan_volume(
     db: Session, book_id: str, args: dict[str, object]
 ) -> dict[str, object]:
-    volume_id = _require_int(args.get("volume_id"), "volume_id")
+    volume_id = _require_str(args.get("volume_id"), "volume_id")
     volume = db.get(models.Volume, volume_id)
     if not volume or volume.book_id != book_id:
         raise ToolError(f"volume_id={volume_id} 不存在或不属于本书")
@@ -194,17 +194,17 @@ def _load_review_target(
     db: Session, book_id: str, target_type: str, target_id: object
 ) -> tuple[str, str]:
     if target_type == "outline":
-        volume = db.get(models.Volume, _require_int(target_id, "target_id"))
+        volume = db.get(models.Volume, _require_str(target_id, "target_id"))
         if not volume or volume.book_id != book_id:
             raise ToolError("待评审的卷不存在或不属于本书")
         return f"《{volume.title}》分卷大纲", volume.summary
     if target_type == "character":
-        character = db.get(models.Character, _require_int(target_id, "target_id"))
+        character = db.get(models.Character, _require_str(target_id, "target_id"))
         if not character or character.book_id != book_id:
             raise ToolError("待评审的人物不存在或不属于本书")
         return f"人物《{character.name}》", character.md_content
     if target_type == "chapter":
-        chapter = db.get(models.Chapter, _require_int(target_id, "target_id"))
+        chapter = db.get(models.Chapter, _require_str(target_id, "target_id"))
         if not chapter or chapter.book_id != book_id:
             raise ToolError("待评审的章节不存在或不属于本书")
         body = chapter.content.body if chapter.content else ""
@@ -241,7 +241,7 @@ async def tool_review_content(
     )
     result = _parse_review(raw)
     if target_type == "chapter" and result.get("needs_revision"):
-        chapter = db.get(models.Chapter, _require_int(args.get("target_id"), "target_id"))
+        chapter = db.get(models.Chapter, _require_str(args.get("target_id"), "target_id"))
         if chapter and chapter.book_id == book_id and chapter.status == "done":
             chapter.revision_approved = True
             db.commit()
@@ -370,7 +370,7 @@ registry.register(
             "type": "object",
             "properties": {
                 "volume_id": {
-                    "type": "integer",
+                    "type": "string",
                     "description": "目标卷 id,来自 get_book_state",
                 },
                 "chapter_count": {"type": "integer", "description": "该卷章数,1-20"},
@@ -387,7 +387,10 @@ registry.register(
         parameters={
             "type": "object",
             "properties": {
-                "chapter_id": {"type": "integer", "description": "目标章节 id"},
+                "chapter_id": {
+                    "type": "string",
+                    "description": "目标章节 id,来自 get_book_state 返回的 volumes[].chapters[].id,不能凭空编造",
+                },
                 "words": {"type": "integer", "description": "目标字数,1000-6000"},
                 "is_ending": {
                     "type": "boolean",
@@ -409,7 +412,7 @@ registry.register(
         parameters={
             "type": "object",
             "properties": {
-                "volume_id": {"type": "integer", "description": "目标卷 id"},
+                "volume_id": {"type": "string", "description": "目标卷 id"},
                 "reason": {
                     "type": "string",
                     "description": "为什么需要重新规划,简要说明剧情具体如何偏离",
@@ -431,7 +434,10 @@ registry.register(
                     "type": "string",
                     "enum": ["outline", "character", "chapter"],
                 },
-                "target_id": {"type": "integer", "description": "对应的卷/人物/章节 id"},
+                "target_id": {
+                    "type": "string",
+                    "description": "对应的卷/人物/章节 id,来自 get_book_state",
+                },
             },
             "required": ["target_type", "target_id"],
         },

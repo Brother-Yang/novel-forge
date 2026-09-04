@@ -51,7 +51,7 @@ def _count(db: Session, model: type[object], book_id: str) -> int:
     )
 
 
-def _volume_chapter_count(db: Session, volume_id: int) -> int:
+def _volume_chapter_count(db: Session, volume_id: str) -> int:
     return (
         db.scalar(
             select(func.count())
@@ -73,6 +73,7 @@ async def _ensure_plan(db: Session, task: models.GenerationTask) -> planner.Nove
         genre=book.genre,
         tone=book.tone,
         intro=book.intro,
+        key_elements=book.key_elements,
     )
     if existing:
         logger.info("novel task %s skip planner (checkpoint has scale)", task.id)

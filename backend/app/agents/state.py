@@ -17,16 +17,25 @@ from .. import models
 
 @dataclass
 class CharacterState:
-    id: int
+    id: str
     name: str
 
 
 @dataclass
+class ChapterState:
+    id: str
+    title: str
+    order_index: int
+    status: str
+
+
+@dataclass
 class VolumeState:
-    volume_id: int
+    volume_id: str
     title: str
     chapter_count: int
     chapters_done: int
+    chapters: list[ChapterState]
 
 
 @dataclass
@@ -66,6 +75,15 @@ class NovelState:
                     "title": v.title,
                     "chapter_count": v.chapter_count,
                     "chapters_done": v.chapters_done,
+                    "chapters": [
+                        {
+                            "id": c.id,
+                            "title": c.title,
+                            "order_index": c.order_index,
+                            "status": c.status,
+                        }
+                        for c in v.chapters
+                    ],
                 }
                 for v in self.volumes
             ],
@@ -111,13 +129,25 @@ def load_state(db: Session, book_id: str) -> NovelState:
 
     volume_states = []
     for v in volumes:
-        chapters = [c for c in all_chapters if c.volume_id == v.id]
+        chapters = sorted(
+            (c for c in all_chapters if c.volume_id == v.id),
+            key=lambda c: c.order_index,
+        )
         volume_states.append(
             VolumeState(
                 volume_id=v.id,
                 title=v.title,
                 chapter_count=len(chapters),
                 chapters_done=sum(1 for c in chapters if c.status == "done"),
+                chapters=[
+                    ChapterState(
+                        id=c.id,
+                        title=c.title,
+                        order_index=c.order_index,
+                        status=c.status,
+                    )
+                    for c in chapters
+                ],
             )
         )
 

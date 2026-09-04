@@ -174,17 +174,34 @@ async def test_get_book_state_aggregates_progress(db):
     db.add(volume)
     db.commit()
     db.refresh(volume)
-    db.add(models.Chapter(book_id=book.id, volume_id=volume.id, title="第1章", status="done", word_count=1000))
-    db.add(models.Chapter(book_id=book.id, volume_id=volume.id, title="第2章", status="outline", word_count=0))
+    chapter1 = models.Chapter(
+        book_id=book.id, volume_id=volume.id, title="第1章", status="done", word_count=1000, order_index=0
+    )
+    chapter2 = models.Chapter(
+        book_id=book.id, volume_id=volume.id, title="第2章", status="outline", word_count=0, order_index=1
+    )
+    db.add(chapter1)
+    db.add(chapter2)
     db.add(models.PlotThread(book_id=book.id, name="线程A", status="open"))
     db.commit()
+    db.refresh(chapter1)
+    db.refresh(chapter2)
 
     state = await tools.tool_get_book_state(db, book.id, {})
     assert state["chapters_total"] == 2
     assert state["chapters_done"] == 1
     assert state["total_word_count"] == 1000
     assert state["volumes"] == [
-        {"volume_id": volume.id, "title": "第一卷", "chapter_count": 2, "chapters_done": 1}
+        {
+            "volume_id": volume.id,
+            "title": "第一卷",
+            "chapter_count": 2,
+            "chapters_done": 1,
+            "chapters": [
+                {"id": chapter1.id, "title": "第1章", "order_index": 0, "status": "done"},
+                {"id": chapter2.id, "title": "第2章", "order_index": 1, "status": "outline"},
+            ],
+        }
     ]
     assert state["open_plot_threads"] == [{"name": "线程A", "status": "open"}]
 

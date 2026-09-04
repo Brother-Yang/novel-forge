@@ -20,7 +20,7 @@ def create_volume(payload: schemas.VolumeCreate, db: Session = Depends(get_db)):
 
 @router.patch("/volumes/{volume_id}", response_model=schemas.VolumeOut)
 def update_volume(
-    volume_id: int, payload: schemas.VolumeUpdate, db: Session = Depends(get_db)
+    volume_id: str, payload: schemas.VolumeUpdate, db: Session = Depends(get_db)
 ):
     volume = db.get(models.Volume, volume_id)
     if not volume:
@@ -33,7 +33,7 @@ def update_volume(
 
 
 @router.delete("/volumes/{volume_id}")
-def delete_volume(volume_id: int, db: Session = Depends(get_db)):
+def delete_volume(volume_id: str, db: Session = Depends(get_db)):
     volume = db.get(models.Volume, volume_id)
     if not volume:
         raise HTTPException(404, "卷不存在")

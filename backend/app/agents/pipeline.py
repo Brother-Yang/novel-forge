@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..llm import get_llm
 from ..memory import context as memory
-from . import prompts
+from . import planner, prompts
 
 Event = tuple[str, str]
 
@@ -36,6 +36,7 @@ def _book_prompt(book: models.Book) -> dict[str, str]:
         "intro": _esc((book.intro or "").strip() or idea),
         "brief": _esc(idea),
         "target_words": str(book.target_words),
+        "key_elements": _esc(planner.format_key_elements(book.key_elements)),
     }
 
 
@@ -228,7 +229,7 @@ async def gen_outline(
 
 # ---------- 4. 章节大纲 ----------
 async def gen_chapter_outlines(
-    db: Session, volume_id: int, chapter_count: int = 10
+    db: Session, volume_id: str, chapter_count: int = 10
 ) -> AsyncIterator[Event]:
     volume = db.get(models.Volume, volume_id)
     if not volume:
@@ -288,7 +289,7 @@ async def gen_chapter_outlines(
 
 # ---------- 5+6. 章节正文 + 一致性回写 ----------
 async def gen_chapter_body(
-    db: Session, chapter_id: int, words: int = 2000, is_ending: bool | None = None
+    db: Session, chapter_id: str, words: int = 2000, is_ending: bool | None = None
 ) -> AsyncIterator[Event]:
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
@@ -360,7 +361,7 @@ async def gen_chapter_body(
 
 # ---------- Replanning(智能体发现剧情走偏时主动触发) ----------
 async def replan_volume_chapters(
-    db: Session, volume_id: int, reason: str
+    db: Session, volume_id: str, reason: str
 ) -> AsyncIterator[Event]:
     """只重新规划该卷【尚未完成正文】的章节细纲,已完成正文的章节与分卷大纲
     (Volume.summary)本身不受影响,避免推翻已经写好的内容。"""

@@ -30,6 +30,7 @@ class FakeBook:
     brief = "一个测试用的故事想法"
     intro = ""
     target_words = 12000
+    key_elements = "[]"
 
 
 class FakeDB:
@@ -256,6 +257,7 @@ async def test_agent_plans_placeholder_title_before_loop(monkeypatch):
             chapters_per_volume=2,
             words_per_chapter=2000,
             character_count=3,
+            key_elements=[],
         )
 
     monkeypatch.setattr(planner, "plan_novel", fake_plan)

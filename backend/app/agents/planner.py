@@ -18,6 +18,7 @@ VOLUME_MAX = 12
 CHAPTERS_PER_VOLUME_MAX = 20
 CHARACTER_MIN = 3
 CHARACTER_MAX = 8
+KEY_ELEMENTS_MAX = 10
 
 _SCALE_KEYS = ("volume_count", "chapters_per_volume", "words_per_chapter")
 
@@ -32,6 +33,7 @@ class NovelPlan:
     chapters_per_volume: int
     words_per_chapter: int
     character_count: int
+    key_elements: list[str]
 
     def to_checkpoint(self) -> dict[str, int]:
         return {
@@ -70,6 +72,26 @@ def _clamp(n: int, lo: int, hi: int) -> int:
 
 def _as_str(value: object) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _parse_key_elements(raw: object) -> list[str]:
+    """从模型输出里提取用户已明确给出的要素列表,过滤空白项并限长。"""
+    if not isinstance(raw, list):
+        return []
+    items = [_as_str(item) for item in raw]
+    return [item for item in items if item][:KEY_ELEMENTS_MAX]
+
+
+def format_key_elements(key_elements_json: str) -> str:
+    """把 Book.key_elements 的 JSON 字符串格式化成 prompt 里可读的多行文本。"""
+    try:
+        items = json.loads(key_elements_json or "[]")
+    except json.JSONDecodeError:
+        items = []
+    lines = _parse_key_elements(items)
+    if not lines:
+        return "(无,由你自由创作)"
+    return "\n".join(f"- {line}" for line in lines)
 
 
 def clamp_plan(
@@ -114,6 +136,7 @@ def clamp_plan(
     planned_genre = genre or _as_str(raw.get("genre"))
     planned_tone = tone or _as_str(raw.get("tone"))
     planned_intro = _as_str(raw.get("intro"))
+    key_elements = _parse_key_elements(raw.get("key_elements"))
     return NovelPlan(
         title=planned_title,
         genre=planned_genre,
@@ -123,6 +146,7 @@ def clamp_plan(
         chapters_per_volume=cpv,
         words_per_chapter=words,
         character_count=characters,
+        key_elements=key_elements,
     )
 
 
@@ -133,6 +157,7 @@ def plan_from_checkpoint(
     genre: str,
     tone: str,
     intro: str,
+    key_elements: str = "[]",
 ) -> NovelPlan | None:
     if not all(k in ckpt for k in _SCALE_KEYS):
         return None
@@ -153,7 +178,16 @@ def plan_from_checkpoint(
         character_count=_clamp(
             _as_int(ckpt.get("character_count"), 5), CHARACTER_MIN, CHARACTER_MAX
         ),
+        key_elements=_parse_key_elements(_safe_json_list(key_elements)),
     )
+
+
+def _safe_json_list(raw: str) -> list[object]:
+    try:
+        parsed = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def fallback_title(brief: str) -> str:
@@ -180,6 +214,8 @@ def apply_plan_to_book(book: models.Book, plan: NovelPlan) -> None:
         book.tone = plan.tone
     if not book.intro:
         book.intro = plan.intro
+    # key_elements 是从 brief 派生的提取结果,不是用户直接填写的字段,始终以最新规划结果覆盖。
+    book.key_elements = json.dumps(plan.key_elements, ensure_ascii=False)
 
 
 async def plan_novel(

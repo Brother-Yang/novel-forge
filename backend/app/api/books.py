@@ -71,7 +71,7 @@ def get_book_tree(book_id: str, db: Session = Depends(get_db)):
         .order_by(models.Chapter.order_index)
     ).all()
 
-    by_volume: dict[int, list[schemas.TreeChapter]] = {v.id: [] for v in volumes}
+    by_volume: dict[str, list[schemas.TreeChapter]] = {v.id: [] for v in volumes}
     loose: list[schemas.TreeChapter] = []
     for c in chapters:
         item = schemas.TreeChapter(

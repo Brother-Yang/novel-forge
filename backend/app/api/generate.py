@@ -189,7 +189,7 @@ def list_tasks(book_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/tasks/{task_id}", response_model=schemas.GenerationTaskOut)
-def get_task(task_id: int, db: Session = Depends(get_db)):
+def get_task(task_id: str, db: Session = Depends(get_db)):
     task = db.get(models.GenerationTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
@@ -197,7 +197,7 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/tasks/{task_id}/trace", response_model=list[schemas.AgentTraceEntryOut])
-def get_task_trace(task_id: int, db: Session = Depends(get_db)):
+def get_task_trace(task_id: str, db: Session = Depends(get_db)):
     """智能体任务(type=agent)的完整执行轨迹,供调试/前端展开查看。"""
     task = db.get(models.GenerationTask, task_id)
     if not task:
@@ -206,18 +206,18 @@ def get_task_trace(task_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/pause")
-def pause_task(task_id: int, db: Session = Depends(get_db)):
+def pause_task(task_id: str, db: Session = Depends(get_db)):
     book_generation.pause_task(db, task_id)
     return {"ok": True}
 
 
 @router.post("/tasks/{task_id}/resume")
-async def resume_task(task_id: int, db: Session = Depends(get_db)):
+async def resume_task(task_id: str, db: Session = Depends(get_db)):
     book_generation.resume_task(db, task_id)
     return {"ok": True}
 
 
 @router.post("/tasks/{task_id}/retry")
-async def retry_task(task_id: int, db: Session = Depends(get_db)):
+async def retry_task(task_id: str, db: Session = Depends(get_db)):
     book_generation.resume_task(db, task_id)
     return {"ok": True}

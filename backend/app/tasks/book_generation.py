@@ -20,7 +20,7 @@ from ..database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-_running: dict[int, asyncio.Task[None]] = {}
+_running: dict[str, asyncio.Task[None]] = {}
 
 BLOCKING_STATUSES = ("pending", "running", "paused")
 BOOK_LEVEL_TYPES = ("book", "novel", "agent")
@@ -58,7 +58,7 @@ def ensure_running(db: Session, task: models.GenerationTask) -> None:
         raise Paused()
 
 
-def _pending_chapters(db: Session, book_id: str) -> list[int]:
+def _pending_chapters(db: Session, book_id: str) -> list[str]:
     rows = db.scalars(
         select(models.Chapter)
         .where(
@@ -176,7 +176,7 @@ async def run_chapter_bodies(
         db.commit()
 
 
-async def _run(task_id: int) -> None:
+async def _run(task_id: str) -> None:
     db = SessionLocal()
     try:
         task = db.get(models.GenerationTask, task_id)
@@ -209,7 +209,7 @@ async def _run(task_id: int) -> None:
         _ = _running.pop(task_id, None)
 
 
-def _launch(task_id: int) -> None:
+def _launch(task_id: str) -> None:
     if task_id in _running and not _running[task_id].done():
         return
     try:
@@ -233,14 +233,14 @@ def start_book_generation(db: Session, book_id: str) -> models.GenerationTask:
     return task
 
 
-def pause_task(db: Session, task_id: int) -> None:
+def pause_task(db: Session, task_id: str) -> None:
     task = db.get(models.GenerationTask, task_id)
     if task and task.status == "running":
         task.status = "paused"
         db.commit()
 
 
-def resume_task(db: Session, task_id: int) -> None:
+def resume_task(db: Session, task_id: str) -> None:
     task = db.get(models.GenerationTask, task_id)
     if task and task.status in ("paused", "error"):
         task.status = "running"

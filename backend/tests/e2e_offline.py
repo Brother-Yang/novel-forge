@@ -72,6 +72,7 @@ class FakeLLM:
                     "chapters_per_volume": 3,
                     "words_per_chapter": 2000,
                     "character_count": 3,
+                    "key_elements": ["用户明确要求的开篇场景"],
                 },
                 ensure_ascii=False,
             )
@@ -349,6 +350,10 @@ async def main() -> None:
     check(task_n.status == "done" and task_n.progress == 100, "novel 任务完成")
     check(task_n.type == "novel", "任务 type=novel")
     check(book_n.title == "验证之书" and book_n.genre == "玄幻", "planner 写回书名/题材")
+    check(
+        json.loads(book_n.key_elements or "[]") == ["用户明确要求的开篇场景"],
+        f"planner 提取的 key_elements 已写回书籍,实际{book_n.key_elements!r}",
+    )
     check(len(wb_n) == 3, f"编排器生成3条设定,实际{len(wb_n)}")
     check(len(chars_n) == 3, f"编排器生成3个人物,实际{len(chars_n)}")
     check(len(vols_n) == 2 and len(chs_n) == 6, f"编排器 2卷6章,实际卷{len(vols_n)}章{len(chs_n)}")

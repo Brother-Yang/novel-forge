@@ -26,7 +26,7 @@ def list_chapters(
 
 
 @router.get("/chapters/{chapter_id}", response_model=schemas.ChapterOut)
-def get_chapter(chapter_id: int, db: Session = Depends(get_db)):
+def get_chapter(chapter_id: str, db: Session = Depends(get_db)):
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
         raise HTTPException(404, "章节不存在")
@@ -46,7 +46,7 @@ def create_chapter(payload: schemas.ChapterCreate, db: Session = Depends(get_db)
 
 @router.patch("/chapters/{chapter_id}", response_model=schemas.ChapterOut)
 def update_chapter(
-    chapter_id: int, payload: schemas.ChapterUpdate, db: Session = Depends(get_db)
+    chapter_id: str, payload: schemas.ChapterUpdate, db: Session = Depends(get_db)
 ):
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
@@ -59,7 +59,7 @@ def update_chapter(
 
 
 @router.delete("/chapters/{chapter_id}")
-def delete_chapter(chapter_id: int, db: Session = Depends(get_db)):
+def delete_chapter(chapter_id: str, db: Session = Depends(get_db)):
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
         raise HTTPException(404, "章节不存在")
@@ -84,7 +84,7 @@ def reorder_chapters(payload: schemas.ReorderRequest, db: Session = Depends(get_
 
 
 @router.get("/chapters/{chapter_id}/content", response_model=schemas.ChapterContentOut)
-def get_chapter_content(chapter_id: int, db: Session = Depends(get_db)):
+def get_chapter_content(chapter_id: str, db: Session = Depends(get_db)):
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
         raise HTTPException(404, "章节不存在")
@@ -94,7 +94,7 @@ def get_chapter_content(chapter_id: int, db: Session = Depends(get_db)):
 
 @router.put("/chapters/{chapter_id}/content", response_model=schemas.ChapterContentOut)
 def update_chapter_content(
-    chapter_id: int,
+    chapter_id: str,
     payload: schemas.ChapterContentUpdate,
     db: Session = Depends(get_db),
 ):

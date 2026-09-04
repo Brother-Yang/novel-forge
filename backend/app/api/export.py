@@ -47,7 +47,7 @@ def _ordered_chapters(db: Session, book_id: str) -> Iterator[tuple[str | None, m
         yield None, ch
 
 
-def _body(db: Session, chapter_id: int) -> str:
+def _body(db: Session, chapter_id: str) -> str:
     content = db.get(models.ChapterContent, chapter_id)
     return content.body if content else ""
 

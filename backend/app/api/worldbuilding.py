@@ -32,7 +32,7 @@ def create_worldbuilding(
 
 @router.patch("/worldbuilding/{item_id}", response_model=schemas.WorldbuildingOut)
 def update_worldbuilding(
-    item_id: int, payload: schemas.WorldbuildingUpdate, db: Session = Depends(get_db)
+    item_id: str, payload: schemas.WorldbuildingUpdate, db: Session = Depends(get_db)
 ):
     item = db.get(models.Worldbuilding, item_id)
     if not item:
@@ -45,7 +45,7 @@ def update_worldbuilding(
 
 
 @router.delete("/worldbuilding/{item_id}")
-def delete_worldbuilding(item_id: int, db: Session = Depends(get_db)):
+def delete_worldbuilding(item_id: str, db: Session = Depends(get_db)):
     item = db.get(models.Worldbuilding, item_id)
     if not item:
         raise HTTPException(404, "设定不存在")

@@ -17,8 +17,12 @@ from .db_base import Base
 BOOK_ID_LEN = 36
 
 
-def new_book_id() -> str:
+def new_id() -> str:
     return str(uuid.uuid4())
+
+
+def new_book_id() -> str:
+    return new_id()
 
 
 class Book(Base):
@@ -33,6 +37,7 @@ class Book(Base):
     genre: Mapped[str] = mapped_column(String(128), default="")
     tone: Mapped[str] = mapped_column(String(128), default="")
     target_words: Mapped[int] = mapped_column(Integer, default=100000)
+    key_elements: Mapped[str] = mapped_column(Text, default="[]")  # 从 brief 提取的用户明确要素(JSON 数组)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     volumes: Mapped[list["Volume"]] = relationship(
@@ -49,7 +54,7 @@ class Book(Base):
 class Volume(Base):
     __tablename__ = "volumes"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
@@ -68,12 +73,12 @@ class Chapter(Base):
 
     __tablename__ = "chapters"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
-    volume_id: Mapped[int | None] = mapped_column(
-        ForeignKey("volumes.id", ondelete="SET NULL"), nullable=True
+    volume_id: Mapped[str | None] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("volumes.id", ondelete="SET NULL"), nullable=True
     )
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     title: Mapped[str] = mapped_column(String(255))
@@ -98,8 +103,8 @@ class Chapter(Base):
 class ChapterContent(Base):
     __tablename__ = "chapter_content"
 
-    chapter_id: Mapped[int] = mapped_column(
-        ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True
+    chapter_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True
     )
     body: Mapped[str] = mapped_column(Text, default="")
 
@@ -109,8 +114,8 @@ class ChapterContent(Base):
 class ChapterSummary(Base):
     __tablename__ = "chapter_summaries"
 
-    chapter_id: Mapped[int] = mapped_column(
-        ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True
+    chapter_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True
     )
     summary: Mapped[str] = mapped_column(Text, default="")
 
@@ -120,7 +125,7 @@ class ChapterSummary(Base):
 class Character(Base):
     __tablename__ = "characters"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
@@ -135,7 +140,7 @@ class Character(Base):
 class Worldbuilding(Base):
     __tablename__ = "worldbuilding"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
@@ -147,7 +152,7 @@ class Worldbuilding(Base):
 class PlotThread(Base):
     __tablename__ = "plot_threads"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
@@ -159,12 +164,12 @@ class PlotThread(Base):
 class GenerationTask(Base):
     __tablename__ = "generation_tasks"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
     type: Mapped[str] = mapped_column(String(64))  # book/chapter/outline...
-    target_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(BOOK_ID_LEN), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     # pending/running/paused/done/error
     progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
@@ -183,9 +188,9 @@ class AgentTraceEntry(Base):
 
     __tablename__ = "agent_trace_entries"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    task_id: Mapped[int] = mapped_column(
-        ForeignKey("generation_tasks.id", ondelete="CASCADE")
+    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
+    task_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("generation_tasks.id", ondelete="CASCADE")
     )
     step_index: Mapped[int] = mapped_column(Integer, default=0)
     kind: Mapped[str] = mapped_column(String(32))  # thought/decision/observation/log/error
@@ -199,10 +204,10 @@ class EmbeddingRef(Base):
 
     __tablename__ = "embeddings"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
     source_type: Mapped[str] = mapped_column(String(32))  # chapter_summary/worldbuilding
-    source_id: Mapped[int] = mapped_column(Integer)
+    source_id: Mapped[str] = mapped_column(String(BOOK_ID_LEN))
     chroma_id: Mapped[str] = mapped_column(String(128))

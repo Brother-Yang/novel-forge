@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from .. import models
-from . import prompts
+from . import planner, prompts
 
 # 只把最近这么多"步"的工具调用历史发给模型,避免长篇小说场景下(几十步决策)
 # 对话历史无限增长导致超出上下文窗口、或每步都要重新计费全部历史。
@@ -28,6 +28,7 @@ def build_initial_messages(book: models.Book) -> list[dict[str, object]]:
                 title=book.title,
                 brief=book.brief or book.intro,
                 target_words=book.target_words,
+                key_elements=planner.format_key_elements(book.key_elements),
             ),
         },
     ]

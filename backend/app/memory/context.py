@@ -61,7 +61,7 @@ async def index_chapter_summary(
 
 
 def _record_ref(
-    db: Session, book_id: str, source_type: str, source_id: int, chroma_id: str
+    db: Session, book_id: str, source_type: str, source_id: str, chroma_id: str
 ) -> None:
     exists = db.scalar(
         select(models.EmbeddingRef).where(
@@ -119,7 +119,7 @@ def _volume_summary(db: Session, chapter: models.Chapter) -> str:
     return vol.summary if vol else ""
 
 
-async def refresh_volume_summary(db: Session, volume_id: int) -> None:
+async def refresh_volume_summary(db: Session, volume_id: str) -> None:
     """基于该卷已完成章节的 ChapterSummary 重新提炼卷摘要,写回 Volume.summary。
 
     Volume.summary 目前只在生成分卷大纲时写一次;调用方(pipeline.py 里章节

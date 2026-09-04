@@ -44,24 +44,24 @@ def test_load_state_aggregates_full_picture(db):
     db.add(volume)
     db.commit()
     db.refresh(volume)
-    db.add(
-        models.Chapter(
-            book_id=book.id,
-            volume_id=volume.id,
-            title="第1章",
-            status="done",
-            word_count=1200,
-        )
+    chapter1 = models.Chapter(
+        book_id=book.id,
+        volume_id=volume.id,
+        title="第1章",
+        status="done",
+        word_count=1200,
+        order_index=0,
     )
-    db.add(
-        models.Chapter(
-            book_id=book.id,
-            volume_id=volume.id,
-            title="第2章",
-            status="outline",
-            word_count=0,
-        )
+    chapter2 = models.Chapter(
+        book_id=book.id,
+        volume_id=volume.id,
+        title="第2章",
+        status="outline",
+        word_count=0,
+        order_index=1,
     )
+    db.add(chapter1)
+    db.add(chapter2)
     db.add(models.PlotThread(book_id=book.id, name="线程A", status="open"))
     db.add(models.PlotThread(book_id=book.id, name="线程B", status="closed"))
     db.commit()
@@ -80,6 +80,9 @@ def test_load_state_aggregates_full_picture(db):
     assert len(state.volumes) == 1
     assert state.volumes[0].chapter_count == 2
     assert state.volumes[0].chapters_done == 1
+    # 章节须携带真实 id,供 Agent 调用 write_chapter 时引用,不能靠猜测
+    assert [c.id for c in state.volumes[0].chapters] == [chapter1.id, chapter2.id]
+    assert [c.status for c in state.volumes[0].chapters] == ["done", "outline"]
     # 已关闭的剧情线程不应出现在 open_plot_threads
     assert [t.name for t in state.open_plot_threads] == ["线程A"]
 

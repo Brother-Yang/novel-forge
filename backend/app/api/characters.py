@@ -30,7 +30,7 @@ def create_character(payload: schemas.CharacterCreate, db: Session = Depends(get
 
 @router.patch("/characters/{character_id}", response_model=schemas.CharacterOut)
 def update_character(
-    character_id: int, payload: schemas.CharacterUpdate, db: Session = Depends(get_db)
+    character_id: str, payload: schemas.CharacterUpdate, db: Session = Depends(get_db)
 ):
     character = db.get(models.Character, character_id)
     if not character:
@@ -43,7 +43,7 @@ def update_character(
 
 
 @router.delete("/characters/{character_id}")
-def delete_character(character_id: int, db: Session = Depends(get_db)):
+def delete_character(character_id: str, db: Session = Depends(get_db)):
     character = db.get(models.Character, character_id)
     if not character:
         raise HTTPException(404, "人物不存在")

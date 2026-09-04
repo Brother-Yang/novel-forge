@@ -1,5 +1,7 @@
 """Planner JSON 解析与规模约束。"""
 
+import json
+
 from app import models
 from app.agents.planner import (
     NovelPlan,
@@ -7,6 +9,7 @@ from app.agents.planner import (
     clamp_plan,
     extract_json_object,
     fallback_title,
+    format_key_elements,
     is_placeholder_title,
     plan_from_checkpoint,
 )
@@ -104,6 +107,7 @@ def test_apply_plan_replaces_fallback_title_and_fills_intro() -> None:
         chapters_per_volume=3,
         words_per_chapter=2000,
         character_count=3,
+        key_elements=["场景:AI 病毒格式化全球服务器"],
     )
     apply_plan_to_book(book, plan)
     assert book.title == "古法残编"
@@ -111,6 +115,7 @@ def test_apply_plan_replaces_fallback_title_and_fills_intro() -> None:
     assert book.genre == "都市"
     assert book.tone == "讽刺"
     assert book.brief == brief
+    assert json.loads(book.key_elements) == ["场景:AI 病毒格式化全球服务器"]
 
 
 def test_apply_plan_keeps_user_chosen_title() -> None:
@@ -131,6 +136,7 @@ def test_apply_plan_keeps_user_chosen_title() -> None:
         chapters_per_volume=3,
         words_per_chapter=2000,
         character_count=3,
+        key_elements=[],
     )
     apply_plan_to_book(book, plan)
     assert book.title == "我起的书名"
@@ -152,3 +158,70 @@ def test_plan_from_checkpoint_requires_scale_keys() -> None:
     assert plan.volume_count == 2
     assert plan.chapters_per_volume == 4
     assert plan.character_count == 5
+    assert plan.key_elements == []
+
+
+def test_plan_from_checkpoint_restores_key_elements() -> None:
+    plan = plan_from_checkpoint(
+        {"volume_count": 2, "chapters_per_volume": 4, "words_per_chapter": 2500},
+        title="a",
+        genre="玄幻",
+        tone="热血",
+        intro="",
+        key_elements=json.dumps(["场景:裸机格式化"], ensure_ascii=False),
+    )
+    assert plan is not None
+    assert plan.key_elements == ["场景:裸机格式化"]
+
+
+def test_clamp_plan_extracts_explicit_key_elements() -> None:
+    plan = clamp_plan(
+        {
+            "title": "全员AI写代码,只有我用手写二进制",
+            "volume_count": 1,
+            "chapters_per_volume": 3,
+            "words_per_chapter": 2000,
+            "key_elements": [
+                "场景:全球服务器被AI病毒格式化至裸机,所有高级语言无法运行",
+                "主角行动:掏出电烙铁现场焊接寄存器,用机器语言逐字输入",
+                "",
+                "  ",
+            ],
+        },
+        target_words=6000,
+        brief='写一个"全员AI写代码,只有我用手写二进制"的装逼打脸故事。',
+    )
+    assert plan.title == "全员AI写代码,只有我用手写二进制"
+    assert plan.key_elements == [
+        "场景:全球服务器被AI病毒格式化至裸机,所有高级语言无法运行",
+        "主角行动:掏出电烙铁现场焊接寄存器,用机器语言逐字输入",
+    ]
+
+
+def test_clamp_plan_key_elements_non_list_falls_back_to_empty() -> None:
+    plan = clamp_plan(
+        {"key_elements": "不是列表"},
+        target_words=10000,
+        brief="随便一个想法",
+    )
+    assert plan.key_elements == []
+
+
+def test_clamp_plan_key_elements_truncated_to_max() -> None:
+    plan = clamp_plan(
+        {"key_elements": [f"要素{i}" for i in range(20)]},
+        target_words=10000,
+        brief="想法",
+    )
+    assert len(plan.key_elements) == 10
+
+
+def test_format_key_elements_empty_list() -> None:
+    assert format_key_elements("[]") == "(无,由你自由创作)"
+    assert format_key_elements("") == "(无,由你自由创作)"
+    assert format_key_elements("not json") == "(无,由你自由创作)"
+
+
+def test_format_key_elements_renders_bullet_lines() -> None:
+    raw = json.dumps(["场景设定", "结局反转"], ensure_ascii=False)
+    assert format_key_elements(raw) == "- 场景设定\n- 结局反转"

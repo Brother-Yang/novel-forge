@@ -34,6 +34,7 @@ class BookOut(ORMModel):
     genre: str
     tone: str
     target_words: int
+    key_elements: str
     created_at: datetime
 
 
@@ -52,7 +53,7 @@ class VolumeUpdate(BaseModel):
 
 
 class VolumeOut(ORMModel):
-    id: int
+    id: str
     book_id: str
     title: str
     order_index: int
@@ -62,7 +63,7 @@ class VolumeOut(ORMModel):
 # ---------- Chapter ----------
 class ChapterCreate(BaseModel):
     book_id: str
-    volume_id: int | None = None
+    volume_id: str | None = None
     title: str
     order_index: int = 0
     outline: str = ""
@@ -70,16 +71,16 @@ class ChapterCreate(BaseModel):
 
 class ChapterUpdate(BaseModel):
     title: str | None = None
-    volume_id: int | None = None
+    volume_id: str | None = None
     order_index: int | None = None
     outline: str | None = None
     status: str | None = None
 
 
 class ChapterOut(ORMModel):
-    id: int
+    id: str
     book_id: str
-    volume_id: int | None
+    volume_id: str | None
     title: str
     order_index: int
     outline: str
@@ -88,7 +89,7 @@ class ChapterOut(ORMModel):
 
 
 class ChapterContentOut(BaseModel):
-    chapter_id: int
+    chapter_id: str
     body: str
 
 
@@ -97,9 +98,9 @@ class ChapterContentUpdate(BaseModel):
 
 
 class ReorderItem(BaseModel):
-    id: int
+    id: str
     order_index: int
-    volume_id: int | None = None
+    volume_id: str | None = None
 
 
 class ReorderRequest(BaseModel):
@@ -108,7 +109,7 @@ class ReorderRequest(BaseModel):
 
 # ---------- Tree ----------
 class TreeChapter(BaseModel):
-    id: int
+    id: str
     title: str
     order_index: int
     status: str
@@ -116,7 +117,7 @@ class TreeChapter(BaseModel):
 
 
 class TreeVolume(BaseModel):
-    id: int
+    id: str
     title: str
     order_index: int
     chapters: list[TreeChapter]
@@ -143,7 +144,7 @@ class CharacterUpdate(BaseModel):
 
 
 class CharacterOut(ORMModel):
-    id: int
+    id: str
     book_id: str
     name: str
     order_index: int
@@ -166,7 +167,7 @@ class WorldbuildingUpdate(BaseModel):
 
 
 class WorldbuildingOut(ORMModel):
-    id: int
+    id: str
     book_id: str
     category: str
     title: str
@@ -175,7 +176,7 @@ class WorldbuildingOut(ORMModel):
 
 # ---------- PlotThread ----------
 class PlotThreadOut(ORMModel):
-    id: int
+    id: str
     book_id: str
     name: str
     status: str
@@ -184,10 +185,10 @@ class PlotThreadOut(ORMModel):
 
 # ---------- GenerationTask ----------
 class GenerationTaskOut(ORMModel):
-    id: int
+    id: str
     book_id: str
     type: str
-    target_id: int | None
+    target_id: str | None
     status: str
     progress: int
     error: str
@@ -196,8 +197,8 @@ class GenerationTaskOut(ORMModel):
 
 
 class AgentTraceEntryOut(ORMModel):
-    id: int
-    task_id: int
+    id: str
+    task_id: str
     step_index: int
     kind: str
     tool_name: str | None
@@ -221,12 +222,12 @@ class GenerateOutlineReq(BaseModel):
 
 
 class GenerateChapterOutlinesReq(BaseModel):
-    volume_id: int
+    volume_id: str
     chapter_count: int = 10
 
 
 class GenerateChapterReq(BaseModel):
-    chapter_id: int
+    chapter_id: str
     words: int = 2000
 
 

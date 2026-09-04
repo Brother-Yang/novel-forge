@@ -15,7 +15,7 @@ from .. import models
 
 def record_step(
     db: Session,
-    task_id: int,
+    task_id: str,
     step_index: int,
     kind: str,
     payload: str,
@@ -35,13 +35,15 @@ def record_step(
 
 
 def list_trace(
-    db: Session, task_id: int, limit: int = 500
+    db: Session, task_id: str, limit: int = 500
 ) -> list[models.AgentTraceEntry]:
+    # 主键已改为 UUID 字符串,不再具备插入顺序语义;step_index 由调用方
+    # (agent_generation.py) 对同一任务严格单调递增,用它排序才能还原真实执行顺序。
     return list(
         db.scalars(
             select(models.AgentTraceEntry)
             .where(models.AgentTraceEntry.task_id == task_id)
-            .order_by(models.AgentTraceEntry.id)
+            .order_by(models.AgentTraceEntry.step_index)
             .limit(limit)
         ).all()
     )
