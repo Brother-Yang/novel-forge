@@ -13,7 +13,12 @@ import {
   Space,
   Typography,
 } from "antd";
-import { PlusOutlined, DeleteOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import {
+  PlusOutlined,
+  DeleteOutlined,
+  RobotOutlined,
+  ThunderboltOutlined,
+} from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Book } from "../api/types";
@@ -84,8 +89,11 @@ export default function BookList() {
           <Button onClick={() => setEmptyOpen(true)} icon={<PlusOutlined />}>
             新建空书
           </Button>
-          <Button type="primary" icon={<ThunderboltOutlined />} onClick={() => setNovelOpen(true)}>
+          <Button icon={<ThunderboltOutlined />} onClick={() => setNovelOpen(true)}>
             一句话出书
+          </Button>
+          <Button type="primary" icon={<RobotOutlined />} onClick={() => navigate(paths.agentChat)}>
+            AI 自主创作
           </Button>
         </Space>
       </Row>
@@ -115,7 +123,7 @@ export default function BookList() {
               }
             >
               <Typography.Paragraph type="secondary" ellipsis={{ rows: 2 }}>
-                {b.intro || b.brief || "暂无简介"}
+                {b.intro || "暂无简介"}
               </Typography.Paragraph>
               <div style={{ color: "#888", fontSize: 12 }}>
                 {b.genre || "未分类"} · 目标 {b.target_words.toLocaleString()} 字

@@ -3,10 +3,11 @@ import { Layout, Menu, Button, Typography, Spin, Dropdown } from "antd";
 import {
   ArrowLeftOutlined,
   BookOutlined,
-  TeamOutlined,
-  GlobalOutlined,
-  ThunderboltOutlined,
   DownloadOutlined,
+  GlobalOutlined,
+  RobotOutlined,
+  TeamOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api";
@@ -27,6 +28,7 @@ export default function BookWorkspace() {
   const { bookId } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const fromTask = searchParams.get("fromTask");
   const [book, setBook] = useState<Book | null>(null);
   const [view, setView] = useState<View>(
     searchParams.get("view") === "tasks" ? "tasks" : "chapters"
@@ -71,7 +73,15 @@ export default function BookWorkspace() {
           paddingInline: 16,
         }}
       >
-        <Button icon={<ArrowLeftOutlined />} type="text" onClick={() => navigate(paths.home)} />
+        <Button
+          icon={<ArrowLeftOutlined />}
+          type="text"
+          onClick={() =>
+            navigate(
+              fromTask && bookId ? paths.agentChatFor(bookId, fromTask) : paths.home
+            )
+          }
+        />
         <Typography.Title level={4} style={{ margin: 0 }}>
           {book.title}
         </Typography.Title>
@@ -79,6 +89,14 @@ export default function BookWorkspace() {
           {book.genre} · 目标 {book.target_words.toLocaleString()} 字
         </Typography.Text>
         <div style={{ flex: 1 }} />
+        {fromTask && bookId && (
+          <Button
+            icon={<RobotOutlined />}
+            onClick={() => navigate(paths.agentChatFor(bookId, fromTask))}
+          >
+            返回 AI 创作
+          </Button>
+        )}
         <Dropdown
           menu={{
             items: [

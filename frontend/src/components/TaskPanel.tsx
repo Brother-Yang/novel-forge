@@ -12,10 +12,14 @@ import {
   Tag,
   Typography,
 } from "antd";
+import { RobotOutlined } from "@ant-design/icons";
+import { useNavigate } from "react-router-dom";
 import { api, sseEndpoints } from "../api";
 import { sseFetch } from "../api/client";
 import type { BookTree, GenerationTask } from "../api/types";
+import { paths } from "../router/paths";
 import { useAppStore } from "../store";
+import { startAgentWithFallback } from "../utils/agentFallback";
 import { TASK_STATUS_TAG, TASK_TYPE_LABEL, taskStageLabel } from "../constants/taskStatus";
 
 function errMessage(err: unknown): string {
@@ -30,6 +34,7 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
   const [tasks, setTasks] = useState<GenerationTask[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const refreshTree = useAppStore((s) => s.refreshTree);
 
   const loadTasks = () =>
@@ -94,6 +99,24 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
     }
   };
 
+  const startAgent = async () => {
+    try {
+      const { result: task, usedFallback } = await startAgentWithFallback(
+        () => api.startAgentFromBook(bookId),
+        () => api.startNovelFromBook(bookId)
+      );
+      if (usedFallback) {
+        message.info("当前模型不支持自主决策,已自动切换为固定流程生成");
+      } else {
+        message.success("已启动 AI 自主创作");
+      }
+      loadTasks();
+      navigate(paths.agentChatFor(bookId, task.id));
+    } catch (err) {
+      message.error(errMessage(err));
+    }
+  };
+
   const startBatch = async () => {
     try {
       await api.startBookGeneration(bookId);
@@ -111,9 +134,14 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
           按世界观 → 人物 → 大纲 → 章纲 →
           正文自动跑完全书。已有设定/人物/卷/章会跳过,中断后可继续或重试。
         </Typography.Paragraph>
-        <Button type="primary" disabled={busy} onClick={startNovel}>
-          一键全自动生成
-        </Button>
+        <Space>
+          <Button type="primary" disabled={busy} onClick={startNovel}>
+            一键全自动生成
+          </Button>
+          <Button disabled={busy} icon={<RobotOutlined />} onClick={startAgent}>
+            AI 自主创作(对话查看进度)
+          </Button>
+        </Space>
       </Card>
 
       <Collapse
@@ -217,6 +245,11 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
             return (
               <List.Item
                 actions={[
+                  t.type === "agent" && (
+                    <Button key="chat" size="small" onClick={() => navigate(paths.agentChatFor(bookId, t.id))}>
+                      查看对话
+                    </Button>
+                  ),
                   t.status === "running" && (
                     <Button
                       key="p"

@@ -89,3 +89,13 @@ export interface NovelGenerationResult {
   book: Book;
   task: GenerationTask;
 }
+
+export interface AgentTraceEntry {
+  id: number;
+  task_id: number;
+  step_index: number;
+  kind: string;
+  tool_name: string | null;
+  payload: string;
+  created_at: string;
+}

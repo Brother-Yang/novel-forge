@@ -10,6 +10,7 @@ export const TASK_STATUS_TAG: Record<string, { color: string; text: string }> = 
 export const TASK_TYPE_LABEL: Record<string, string> = {
   novel: "全书自动生成",
   book: "全书正文生成",
+  agent: "AI 自主创作",
 };
 
 export const TASK_STAGE_LABEL: Record<string, string> = {

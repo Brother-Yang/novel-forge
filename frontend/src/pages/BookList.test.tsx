@@ -36,6 +36,26 @@ describe("BookList", () => {
     expect(await screen.findByText(/还没有书籍/)).toBeInTheDocument();
   });
 
+  it("书籍卡片展示简介,不把用户原话 brief 当作简介", async () => {
+    const books: Book[] = [
+      {
+        id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        title: "未命名",
+        genre: "",
+        tone: "",
+        intro: "",
+        brief: "AI时代，中年程序员靠古法编程力挽狂澜",
+        target_words: 10000,
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+    vi.mocked(api.listBooks).mockResolvedValue(books);
+    renderWithProviders();
+    expect(await screen.findByText("未命名")).toBeInTheDocument();
+    expect(screen.queryByText(/中年程序员靠古法编程/)).not.toBeInTheDocument();
+    expect(screen.getByText("暂无简介")).toBeInTheDocument();
+  });
+
   it("加载到书籍列表后渲染书名", async () => {
     const books: Book[] = [
       {

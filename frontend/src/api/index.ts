@@ -1,5 +1,6 @@
 import { API_BASE, http } from "./client";
 import type {
+  AgentTraceEntry,
   Book,
   BookTree,
   Chapter,
@@ -69,6 +70,16 @@ export const api = {
   }) => http.post<NovelGenerationResult>("/generate/novel", payload),
   startNovelFromBook: (bookId: string) =>
     http.post<GenerationTask>("/generate/novel/from-book", { book_id: bookId }),
+  startAgentGeneration: (payload: {
+    brief: string;
+    title?: string;
+    genre?: string;
+    tone?: string;
+    target_words?: number;
+  }) => http.post<NovelGenerationResult>("/generate/agent", payload),
+  startAgentFromBook: (bookId: string) =>
+    http.post<GenerationTask>("/generate/agent/from-book", { book_id: bookId }),
+  getTaskTrace: (taskId: number) => http.get<AgentTraceEntry[]>(`/tasks/${taskId}/trace`),
 
   exportUrl: (bookId: string, format: "txt" | "epub") =>
     `${API_BASE}/books/${bookId}/export?format=${format}`,
