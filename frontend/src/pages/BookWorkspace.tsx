@@ -33,7 +33,7 @@ export default function BookWorkspace() {
   const [view, setView] = useState<View>(
     searchParams.get("view") === "tasks" ? "tasks" : "chapters"
   );
-  const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
+  const [selectedChapter, setSelectedChapter] = useState<string | null>(null);
 
   useEffect(() => {
     if (!bookId) return;
@@ -77,9 +77,7 @@ export default function BookWorkspace() {
           icon={<ArrowLeftOutlined />}
           type="text"
           onClick={() =>
-            navigate(
-              fromTask && bookId ? paths.agentChatFor(bookId, fromTask) : paths.home
-            )
+            navigate(fromTask && bookId ? paths.agentChatFor(bookId, fromTask) : paths.home)
           }
         />
         <Typography.Title level={4} style={{ margin: 0 }}>

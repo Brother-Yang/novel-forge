@@ -30,7 +30,7 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
   const [log, setLog] = useState("");
   const [stage, setStage] = useState<string | null>(null);
   const [tree, setTree] = useState<BookTree | null>(null);
-  const [volumeId, setVolumeId] = useState<number | undefined>();
+  const [volumeId, setVolumeId] = useState<string | undefined>();
   const [tasks, setTasks] = useState<GenerationTask[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
   const { message } = App.useApp();
@@ -246,7 +246,11 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
               <List.Item
                 actions={[
                   t.type === "agent" && (
-                    <Button key="chat" size="small" onClick={() => navigate(paths.agentChatFor(bookId, t.id))}>
+                    <Button
+                      key="chat"
+                      size="small"
+                      onClick={() => navigate(paths.agentChatFor(bookId, t.id))}
+                    >
                       查看对话
                     </Button>
                   ),

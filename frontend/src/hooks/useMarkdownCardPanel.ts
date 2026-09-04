@@ -3,7 +3,7 @@ import { App } from "antd";
 import { sseFetch } from "../api/client";
 
 interface MarkdownCard {
-  id: number;
+  id: string;
   md_content: string;
 }
 
@@ -11,8 +11,8 @@ interface UseMarkdownCardPanelOptions<T extends MarkdownCard> {
   bookId: string;
   list: (bookId: string) => Promise<T[]>;
   create: (currentCount: number) => Promise<T>;
-  update: (id: number, patch: Partial<T>) => Promise<T>;
-  remove: (id: number) => Promise<unknown>;
+  update: (id: string, patch: Partial<T>) => Promise<T>;
+  remove: (id: string) => Promise<unknown>;
   generateEndpoint: string;
   generateBody: (bookId: string) => unknown;
 }
@@ -60,7 +60,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
     load();
   };
 
-  const removeItem = async (id: number) => {
+  const removeItem = async (id: string) => {
     await remove(id);
     if (current?.id === id) {
       setCurrent(null);

@@ -24,41 +24,41 @@ export const api = {
 
   // volumes
   createVolume: (v: Partial<Volume>) => http.post<Volume>("/volumes", v),
-  updateVolume: (id: number, v: Partial<Volume>) => http.patch<Volume>(`/volumes/${id}`, v),
-  deleteVolume: (id: number) => http.del(`/volumes/${id}`),
+  updateVolume: (id: string, v: Partial<Volume>) => http.patch<Volume>(`/volumes/${id}`, v),
+  deleteVolume: (id: string) => http.del(`/volumes/${id}`),
 
   // chapters
-  getChapter: (id: number) => http.get<Chapter>(`/chapters/${id}`),
+  getChapter: (id: string) => http.get<Chapter>(`/chapters/${id}`),
   createChapter: (c: Partial<Chapter>) => http.post<Chapter>("/chapters", c),
-  updateChapter: (id: number, c: Partial<Chapter>) => http.patch<Chapter>(`/chapters/${id}`, c),
-  deleteChapter: (id: number) => http.del(`/chapters/${id}`),
-  reorderChapters: (items: { id: number; order_index: number; volume_id?: number | null }[]) =>
+  updateChapter: (id: string, c: Partial<Chapter>) => http.patch<Chapter>(`/chapters/${id}`, c),
+  deleteChapter: (id: string) => http.del(`/chapters/${id}`),
+  reorderChapters: (items: { id: string; order_index: number; volume_id?: string | null }[]) =>
     http.post("/chapters/reorder", { items }),
-  getContent: (id: number) =>
-    http.get<{ chapter_id: number; body: string }>(`/chapters/${id}/content`),
-  saveContent: (id: number, body: string) => http.put(`/chapters/${id}/content`, { body }),
+  getContent: (id: string) =>
+    http.get<{ chapter_id: string; body: string }>(`/chapters/${id}/content`),
+  saveContent: (id: string, body: string) => http.put(`/chapters/${id}/content`, { body }),
 
   // characters
   listCharacters: (bookId: string) => http.get<Character[]>(`/books/${bookId}/characters`),
   createCharacter: (c: Partial<Character>) => http.post<Character>("/characters", c),
-  updateCharacter: (id: number, c: Partial<Character>) =>
+  updateCharacter: (id: string, c: Partial<Character>) =>
     http.patch<Character>(`/characters/${id}`, c),
-  deleteCharacter: (id: number) => http.del(`/characters/${id}`),
+  deleteCharacter: (id: string) => http.del(`/characters/${id}`),
 
   // worldbuilding
   listWorldbuilding: (bookId: string) =>
     http.get<Worldbuilding[]>(`/books/${bookId}/worldbuilding`),
   createWorldbuilding: (w: Partial<Worldbuilding>) => http.post<Worldbuilding>("/worldbuilding", w),
-  updateWorldbuilding: (id: number, w: Partial<Worldbuilding>) =>
+  updateWorldbuilding: (id: string, w: Partial<Worldbuilding>) =>
     http.patch<Worldbuilding>(`/worldbuilding/${id}`, w),
-  deleteWorldbuilding: (id: number) => http.del(`/worldbuilding/${id}`),
+  deleteWorldbuilding: (id: string) => http.del(`/worldbuilding/${id}`),
 
   // tasks
   listTasks: (bookId: string) => http.get<GenerationTask[]>(`/books/${bookId}/tasks`),
-  getTask: (id: number) => http.get<GenerationTask>(`/tasks/${id}`),
-  pauseTask: (id: number) => http.post(`/tasks/${id}/pause`),
-  resumeTask: (id: number) => http.post(`/tasks/${id}/resume`),
-  retryTask: (id: number) => http.post(`/tasks/${id}/retry`),
+  getTask: (id: string) => http.get<GenerationTask>(`/tasks/${id}`),
+  pauseTask: (id: string) => http.post(`/tasks/${id}/pause`),
+  resumeTask: (id: string) => http.post(`/tasks/${id}/resume`),
+  retryTask: (id: string) => http.post(`/tasks/${id}/retry`),
   startBookGeneration: (bookId: string) =>
     http.post<GenerationTask>("/generate/book", { book_id: bookId }),
   startNovelGeneration: (payload: {
@@ -79,7 +79,7 @@ export const api = {
   }) => http.post<NovelGenerationResult>("/generate/agent", payload),
   startAgentFromBook: (bookId: string) =>
     http.post<GenerationTask>("/generate/agent/from-book", { book_id: bookId }),
-  getTaskTrace: (taskId: number) => http.get<AgentTraceEntry[]>(`/tasks/${taskId}/trace`),
+  getTaskTrace: (taskId: string) => http.get<AgentTraceEntry[]>(`/tasks/${taskId}/trace`),
 
   exportUrl: (bookId: string, format: "txt" | "epub") =>
     `${API_BASE}/books/${bookId}/export?format=${format}`,

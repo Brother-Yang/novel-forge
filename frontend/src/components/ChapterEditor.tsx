@@ -8,7 +8,7 @@ import { useAppStore } from "../store";
 
 interface Props {
   bookId: string;
-  chapterId: number | null;
+  chapterId: string | null;
 }
 
 export default function ChapterEditor({ chapterId }: Props) {

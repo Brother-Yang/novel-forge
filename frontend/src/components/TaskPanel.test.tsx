@@ -48,7 +48,7 @@ describe("TaskPanel", () => {
     vi.mocked(api.getTree).mockResolvedValue({ volumes: [], loose_chapters: [] });
     vi.mocked(api.listTasks).mockResolvedValue([]);
     vi.mocked(api.startNovelFromBook).mockResolvedValue({
-      id: 9,
+      id: "task-9",
       book_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
       type: "novel",
       target_id: null,
@@ -68,7 +68,7 @@ describe("TaskPanel", () => {
     vi.mocked(api.getTree).mockResolvedValue({ volumes: [], loose_chapters: [] });
     vi.mocked(api.listTasks).mockResolvedValue([]);
     vi.mocked(api.startAgentFromBook).mockResolvedValue({
-      id: 11,
+      id: "task-11",
       book_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
       type: "agent",
       target_id: null,
@@ -88,7 +88,7 @@ describe("TaskPanel", () => {
     vi.mocked(api.getTree).mockResolvedValue({ volumes: [], loose_chapters: [] });
     vi.mocked(api.listTasks).mockResolvedValue([
       {
-        id: 3,
+        id: "task-3",
         book_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         type: "novel",
         target_id: null,
@@ -100,14 +100,14 @@ describe("TaskPanel", () => {
       },
     ]);
     renderPanel();
-    expect(await screen.findByText(/#3 全书自动生成 · 生成人物/)).toBeInTheDocument();
+    expect(await screen.findByText(/#task-3 全书自动生成 · 生成人物/)).toBeInTheDocument();
   });
 
   it("agent 类型任务可点击查看对话跳回自主创作页", async () => {
     vi.mocked(api.getTree).mockResolvedValue({ volumes: [], loose_chapters: [] });
     vi.mocked(api.listTasks).mockResolvedValue([
       {
-        id: 7,
+        id: "task-7",
         book_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         type: "agent",
         target_id: null,

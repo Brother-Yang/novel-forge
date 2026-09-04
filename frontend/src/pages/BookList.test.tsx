@@ -46,6 +46,7 @@ describe("BookList", () => {
         intro: "",
         brief: "AI时代，中年程序员靠古法编程力挽狂澜",
         target_words: 10000,
+        key_elements: "[]",
         created_at: "2026-01-01T00:00:00Z",
       },
     ];
@@ -66,6 +67,7 @@ describe("BookList", () => {
         intro: "一个关于剑的故事",
         brief: "",
         target_words: 100000,
+        key_elements: "[]",
         created_at: "2026-01-01T00:00:00Z",
       },
     ];
@@ -85,10 +87,11 @@ describe("BookList", () => {
         genre: "",
         tone: "",
         target_words: 100000,
+        key_elements: "[]",
         created_at: "2026-01-01T00:00:00Z",
       },
       task: {
-        id: 1,
+        id: "task-1",
         book_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
         type: "novel",
         target_id: null,

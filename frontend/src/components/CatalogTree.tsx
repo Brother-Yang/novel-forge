@@ -9,8 +9,8 @@ import { CHAPTER_STATUS_COLOR } from "../constants/chapterStatus";
 
 interface Props {
   bookId: string;
-  selectedChapter: number | null;
-  onSelectChapter: (id: number) => void;
+  selectedChapter: string | null;
+  onSelectChapter: (id: string | null) => void;
 }
 
 // key 规则:卷 "v-<id>",章 "c-<id>",未归卷根 "loose"
@@ -30,7 +30,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
     load();
   };
 
-  const addChapter = async (volumeId: number | null) => {
+  const addChapter = async (volumeId: string | null) => {
     const count =
       volumeId == null
         ? (tree?.loose_chapters.length ?? 0)
@@ -44,7 +44,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
     load();
   };
 
-  const rename = (kind: "volume" | "chapter", id: number, current: string) => {
+  const rename = (kind: "volume" | "chapter", id: string, current: string) => {
     let value = current;
     modal.confirm({
       title: `重命名${kind === "volume" ? "卷" : "章节"}`,
@@ -63,15 +63,15 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
     });
   };
 
-  const remove = async (kind: "volume" | "chapter", id: number) => {
+  const remove = async (kind: "volume" | "chapter", id: string) => {
     if (kind === "volume") await api.deleteVolume(id);
     else await api.deleteChapter(id);
-    if (kind === "chapter" && id === selectedChapter) onSelectChapter(0);
+    if (kind === "chapter" && id === selectedChapter) onSelectChapter(null);
     message.success("已删除");
     load();
   };
 
-  const nodeMenu = (kind: "volume" | "chapter", id: number, title: string) => ({
+  const nodeMenu = (kind: "volume" | "chapter", id: string, title: string) => ({
     items: [
       { key: "rename", label: "重命名" },
       ...(kind === "volume" ? [{ key: "addChapter", label: "新增章节" }] : []),
@@ -88,7 +88,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   const treeData: TreeDataNode[] = useMemo(() => {
     if (!tree) return [];
     const renderChapter = (c: {
-      id: number;
+      id: string;
       title: string;
       status: string;
       word_count: number;
@@ -140,15 +140,15 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   // 拖拽:本地重建结构后,批量持久化章节 order_index 与 volume_id
   const onDrop: TreeProps["onDrop"] = async (info) => {
     if (!tree) return;
-    const dragId = Number((info.dragNode.key as string).slice(2));
+    const dragId = (info.dragNode.key as string).slice(2);
     const dragIsChapter = (info.dragNode.key as string).startsWith("c-");
     if (!dragIsChapter) return; // 简化:仅支持章节拖拽
 
     const dropKey = info.node.key as string;
-    let targetVolume: number | null = null;
-    if (dropKey.startsWith("v-")) targetVolume = Number(dropKey.slice(2));
+    let targetVolume: string | null = null;
+    if (dropKey.startsWith("v-")) targetVolume = dropKey.slice(2);
     else if (dropKey.startsWith("c-")) {
-      const cid = Number(dropKey.slice(2));
+      const cid = dropKey.slice(2);
       const owner = tree.volumes.find((v) => v.chapters.some((c) => c.id === cid));
       targetVolume = owner ? owner.id : null;
     }
@@ -161,7 +161,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
     const filtered = siblings.filter((x) => x !== dragId);
     let insertAt = filtered.length;
     if (dropKey.startsWith("c-")) {
-      const dropId = Number(dropKey.slice(2));
+      const dropId = dropKey.slice(2);
       const idx = filtered.indexOf(dropId);
       insertAt = info.dropPosition < 0 ? idx : idx + 1;
     }
@@ -193,7 +193,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
         onDrop={onDrop}
         onSelect={(keys) => {
           const k = keys[0] as string | undefined;
-          if (k && k.startsWith("c-")) onSelectChapter(Number(k.slice(2)));
+          if (k && k.startsWith("c-")) onSelectChapter(k.slice(2));
         }}
       />
     </div>

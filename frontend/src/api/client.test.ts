@@ -18,9 +18,9 @@ afterEach(() => {
 
 describe("http", () => {
   it("get 请求成功时返回解析后的 JSON", async () => {
-    mockFetch({ jsonBody: { id: 1 } });
-    const data = await http.get<{ id: number }>("/books");
-    expect(data).toEqual({ id: 1 });
+    mockFetch({ jsonBody: { id: "book-1" } });
+    const data = await http.get<{ id: string }>("/books");
+    expect(data).toEqual({ id: "book-1" });
     expect(fetch).toHaveBeenCalledWith(
       "/api/books",
       expect.objectContaining({ headers: { "Content-Type": "application/json" } })

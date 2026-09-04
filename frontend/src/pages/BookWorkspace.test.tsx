@@ -48,6 +48,7 @@ describe("BookWorkspace", () => {
       genre: "玄幻",
       tone: "",
       target_words: 100000,
+      key_elements: "[]",
       created_at: "2026-01-01T00:00:00Z",
     });
 
@@ -66,6 +67,7 @@ describe("BookWorkspace", () => {
       genre: "玄幻",
       tone: "",
       target_words: 100000,
+      key_elements: "[]",
       created_at: "2026-01-01T00:00:00Z",
     });
 

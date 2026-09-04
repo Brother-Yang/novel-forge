@@ -46,10 +46,11 @@ describe("AgentChat", () => {
         genre: "",
         tone: "",
         target_words: 100000,
+        key_elements: "[]",
         created_at: "2026-01-01T00:00:00Z",
       },
       task: {
-        id: 1,
+        id: "task-1",
         book_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
         type: "agent",
         target_id: null,
@@ -61,7 +62,7 @@ describe("AgentChat", () => {
       },
     });
     vi.mocked(api.getTask).mockResolvedValue({
-      id: 1,
+      id: "task-1",
       book_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
       type: "agent",
       target_id: null,
@@ -73,8 +74,8 @@ describe("AgentChat", () => {
     });
     vi.mocked(api.getTaskTrace).mockResolvedValue([
       {
-        id: 1,
-        task_id: 1,
+        id: "trace-1",
+        task_id: "task-1",
         step_index: 1,
         kind: "decision",
         tool_name: "get_book_state",
@@ -90,6 +91,7 @@ describe("AgentChat", () => {
       genre: "",
       tone: "",
       target_words: 100000,
+      key_elements: "[]",
       created_at: "2026-01-01T00:00:00Z",
     });
 
@@ -121,10 +123,11 @@ describe("AgentChat", () => {
         genre: "",
         tone: "",
         target_words: 100000,
+        key_elements: "[]",
         created_at: "2026-01-01T00:00:00Z",
       },
       task: {
-        id: 2,
+        id: "task-2",
         book_id: "cccccccc-dddd-eeee-ffff-000000000000",
         type: "novel",
         target_id: null,
@@ -136,7 +139,7 @@ describe("AgentChat", () => {
       },
     });
     vi.mocked(api.getTask).mockResolvedValue({
-      id: 2,
+      id: "task-2",
       book_id: "cccccccc-dddd-eeee-ffff-000000000000",
       type: "novel",
       target_id: null,
@@ -155,6 +158,7 @@ describe("AgentChat", () => {
       genre: "",
       tone: "",
       target_words: 100000,
+      key_elements: "[]",
       created_at: "2026-01-01T00:00:00Z",
     });
 
@@ -177,10 +181,11 @@ describe("AgentChat", () => {
       genre: "",
       tone: "",
       target_words: 100000,
+      key_elements: "[]",
       created_at: "2026-01-01T00:00:00Z",
     });
     vi.mocked(api.getTask).mockResolvedValue({
-      id: 1,
+      id: "task-1",
       book_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
       type: "agent",
       target_id: null,
@@ -192,7 +197,7 @@ describe("AgentChat", () => {
     });
     vi.mocked(api.getTaskTrace).mockResolvedValue([]);
 
-    renderChat(["/agent?bookId=bbbbbbbb-cccc-dddd-eeee-ffffffffffff&taskId=1"]);
+    renderChat(["/agent?bookId=bbbbbbbb-cccc-dddd-eeee-ffffffffffff&taskId=task-1"]);
     expect(await screen.findByText("少年觉醒")).toBeInTheDocument();
     expect(await screen.findByText(/创作完成/)).toBeInTheDocument();
   });
@@ -206,10 +211,11 @@ describe("AgentChat", () => {
       genre: "",
       tone: "",
       target_words: 100000,
+      key_elements: "[]",
       created_at: "2026-01-01T00:00:00Z",
     });
     vi.mocked(api.getTask).mockResolvedValue({
-      id: 1,
+      id: "task-1",
       book_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
       type: "agent",
       target_id: null,
@@ -236,7 +242,7 @@ describe("AgentChat", () => {
       <ConfigProvider>
         <AntdApp>
           <MemoryRouter
-            initialEntries={["/agent?bookId=bbbbbbbb-cccc-dddd-eeee-ffffffffffff&taskId=1"]}
+            initialEntries={["/agent?bookId=bbbbbbbb-cccc-dddd-eeee-ffffffffffff&taskId=task-1"]}
           >
             <Routes>
               <Route path="/agent" element={<AgentChat />} />
@@ -248,7 +254,7 @@ describe("AgentChat", () => {
     );
 
     await user.click(await screen.findByRole("button", { name: "查看书籍" }));
-    expect(await screen.findByText(/fromTask=1/)).toBeInTheDocument();
+    expect(await screen.findByText(/fromTask=task-1/)).toBeInTheDocument();
     expect(screen.getByText(/view=tasks/)).toBeInTheDocument();
   });
 });

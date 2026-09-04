@@ -176,9 +176,7 @@ export default function AgentChat() {
   const { message } = App.useApp();
 
   const [bookId, setBookId] = useState<string | null>(searchParams.get("bookId"));
-  const [taskId, setTaskId] = useState<number | null>(
-    searchParams.get("taskId") ? Number(searchParams.get("taskId")) : null
-  );
+  const [taskId, setTaskId] = useState<string | null>(searchParams.get("taskId"));
   const [book, setBook] = useState<Book | null>(null);
   const [task, setTask] = useState<GenerationTask | null>(null);
   const [trace, setTrace] = useState<AgentTraceEntry[]>([]);
@@ -244,7 +242,7 @@ export default function AgentChat() {
       setBookId(result.book.id);
       setTaskId(result.task.id);
       setTask(result.task);
-      setSearchParams({ bookId: result.book.id, taskId: String(result.task.id) });
+      setSearchParams({ bookId: result.book.id, taskId: result.task.id });
     } catch (err) {
       message.error(errMessage(err));
     } finally {

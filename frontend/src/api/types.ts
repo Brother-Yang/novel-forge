@@ -6,11 +6,12 @@ export interface Book {
   genre: string;
   tone: string;
   target_words: number;
+  key_elements: string;
   created_at: string;
 }
 
 export interface Volume {
-  id: number;
+  id: string;
   book_id: string;
   title: string;
   order_index: number;
@@ -18,9 +19,9 @@ export interface Volume {
 }
 
 export interface Chapter {
-  id: number;
+  id: string;
   book_id: string;
-  volume_id: number | null;
+  volume_id: string | null;
   title: string;
   order_index: number;
   outline: string;
@@ -29,7 +30,7 @@ export interface Chapter {
 }
 
 export interface TreeChapter {
-  id: number;
+  id: string;
   title: string;
   order_index: number;
   status: string;
@@ -37,7 +38,7 @@ export interface TreeChapter {
 }
 
 export interface TreeVolume {
-  id: number;
+  id: string;
   title: string;
   order_index: number;
   chapters: TreeChapter[];
@@ -49,7 +50,7 @@ export interface BookTree {
 }
 
 export interface Character {
-  id: number;
+  id: string;
   book_id: string;
   name: string;
   order_index: number;
@@ -58,7 +59,7 @@ export interface Character {
 }
 
 export interface Worldbuilding {
-  id: number;
+  id: string;
   book_id: string;
   category: string;
   title: string;
@@ -66,7 +67,7 @@ export interface Worldbuilding {
 }
 
 export interface PlotThread {
-  id: number;
+  id: string;
   book_id: string;
   name: string;
   status: string;
@@ -74,10 +75,10 @@ export interface PlotThread {
 }
 
 export interface GenerationTask {
-  id: number;
+  id: string;
   book_id: string;
   type: string;
-  target_id: number | null;
+  target_id: string | null;
   status: string;
   progress: number;
   error: string;
@@ -91,8 +92,8 @@ export interface NovelGenerationResult {
 }
 
 export interface AgentTraceEntry {
-  id: number;
-  task_id: number;
+  id: string;
+  task_id: string;
   step_index: number;
   kind: string;
   tool_name: string | null;
