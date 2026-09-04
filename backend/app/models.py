@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -79,6 +80,10 @@ class Chapter(Base):
     outline: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="empty")  # empty/outline/drafting/done
     word_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 智能体安全护栏用:章节已 done 后默认不允许覆盖重写(高风险操作,会丢弃
+    # 已有正文);仅当 review_content 对该章给出 needs_revision=true 时置为
+    # True,write_chapter 消费一次后立即复位,避免无限期开着口子。
+    revision_approved: Mapped[bool] = mapped_column(Boolean, default=False)
 
     book: Mapped["Book"] = relationship(back_populates="chapters")
     volume: Mapped["Volume | None"] = relationship(back_populates="chapters")
@@ -165,6 +170,27 @@ class GenerationTask(Base):
     progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
     error: Mapped[str] = mapped_column(Text, default="")
     checkpoint_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AgentTraceEntry(Base):
+    """智能体决策循环的完整执行轨迹(架构文档里的 Observability 模块)。
+
+    GenerationTask.checkpoint_json 里的 decisions 字段只保留最近 30 条给 UI
+    快速预览;这里额外落一份不截断的完整记录,供事后排查"Agent 到底做了
+    什么、为什么做出某个决定"。
+    """
+
+    __tablename__ = "agent_trace_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("generation_tasks.id", ondelete="CASCADE")
+    )
+    step_index: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(32))  # thought/decision/observation/log/error
+    tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

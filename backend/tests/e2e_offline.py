@@ -27,12 +27,14 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/novel.db"
 os.environ["CHROMA_DIR"] = f"{_TMP}/chroma"
 
 from app import models  # noqa: E402
-from app.agents import pipeline, planner, prompts  # noqa: E402
+from app.agents import orchestrator, pipeline, planner, prompts, tools  # noqa: E402
 from app.api import export  # noqa: E402
+from app.config import settings as app_settings  # noqa: E402
 from app.database import SessionLocal, init_db  # noqa: E402
+from app.llm.base import ToolCall, ToolChatResult  # noqa: E402
 from app.memory import context as memory  # noqa: E402
 from app.memory import vector_store  # noqa: E402
-from app.tasks import book_generation, novel_generation  # noqa: E402
+from app.tasks import agent_generation, book_generation, novel_generation  # noqa: E402
 
 FAILURES: list[str] = []
 
@@ -106,6 +108,57 @@ class FakeLLM:
         return "占位文本。"
 
 
+def _tc(name: str, **kwargs: object) -> ToolChatResult:
+    return ToolChatResult(content="", tool_calls=[ToolCall(id="1", name=name, arguments=kwargs)])
+
+
+class FakeAgentLLM:
+    """按当前书籍数据库状态确定性地返回下一步工具调用,模拟自主决策
+    (离线、不依赖真实模型的决策脚本,但真实驱动 orchestrator + tools 的整套逻辑)。
+    """
+
+    def __init__(self, db, book_id: str, *, volume_count: int = 2, chapter_count: int = 2) -> None:
+        self.db = db
+        self.book_id = book_id
+        self.volume_count = volume_count
+        self.chapter_count = chapter_count
+
+    async def chat_with_tools(self, messages, tool_defs, temperature=0.7) -> ToolChatResult:
+        db, book_id = self.db, self.book_id
+        db.expire_all()
+        if db.query(models.Worldbuilding).filter_by(book_id=book_id).count() == 0:
+            return _tc("write_worldbuilding")
+        if db.query(models.Character).filter_by(book_id=book_id).count() == 0:
+            return _tc("create_characters", count=3)
+        volumes = (
+            db.query(models.Volume)
+            .filter_by(book_id=book_id)
+            .order_by(models.Volume.order_index)
+            .all()
+        )
+        if not volumes:
+            return _tc("create_outline", volume_count=self.volume_count)
+        for v in volumes:
+            if db.query(models.Chapter).filter_by(book_id=book_id, volume_id=v.id).count() == 0:
+                return _tc("create_chapter_outlines", volume_id=v.id, chapter_count=self.chapter_count)
+        pending = (
+            db.query(models.Chapter)
+            .filter(models.Chapter.book_id == book_id, models.Chapter.status != "done")
+            .order_by(models.Chapter.order_index)
+            .first()
+        )
+        if pending:
+            return _tc("write_chapter", chapter_id=pending.id, words=1500)
+        return _tc("finish_book", reason="全部完成")
+
+
+class StuckLLM:
+    """永远重复同一个已完成动作,模拟决策卡死,用于验证步数上限会强制收尾。"""
+
+    async def chat_with_tools(self, messages, tool_defs, temperature=0.7) -> ToolChatResult:
+        return _tc("write_worldbuilding")
+
+
 async def consume(gen):
     async for _ev, _data in gen:
         pass
@@ -116,6 +169,10 @@ async def main() -> None:
     pipeline.get_llm = lambda: fake
     planner.get_llm = lambda: fake
     memory.get_llm = lambda: fake
+    tools.get_llm = lambda: fake
+    # 智能体模式需要支持 function calling 的后端;离线测试里没有真实的
+    # openai/bailian 账号,只需让能力探测放行,决策本身用 FakeAgentLLM 打桩。
+    app_settings.llm_provider = "openai"
 
     init_db()
     db = SessionLocal()
@@ -430,6 +487,70 @@ async def main() -> None:
     check(task_r.status == "done", f"重启续跑完成,实际{task_r.status}")
     check(len(chs_r) == 6, f"补齐第二卷章纲后共6章,实际{len(chs_r)}")
     check(all(c.status == "done" for c in chs_r), "重启续跑后全部正文完成")
+
+    print("\n[13] 智能体自主决策(type=agent),一句话到成书")
+    book_a = models.Book(
+        title="未命名",
+        brief="一位废柴少年意外获得上古传承,踏上强者之路。",
+        intro="",
+        genre="",
+        tone="",
+        target_words=8000,
+    )
+    db.add(book_a)
+    db.commit()
+    db.refresh(book_a)
+
+    # 注:FakeLLM 对各层是按 system 提示词路由到固定文本(忽略调用参数),
+    # 所以无论这里传入的 volume_count/chapter_count 是多少,实际落库结果都是
+    # 固定的 2 卷、每卷 3 章(与本文件其它章节的 FakeLLM 输出一致)。
+    orchestrator.get_llm = lambda: FakeAgentLLM(db, book_a.id, volume_count=2, chapter_count=3)
+    task_a = agent_generation.start_agent_generation(db, book_a.id)
+    await book_generation._running[task_a.id]
+    db.expire_all()
+    task_a = db.get(models.GenerationTask, task_a.id)
+    wb_a = db.query(models.Worldbuilding).filter_by(book_id=book_a.id).all()
+    chars_a = db.query(models.Character).filter_by(book_id=book_a.id).all()
+    vols_a = (
+        db.query(models.Volume)
+        .filter_by(book_id=book_a.id)
+        .order_by(models.Volume.order_index)
+        .all()
+    )
+    chs_a = db.query(models.Chapter).filter_by(book_id=book_a.id).all()
+    check(task_a.status == "done", f"智能体任务完成,实际{task_a.status}")
+    check(task_a.type == "agent", "任务 type=agent")
+    book_a = db.get(models.Book, book_a.id)
+    check(book_a.title == "验证之书", f"智能体规划后写回书名,实际{book_a.title}")
+    check(book_a.intro == "用于逻辑验证", "智能体简介来自规划,不是用户原话")
+    check(len(wb_a) == 3, f"智能体生成3条设定,实际{len(wb_a)}")
+    check(len(chars_a) == 3, f"智能体生成3个人物,实际{len(chars_a)}")
+    check(len(vols_a) == 2 and len(chs_a) == 6, f"智能体2卷6章,实际卷{len(vols_a)}章{len(chs_a)}")
+    check(all(c.status == "done" and c.word_count > 0 for c in chs_a), "智能体已完成全部章节正文")
+    ckpt_a = json.loads(task_a.checkpoint_json or "{}")
+    decisions_a = ckpt_a.get("decisions")
+    check(
+        isinstance(decisions_a, list) and len(decisions_a) > 0,
+        f"决策历史已记录到 checkpoint,实际{decisions_a!r}",
+    )
+
+    print("\n[14] 智能体安全上限(max_steps 熔断,不死循环)")
+    book_b = models.Book(title="未命名", brief="用于验证步数上限", target_words=8000)
+    db.add(book_b)
+    db.commit()
+    db.refresh(book_b)
+
+    orig_max_steps = app_settings.agent_max_steps
+    app_settings.agent_max_steps = 3
+    orchestrator.get_llm = lambda: StuckLLM()
+    task_b = agent_generation.start_agent_generation(db, book_b.id)
+    await book_generation._running[task_b.id]
+    app_settings.agent_max_steps = orig_max_steps
+    db.expire_all()
+    task_b = db.get(models.GenerationTask, task_b.id)
+    check(task_b.status == "done", f"达到步数上限后强制收尾(非 error),实际{task_b.status}")
+    wb_b = db.query(models.Worldbuilding).filter_by(book_id=book_b.id).count()
+    check(wb_b > 0, f"熔断前已执行过工具调用,设定条数{wb_b}")
 
     db.close()
 

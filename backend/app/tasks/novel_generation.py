@@ -62,20 +62,6 @@ def _volume_chapter_count(db: Session, volume_id: int) -> int:
     )
 
 
-def _apply_plan_to_book(book: models.Book, plan: planner.NovelPlan) -> None:
-    """规划结果写回书籍;用户已填的书名/题材/基调不覆盖。"""
-    if not book.title or book.title == "未命名":
-        book.title = plan.title
-    elif plan.title and book.title == planner.fallback_title(book.brief):
-        book.title = plan.title
-    if not book.genre:
-        book.genre = plan.genre
-    if not book.tone:
-        book.tone = plan.tone
-    if not book.intro:
-        book.intro = plan.intro
-
-
 async def _ensure_plan(db: Session, task: models.GenerationTask) -> planner.NovelPlan:
     book = db.get(models.Book, task.book_id)
     if not book:
@@ -96,14 +82,15 @@ async def _ensure_plan(db: Session, task: models.GenerationTask) -> planner.Nove
     runtime.merge_checkpoint(task, stage="planner")
     db.commit()
     brief = book.brief or book.intro
+    user_title = "" if planner.is_placeholder_title(book.title, book.brief) else book.title
     plan = await planner.plan_novel(
         brief,
-        title="" if book.title in ("", "未命名") else book.title,
+        title=user_title,
         genre=book.genre,
         tone=book.tone,
         target_words=book.target_words,
     )
-    _apply_plan_to_book(book, plan)
+    planner.apply_plan_to_book(book, plan)
     runtime.merge_checkpoint(task, stage="planner", **plan.to_checkpoint())
     task.progress = PROGRESS["planner"]
     db.commit()

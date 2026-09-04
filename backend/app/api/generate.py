@@ -6,10 +6,10 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from .. import models, schemas
-from ..agents import pipeline, planner
+from ..agents import observability, pipeline
 from ..database import get_db
-from ..tasks import book_generation
-from ..tasks import novel_generation
+from ..tasks import agent_generation, book_generation, novel_generation
+from ..tasks.agent_generation import UnsupportedBackend
 from ..tasks.book_generation import BookBusyError
 
 router = APIRouter()
@@ -87,7 +87,7 @@ async def generate_novel(payload: schemas.GenerateNovelReq, db: Session = Depend
     brief = payload.brief.strip()
     if not brief:
         raise HTTPException(400, "请填写一段故事想法")
-    title = (payload.title or "").strip() or planner.fallback_title(brief)
+    title = (payload.title or "").strip() or "未命名"
     book = models.Book(
         title=title,
         intro="",
@@ -128,6 +128,57 @@ async def generate_novel_from_book(
         raise HTTPException(409, str(exc)) from exc
 
 
+@router.post("/generate/agent", response_model=schemas.NovelGenerationOut)
+async def generate_agent(payload: schemas.GenerateAgentReq, db: Session = Depends(get_db)):
+    """一句话/简介 -> 智能体自主决策创作全流程(type=agent),与固定流水线并存。"""
+    brief = payload.brief.strip()
+    if not brief:
+        raise HTTPException(400, "请填写一段故事想法")
+    title = (payload.title or "").strip() or "未命名"
+    book = models.Book(
+        title=title,
+        intro="",
+        brief=brief,
+        genre=payload.genre.strip(),
+        tone=payload.tone.strip(),
+        target_words=payload.target_words,
+    )
+    db.add(book)
+    db.commit()
+    db.refresh(book)
+    try:
+        task = agent_generation.start_agent_generation(db, book.id)
+    except BookBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except UnsupportedBackend as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return schemas.NovelGenerationOut(
+        book=schemas.BookOut.model_validate(book),
+        task=schemas.GenerationTaskOut.model_validate(task),
+    )
+
+
+@router.post("/generate/agent/from-book", response_model=schemas.GenerationTaskOut)
+async def generate_agent_from_book(
+    payload: schemas.GenerateAgentFromBookReq, db: Session = Depends(get_db)
+):
+    book = db.get(models.Book, payload.book_id)
+    if not book:
+        raise HTTPException(404, "书籍不存在")
+    brief = (book.brief or book.intro or "").strip()
+    if not brief:
+        raise HTTPException(400, "请先填写简介,或从首页使用一句话出书")
+    if not book.brief:
+        book.brief = brief
+        db.commit()
+    try:
+        return agent_generation.start_agent_generation(db, book.id)
+    except BookBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except UnsupportedBackend as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/books/{book_id}/tasks", response_model=list[schemas.GenerationTaskOut])
 def list_tasks(book_id: str, db: Session = Depends(get_db)):
     return db.scalars(
@@ -143,6 +194,15 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(404, "任务不存在")
     return task
+
+
+@router.get("/tasks/{task_id}/trace", response_model=list[schemas.AgentTraceEntryOut])
+def get_task_trace(task_id: int, db: Session = Depends(get_db)):
+    """智能体任务(type=agent)的完整执行轨迹,供调试/前端展开查看。"""
+    task = db.get(models.GenerationTask, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    return observability.list_trace(db, task_id)
 
 
 @router.post("/tasks/{task_id}/pause")

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _running: dict[int, asyncio.Task[None]] = {}
 
 BLOCKING_STATUSES = ("pending", "running", "paused")
-BOOK_LEVEL_TYPES = ("book", "novel")
+BOOK_LEVEL_TYPES = ("book", "novel", "agent")
 
 
 class BookBusyError(Exception):
@@ -187,6 +187,10 @@ async def _run(task_id: int) -> None:
                 from .novel_generation import run_novel_task
 
                 await run_novel_task(db, task)
+            elif task.type == "agent":
+                from .agent_generation import run_agent_task
+
+                await run_agent_task(db, task)
             else:
                 await run_chapter_bodies(db, task)
         except Paused:

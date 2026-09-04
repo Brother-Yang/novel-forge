@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from ..config import settings
+from .base import ToolCall, ToolChatResult
 
 
 class OpenAIClient:
@@ -94,3 +95,48 @@ class OpenAIClient:
             )
             resp.raise_for_status()
             return resp.json()["data"][0]["embedding"]
+
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        temperature: float = 0.7,
+    ) -> ToolChatResult:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": False,
+            "temperature": temperature,
+        }
+        extra = getattr(self, "extra_body", None)
+        if extra:
+            payload.update(extra)
+        async with httpx.AsyncClient(timeout=None) as client:
+            resp = await client.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            choices = resp.json().get("choices") or []
+            if not choices:
+                return ToolChatResult(content="")
+            message = choices[0].get("message") or {}
+            content = message.get("content") or ""
+            calls: list[ToolCall] = []
+            for raw_call in message.get("tool_calls") or []:
+                fn = raw_call.get("function") or {}
+                try:
+                    arguments = json.loads(fn.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    arguments = {}
+                calls.append(
+                    ToolCall(
+                        id=raw_call.get("id", ""),
+                        name=fn.get("name", ""),
+                        arguments=arguments,
+                    )
+                )
+            return ToolChatResult(content=content, tool_calls=calls)

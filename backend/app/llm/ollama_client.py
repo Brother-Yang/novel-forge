@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 import httpx
 
 from ..config import settings
+from .base import ToolChatResult
 
 
 class OllamaClient:
@@ -64,3 +65,13 @@ class OllamaClient:
             resp = await client.post(f"{self.base_url}/api/embeddings", json=payload)
             resp.raise_for_status()
             return resp.json().get("embedding", [])
+
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        temperature: float = 0.7,
+    ) -> ToolChatResult:
+        # 本地 Ollama 后端不支持 function calling;智能体自主决策模式应在启动前
+        # 用 ..llm.supports_tool_calling() 探测并降级到固定流水线,不应调用到这里。
+        raise NotImplementedError("OllamaClient 不支持 function calling(智能体自主决策)")

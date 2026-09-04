@@ -22,6 +22,23 @@ from . import prompts
 Event = tuple[str, str]
 
 
+def _esc(value: str) -> str:
+    return value.replace("{", "{{").replace("}", "}}")
+
+
+def _book_prompt(book: models.Book) -> dict[str, str]:
+    """各层生成提示词共用的书籍字段;创作想法始终带上,避免只靠空简介胡编。"""
+    idea = (book.brief or book.intro or "").strip()
+    return {
+        "title": _esc(book.title),
+        "genre": _esc(book.genre or "由你根据创作想法决定"),
+        "tone": _esc(book.tone or "由你根据创作想法决定"),
+        "intro": _esc((book.intro or "").strip() or idea),
+        "brief": _esc(idea),
+        "target_words": str(book.target_words),
+    }
+
+
 def _split_h2(text: str) -> list[str]:
     blocks = re.split(r"(?m)^##[ \t]+", text)
     return [b.strip() for b in blocks[1:] if b.strip()]
@@ -47,9 +64,7 @@ async def gen_worldbuilding(db: Session, book_id: str) -> AsyncIterator[Event]:
     if not book:
         yield ("error", "书籍不存在")
         return
-    user = prompts.WORLDBUILDING_USER.format(
-        title=book.title, genre=book.genre, tone=book.tone, intro=book.intro
-    )
+    user = prompts.WORLDBUILDING_USER.format(**_book_prompt(book))
     full = ""
     async for ev, data in _stream(prompts.WORLDBUILDING_SYSTEM, user):
         if ev == "full":
@@ -94,9 +109,7 @@ async def gen_characters(
         yield ("error", "书籍不存在")
         return
     user = prompts.CHARACTERS_USER.format(
-        title=book.title,
-        genre=book.genre,
-        tone=book.tone,
+        **_book_prompt(book),
         world=_world_digest(db, book_id),
         count=count,
     )
@@ -150,10 +163,7 @@ async def gen_outline(
         yield ("error", "书籍不存在")
         return
     user = prompts.OUTLINE_USER.format(
-        title=book.title,
-        genre=book.genre,
-        tone=book.tone,
-        target_words=book.target_words,
+        **_book_prompt(book),
         world=_world_digest(db, book_id),
         characters=_character_digest(db, book_id),
         volume_count=volume_count,
@@ -229,10 +239,9 @@ async def gen_chapter_outlines(
         yield ("error", "书籍不存在")
         return
     user = prompts.CHAPTER_OUTLINE_USER.format(
-        title=book.title,
-        genre=book.genre,
-        volume_title=volume.title,
-        volume_summary=volume.summary,
+        **_book_prompt(book),
+        volume_title=_esc(volume.title),
+        volume_summary=_esc(volume.summary),
         chapter_count=chapter_count,
     )
     full = ""
@@ -318,4 +327,79 @@ async def gen_chapter_body(
     except Exception as exc:  # 摘要失败不影响正文
         yield ("log", f"摘要生成失败(已跳过):{exc}")
 
+    # 卷摘要随情节推进持续精炼;失败同样不阻断正文,降级为沿用旧摘要。
+    if chapter.volume_id:
+        try:
+            await memory.refresh_volume_summary(db, chapter.volume_id)
+        except Exception as exc:
+            yield ("log", f"卷摘要刷新失败(已跳过):{exc}")
+
+    yield ("done", "")
+
+
+# ---------- Replanning(智能体发现剧情走偏时主动触发) ----------
+async def replan_volume_chapters(
+    db: Session, volume_id: int, reason: str
+) -> AsyncIterator[Event]:
+    """只重新规划该卷【尚未完成正文】的章节细纲,已完成正文的章节与分卷大纲
+    (Volume.summary)本身不受影响,避免推翻已经写好的内容。"""
+    volume = db.get(models.Volume, volume_id)
+    if not volume:
+        yield ("error", "卷不存在")
+        return
+    book = db.get(models.Book, volume.book_id)
+    if not book:
+        yield ("error", "书籍不存在")
+        return
+
+    chapters = list(
+        db.scalars(
+            select(models.Chapter)
+            .where(models.Chapter.volume_id == volume_id)
+            .order_by(models.Chapter.order_index)
+        )
+    )
+    pending = [c for c in chapters if c.status != "done"]
+    if not pending:
+        yield ("log", f"《{volume.title}》所有章节已完成正文,无需重新规划")
+        yield ("done", "")
+        return
+
+    summaries = []
+    for ch in chapters:
+        if ch.status != "done":
+            continue
+        s = db.get(models.ChapterSummary, ch.id)
+        if s and s.summary:
+            summaries.append(f"[{ch.title}] {s.summary}")
+    completed_summaries = "\n".join(summaries) or "(该卷暂无已完成章节)"
+
+    user = prompts.CHAPTER_REPLAN_USER.format(
+        **_book_prompt(book),
+        volume_title=_esc(volume.title),
+        volume_summary=_esc(volume.summary),
+        completed_summaries=_esc(completed_summaries),
+        reason=_esc(reason),
+        pending_count=len(pending),
+    )
+    full = ""
+    async for ev, data in _stream(prompts.CHAPTER_REPLAN_SYSTEM, user):
+        if ev == "full":
+            full = data
+        else:
+            yield ev, data
+
+    blocks = _split_h2(full)
+    n = min(len(blocks), len(pending))
+    for chapter, block in zip(pending[:n], blocks[:n]):
+        lines = block.split("\n", 1)
+        chapter.title = lines[0].strip() or chapter.title
+        chapter.outline = lines[1].strip() if len(lines) > 1 else ""
+        chapter.status = "outline"
+    db.commit()
+
+    msg = f"已重新规划《{volume.title}》{n}/{len(pending)} 章细纲"
+    if n < len(pending):
+        msg += "(模型产出章节数少于待规划章数,多出的章节保留原细纲,可再次调用补齐)"
+    yield ("log", msg)
     yield ("done", "")

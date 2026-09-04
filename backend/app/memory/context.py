@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..agents import prompts
 from ..config import settings
 from ..llm import get_llm
 from . import vector_store
@@ -118,6 +119,43 @@ def _volume_summary(db: Session, chapter: models.Chapter) -> str:
     return vol.summary if vol else ""
 
 
+async def refresh_volume_summary(db: Session, volume_id: int) -> None:
+    """基于该卷已完成章节的 ChapterSummary 重新提炼卷摘要,写回 Volume.summary。
+
+    Volume.summary 目前只在生成分卷大纲时写一次;调用方(pipeline.py 里章节
+    正文生成完成后)应在每章完成后调用本函数,让卷摘要随情节推进持续精炼,
+    而不是永远停留在大纲阶段的初始设想。
+    """
+    volume = db.get(models.Volume, volume_id)
+    if not volume:
+        return
+    done_chapters = db.scalars(
+        select(models.Chapter)
+        .where(
+            models.Chapter.volume_id == volume_id,
+            models.Chapter.status == "done",
+        )
+        .order_by(models.Chapter.order_index)
+    ).all()
+    summaries = []
+    for ch in done_chapters:
+        s = db.get(models.ChapterSummary, ch.id)
+        if s and s.summary:
+            summaries.append(f"[{ch.title}] {s.summary}")
+    if not summaries:
+        return
+
+    llm = get_llm()
+    refreshed = await llm.chat(
+        prompts.VOLUME_SUMMARY_USER.format(
+            volume_title=volume.title, chapter_summaries="\n".join(summaries)
+        ),
+        system=prompts.VOLUME_SUMMARY_SYSTEM,
+    )
+    volume.summary = refreshed.strip()
+    db.commit()
+
+
 async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
     """在 token 预算内拼装本章生成所需上下文。"""
     budget = settings.context_token_budget
@@ -125,7 +163,14 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
     parts: list[str] = []
 
     if book:
-        parts.append(f"# 作品信息\n《{book.title}》 题材:{book.genre} 基调:{book.tone}")
+        idea = (book.brief or book.intro or "").strip()
+        intro = (book.intro or "").strip()
+        identity = f"# 作品信息\n《{book.title}》 题材:{book.genre} 基调:{book.tone}"
+        if idea:
+            identity += f"\n创作想法:{idea}"
+        if intro:
+            identity += f"\n简介:{intro}"
+        parts.append(identity)
     parts.append(f"# 本章大纲\n{chapter.outline or '(无,请根据前文自然推进)'}")
 
     # 相关人物卡

@@ -1,9 +1,13 @@
 """Planner JSON 解析与规模约束。"""
 
+from app import models
 from app.agents.planner import (
+    NovelPlan,
+    apply_plan_to_book,
     clamp_plan,
     extract_json_object,
     fallback_title,
+    is_placeholder_title,
     plan_from_checkpoint,
 )
 
@@ -65,6 +69,74 @@ def test_clamp_plan_recalculates_when_far_from_target() -> None:
 def test_fallback_title_uses_first_line() -> None:
     assert fallback_title("第一行\n第二行") == "第一行"
     assert fallback_title("   ") == "未命名"
+
+
+def test_clamp_plan_does_not_copy_brief_into_intro() -> None:
+    plan = clamp_plan({}, target_words=10000, brief="用户原话不应当简介")
+    assert plan.intro == ""
+    assert plan.title == "未命名"
+
+
+def test_is_placeholder_title_treats_brief_snippet_as_not_user_title() -> None:
+    brief = "AI时代，中年程序员靠古法编程力挽狂澜"
+    assert is_placeholder_title("未命名", brief)
+    assert is_placeholder_title("", brief)
+    assert is_placeholder_title(fallback_title(brief), brief)
+    assert not is_placeholder_title("古法残编", brief)
+
+
+def test_apply_plan_replaces_fallback_title_and_fills_intro() -> None:
+    brief = "AI时代，中年程序员靠古法编程力挽狂澜"
+    book = models.Book(
+        title=fallback_title(brief),
+        brief=brief,
+        intro="",
+        genre="",
+        tone="",
+        target_words=10000,
+    )
+    plan = NovelPlan(
+        title="古法残编",
+        genre="都市",
+        tone="讽刺",
+        intro="中年程序员在 AI 浪潮中用古法编程杀出一条路。",
+        volume_count=1,
+        chapters_per_volume=3,
+        words_per_chapter=2000,
+        character_count=3,
+    )
+    apply_plan_to_book(book, plan)
+    assert book.title == "古法残编"
+    assert book.intro == plan.intro
+    assert book.genre == "都市"
+    assert book.tone == "讽刺"
+    assert book.brief == brief
+
+
+def test_apply_plan_keeps_user_chosen_title() -> None:
+    book = models.Book(
+        title="我起的书名",
+        brief="随便一个想法",
+        intro="已有简介",
+        genre="科幻",
+        tone="冷静",
+        target_words=10000,
+    )
+    plan = NovelPlan(
+        title="模型起的名",
+        genre="玄幻",
+        tone="热血",
+        intro="模型简介",
+        volume_count=1,
+        chapters_per_volume=3,
+        words_per_chapter=2000,
+        character_count=3,
+    )
+    apply_plan_to_book(book, plan)
+    assert book.title == "我起的书名"
+    assert book.intro == "已有简介"
+    assert book.genre == "科幻"
+    assert book.tone == "冷静"
 
 
 def test_plan_from_checkpoint_requires_scale_keys() -> None:

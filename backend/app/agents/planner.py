@@ -7,6 +7,7 @@ import math
 import re
 from dataclasses import dataclass
 
+from .. import models
 from ..llm import get_llm
 from . import prompts
 
@@ -108,10 +109,11 @@ def clamp_plan(
         cpv = min(CHAPTERS_PER_VOLUME_MAX, max(1, math.ceil(total_from_target / vols)))
 
     characters = _clamp(_as_int(raw.get("character_count"), 5), CHARACTER_MIN, CHARACTER_MAX)
-    planned_title = title or _as_str(raw.get("title")) or "未命名"
+    user_title = "" if is_placeholder_title(title, brief) else title
+    planned_title = user_title or _as_str(raw.get("title")) or "未命名"
     planned_genre = genre or _as_str(raw.get("genre"))
     planned_tone = tone or _as_str(raw.get("tone"))
-    planned_intro = _as_str(raw.get("intro")) or brief[:500]
+    planned_intro = _as_str(raw.get("intro"))
     return NovelPlan(
         title=planned_title,
         genre=planned_genre,
@@ -157,6 +159,27 @@ def plan_from_checkpoint(
 def fallback_title(brief: str) -> str:
     line = brief.strip().splitlines()[0].strip() if brief.strip() else ""
     return (line[:40] if line else "未命名")
+
+
+def is_placeholder_title(title: str, brief: str = "") -> bool:
+    """用户没起名时的占位书名,包括把创作想法截成书名的历史写法。"""
+    text = (title or "").strip()
+    if not text or text == "未命名":
+        return True
+    idea = (brief or "").strip()
+    return bool(idea) and text == fallback_title(idea)
+
+
+def apply_plan_to_book(book: models.Book, plan: NovelPlan) -> None:
+    """规划结果写回书籍;用户已填的书名/题材/基调/简介不覆盖。"""
+    if is_placeholder_title(book.title, book.brief):
+        book.title = plan.title
+    if not book.genre:
+        book.genre = plan.genre
+    if not book.tone:
+        book.tone = plan.tone
+    if not book.intro:
+        book.intro = plan.intro
 
 
 async def plan_novel(

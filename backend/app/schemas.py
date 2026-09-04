@@ -195,6 +195,16 @@ class GenerationTaskOut(ORMModel):
     created_at: datetime
 
 
+class AgentTraceEntryOut(ORMModel):
+    id: int
+    task_id: int
+    step_index: int
+    kind: str
+    tool_name: str | None
+    payload: str
+    created_at: datetime
+
+
 # ---------- Generate 请求 ----------
 class GenerateWorldbuildingReq(BaseModel):
     book_id: str
@@ -239,3 +249,15 @@ class GenerateNovelFromBookReq(BaseModel):
 class NovelGenerationOut(BaseModel):
     book: BookOut
     task: GenerationTaskOut
+
+
+class GenerateAgentReq(BaseModel):
+    brief: str
+    title: str | None = None
+    genre: str = ""
+    tone: str = ""
+    target_words: int = 100000
+
+
+class GenerateAgentFromBookReq(BaseModel):
+    book_id: str
