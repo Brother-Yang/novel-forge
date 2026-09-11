@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -41,12 +40,23 @@ async def _consume_pipeline(gen: AsyncIterator[tuple[str, str]]) -> list[str]:
     return logs
 
 
+def _as_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
 def _clamp_int(value: object, default: int, lo: int, hi: int) -> int:
-    try:
-        n = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        n = default
-    return max(lo, min(hi, n))
+    return max(lo, min(hi, _as_int(value, default)))
 
 
 def _require_str(value: object, field: str) -> str:
@@ -58,7 +68,7 @@ def _require_str(value: object, field: str) -> str:
 
 # ---------- 状态感知 ----------
 async def tool_get_book_state(
-    db: Session, book_id: str, args: dict[str, object]
+    db: Session, book_id: str, _args: dict[str, object]
 ) -> dict[str, object]:
     try:
         state = load_state(db, book_id)
@@ -69,7 +79,7 @@ async def tool_get_book_state(
 
 # ---------- 创作工具(复用 pipeline.py,加幂等保护) ----------
 async def tool_write_worldbuilding(
-    db: Session, book_id: str, args: dict[str, object]
+    db: Session, book_id: str, _args: dict[str, object]
 ) -> dict[str, object]:
     existing = (
         db.scalar(
@@ -158,7 +168,7 @@ async def tool_write_chapter(
         if not chapter.revision_approved:
             raise ToolError(
                 "该章节正文已完成,直接覆盖会丢弃已有内容;请先调用 review_content "
-                "评审该章节(target_type=chapter),只有返回 needs_revision=true 后才允许重写。"
+                + "评审该章节(target_type=chapter),只有返回 needs_revision=true 后才允许重写。"
             )
         chapter.revision_approved = False
         db.commit()
@@ -250,7 +260,7 @@ async def tool_review_content(
 
 # ---------- 控制 ----------
 async def tool_finish_book(
-    db: Session, book_id: str, args: dict[str, object]
+    _db: Session, _book_id: str, args: dict[str, object]
 ) -> dict[str, object]:
     return {"ok": True, "reason": str(args.get("reason", ""))}
 
@@ -269,11 +279,11 @@ class Tool:
 
     name: str
     description: str
-    parameters: dict[str, Any]
+    parameters: dict[str, object]
     handler: ToolHandler
     read_only: bool = False
 
-    def schema(self) -> dict[str, Any]:
+    def schema(self) -> dict[str, object]:
         return {
             "type": "function",
             "function": {
@@ -294,6 +304,7 @@ class ToolRegistry:
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self._tools: dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
@@ -302,7 +313,7 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
-    def schemas(self) -> list[dict[str, Any]]:
+    def schemas(self) -> list[dict[str, object]]:
         return [t.schema() for t in self._tools.values()]
 
     async def dispatch(
@@ -319,8 +330,10 @@ registry = ToolRegistry()
 registry.register(
     Tool(
         name="get_book_state",
-        description="查询当前书籍的创作进度:设定/人物/卷/章/字数/剧情线程状态。"
-        "建议每次决策前先调用了解现状。",
+        description=(
+            "查询当前书籍的创作进度:设定/人物/卷/章/字数/剧情线程状态。"
+            + "建议每次决策前先调用了解现状。"
+        ),
         parameters={"type": "object", "properties": {}, "required": []},
         handler=tool_get_book_state,
         read_only=True,
@@ -394,9 +407,11 @@ registry.register(
                 "words": {"type": "integer", "description": "目标字数,1000-6000"},
                 "is_ending": {
                     "type": "boolean",
-                    "description": "是否是全书最后一章(结局章)。若为 true,会要求写出"
-                    "明确、完整的结局,主线冲突收束、不留开放式悬念。不填时按章节顺序"
-                    "自动判断是否为末章。",
+                    "description": (
+                        "是否是全书最后一章(结局章)。若为 true,会要求写出"
+                        + "明确、完整的结局,主线冲突收束、不留开放式悬念。不填时按章节顺序"
+                        + "自动判断是否为末章。"
+                    ),
                 },
             },
             "required": ["chapter_id", "words"],
@@ -407,8 +422,10 @@ registry.register(
 registry.register(
     Tool(
         name="replan_volume",
-        description="当发现某一卷实际写出来的剧情已明显偏离原大纲时,重新规划该卷【还没写"
-        "正文】的章节细纲(已完成正文的章节与分卷大纲本身不受影响)。",
+        description=(
+            "当发现某一卷实际写出来的剧情已明显偏离原大纲时,重新规划该卷【还没写"
+            + "正文】的章节细纲(已完成正文的章节与分卷大纲本身不受影响)。"
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -464,7 +481,7 @@ registry.register(
 # ---------- 向后兼容的模块级接口 ----------
 # orchestrator.py/runner.py 与既有测试都是通过这两个名字使用工具层的,保持
 # 签名不变;内部实现改为委托给上面的 ToolRegistry。
-TOOLS: list[dict[str, Any]] = registry.schemas()
+TOOLS: list[dict[str, object]] = registry.schemas()
 
 
 async def dispatch(

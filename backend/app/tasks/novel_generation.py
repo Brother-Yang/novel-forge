@@ -38,15 +38,17 @@ def start_novel_generation(db: Session, book_id: str) -> models.GenerationTask:
     db.add(task)
     db.commit()
     db.refresh(task)
-    runtime._launch(task.id)
+    runtime.launch(task.id)
     return task
 
 
-def _count(db: Session, model: type[object], book_id: str) -> int:
+def _count(
+    db: Session,
+    model: type[models.Worldbuilding] | type[models.Character] | type[models.Volume],
+    book_id: str,
+) -> int:
     return (
-        db.scalar(
-            select(func.count()).select_from(model).where(model.book_id == book_id)  # type: ignore[attr-defined]
-        )
+        db.scalar(select(func.count()).select_from(model).where(model.book_id == book_id))
         or 0
     )
 
@@ -191,3 +193,6 @@ async def run_novel_task(db: Session, task: models.GenerationTask) -> None:
             task.status = "error"
             task.error = str(exc)
             db.commit()
+
+
+runtime.register_task_runner("novel", run_novel_task)

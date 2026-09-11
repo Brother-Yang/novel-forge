@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import cast
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -24,6 +26,26 @@ _running: dict[str, asyncio.Task[None]] = {}
 
 BLOCKING_STATUSES = ("pending", "running", "paused")
 BOOK_LEVEL_TYPES = ("book", "novel", "agent")
+
+TaskRunner = Callable[[Session, models.GenerationTask], Awaitable[None]]
+_task_runners: dict[str, TaskRunner] = {}
+
+
+def register_task_runner(task_type: str, runner: TaskRunner) -> None:
+    _task_runners[task_type] = runner
+
+
+def _ensure_task_runners() -> None:
+    if "novel" not in _task_runners:
+        _ = importlib.import_module(".novel_generation", __package__)
+    if "agent" not in _task_runners:
+        _ = importlib.import_module(".agent_generation", __package__)
+
+
+def _as_object_dict(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    return cast(dict[str, object], value)
 
 
 class BookBusyError(Exception):
@@ -89,28 +111,28 @@ def reset_empty_drafts(db: Session, book_id: str) -> None:
         db.commit()
 
 
-def merge_checkpoint(task: models.GenerationTask, **fields: object) -> str:
+def merge_checkpoint(task: models.GenerationTask, **fields: object) -> None:
     ckpt: dict[str, object] = {}
     if task.checkpoint_json:
         try:
-            loaded = json.loads(task.checkpoint_json)
-            if isinstance(loaded, dict):
-                ckpt = loaded
+            loaded = cast(object, json.loads(task.checkpoint_json))
+            parsed = _as_object_dict(loaded)
+            if parsed is not None:
+                ckpt = parsed
         except json.JSONDecodeError:
             ckpt = {}
     ckpt.update(fields)
     task.checkpoint_json = json.dumps(ckpt, ensure_ascii=False)
-    return task.checkpoint_json
 
 
 def load_checkpoint(task: models.GenerationTask) -> dict[str, object]:
     if not task.checkpoint_json:
         return {}
     try:
-        loaded = json.loads(task.checkpoint_json)
+        loaded = cast(object, json.loads(task.checkpoint_json))
     except json.JSONDecodeError:
         return {}
-    return loaded if isinstance(loaded, dict) else {}
+    return _as_object_dict(loaded) or {}
 
 
 async def consume_stage(gen: AsyncIterator[tuple[str, str]]) -> None:
@@ -183,14 +205,10 @@ async def _run(task_id: str) -> None:
         if not task:
             return
         try:
-            if task.type == "novel":
-                from .novel_generation import run_novel_task
-
-                await run_novel_task(db, task)
-            elif task.type == "agent":
-                from .agent_generation import run_agent_task
-
-                await run_agent_task(db, task)
+            _ensure_task_runners()
+            runner = _task_runners.get(task.type)
+            if runner is not None:
+                await runner(db, task)
             else:
                 await run_chapter_bodies(db, task)
         except Paused:
@@ -209,7 +227,7 @@ async def _run(task_id: str) -> None:
         _ = _running.pop(task_id, None)
 
 
-def _launch(task_id: str) -> None:
+def launch(task_id: str) -> None:
     if task_id in _running and not _running[task_id].done():
         return
     try:
@@ -229,7 +247,7 @@ def start_book_generation(db: Session, book_id: str) -> models.GenerationTask:
     db.add(task)
     db.commit()
     db.refresh(task)
-    _launch(task.id)
+    launch(task.id)
     return task
 
 
@@ -246,7 +264,7 @@ def resume_task(db: Session, task_id: str) -> None:
         task.status = "running"
         task.error = ""
         db.commit()
-        _launch(task.id)
+        launch(task.id)
 
 
 def recover_running_tasks() -> int:
@@ -261,5 +279,5 @@ def recover_running_tasks() -> int:
         db.close()
     for task_id in ids:
         logger.info("recover running generation task %s", task_id)
-        _launch(task_id)
+        launch(task_id)
     return len(ids)

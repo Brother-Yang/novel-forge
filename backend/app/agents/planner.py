@@ -6,6 +6,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from typing import cast
 
 from .. import models
 from ..llm import get_llm
@@ -53,17 +54,32 @@ def extract_json_object(text: str) -> dict[str, object]:
     end = blob.rfind("}")
     if start < 0 or end <= start:
         raise ValueError("规划结果中没有 JSON 对象")
-    parsed = json.loads(blob[start : end + 1])
-    if not isinstance(parsed, dict):
+    parsed = cast(object, json.loads(blob[start : end + 1]))
+    obj = _as_object_dict(parsed)
+    if obj is None:
         raise ValueError("规划结果不是 JSON 对象")
-    return parsed
+    return obj
+
+
+def _as_object_dict(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    return cast(dict[str, object], value)
 
 
 def _as_int(value: object, default: int) -> int:
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
 
 
 def _clamp(n: int, lo: int, hi: int) -> int:
@@ -78,17 +94,13 @@ def _parse_key_elements(raw: object) -> list[str]:
     """从模型输出里提取用户已明确给出的要素列表,过滤空白项并限长。"""
     if not isinstance(raw, list):
         return []
-    items = [_as_str(item) for item in raw]
+    items = [_as_str(item) for item in cast(list[object], raw)]
     return [item for item in items if item][:KEY_ELEMENTS_MAX]
 
 
 def format_key_elements(key_elements_json: str) -> str:
     """把 Book.key_elements 的 JSON 字符串格式化成 prompt 里可读的多行文本。"""
-    try:
-        items = json.loads(key_elements_json or "[]")
-    except json.JSONDecodeError:
-        items = []
-    lines = _parse_key_elements(items)
+    lines = _parse_key_elements(_safe_json_list(key_elements_json))
     if not lines:
         return "(无,由你自由创作)"
     return "\n".join(f"- {line}" for line in lines)
@@ -184,10 +196,12 @@ def plan_from_checkpoint(
 
 def _safe_json_list(raw: str) -> list[object]:
     try:
-        parsed = json.loads(raw or "[]")
+        parsed = cast(object, json.loads(raw or "[]"))
     except json.JSONDecodeError:
         return []
-    return parsed if isinstance(parsed, list) else []
+    if not isinstance(parsed, list):
+        return []
+    return cast(list[object], parsed)
 
 
 def fallback_title(brief: str) -> str:

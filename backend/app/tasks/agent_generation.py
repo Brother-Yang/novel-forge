@@ -15,6 +15,7 @@ agent_trace_entries 表(见 agents/observability.py)保存完整、不截断的
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -49,15 +50,17 @@ def start_agent_generation(db: Session, book_id: str) -> models.GenerationTask:
     db.add(task)
     db.commit()
     db.refresh(task)
-    runtime._launch(task.id)
+    runtime.launch(task.id)
     return task
 
 
 def _append_decision(task: models.GenerationTask, entry: str) -> None:
     ckpt = runtime.load_checkpoint(task)
-    history = ckpt.get("decisions")
-    if not isinstance(history, list):
-        history = []
+    raw = ckpt.get("decisions")
+    history: list[str] = []
+    if isinstance(raw, list):
+        for item in cast(list[object], raw):
+            history.append(str(item))
     history.append(entry)
     runtime.merge_checkpoint(task, decisions=history[-MAX_DECISION_LOG:])
 
@@ -129,3 +132,6 @@ async def run_agent_task(db: Session, task: models.GenerationTask) -> None:
             task.status = "error"
             task.error = str(exc)
             db.commit()
+
+
+runtime.register_task_runner("agent", run_agent_task)
