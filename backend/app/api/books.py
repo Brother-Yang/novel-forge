@@ -86,44 +86,56 @@ async def delete_book(book_id: str, db: Session = Depends(get_db)):
 @router.get("/books/{book_id}/tree", response_model=schemas.BookTree)
 def get_book_tree(book_id: str, db: Session = Depends(get_db)):
     """卷 + 章目录树,不含正文;按上千章设计,只返回轻量字段。"""
-    if not db.get(models.Book, book_id):
-        raise HTTPException(404, "书籍不存在")
+    with db.begin():
+        if db.get_bind().dialect.name == "sqlite":
+            # SQLite's default driver mode does not begin a transaction for SELECT.
+            db.connection().exec_driver_sql("BEGIN")
+        if db.scalar(select(models.Book.id).where(models.Book.id == book_id)) is None:
+            raise HTTPException(404, "书籍不存在")
+        volumes = db.execute(
+            select(models.Volume.id, models.Volume.title, models.Volume.order_index)
+            .where(models.Volume.book_id == book_id)
+            .order_by(models.Volume.order_index, models.Volume.id)
+        ).all()
+        chapters = db.execute(
+            select(
+                models.Chapter.id,
+                models.Chapter.volume_id,
+                models.Chapter.title,
+                models.Chapter.order_index,
+                models.Chapter.status,
+                models.Chapter.word_count,
+            )
+            .where(models.Chapter.book_id == book_id)
+            .order_by(models.Chapter.order_index, models.Chapter.id)
+        ).all()
 
-    volumes = db.scalars(
-        select(models.Volume)
-        .where(models.Volume.book_id == book_id)
-        .order_by(models.Volume.order_index)
-    ).all()
-    chapters = db.scalars(
-        select(models.Chapter)
-        .where(models.Chapter.book_id == book_id)
-        .order_by(models.Chapter.order_index)
-    ).all()
-
-    by_volume: dict[str, list[schemas.TreeChapter]] = {v.id: [] for v in volumes}
+    by_volume: dict[str, list[schemas.TreeChapter]] = {
+        volume_id: [] for volume_id, _, _ in volumes
+    }
     loose: list[schemas.TreeChapter] = []
-    for c in chapters:
+    for chapter_id, volume_id, title, order_index, status, word_count in chapters:
         item = schemas.TreeChapter(
-            id=c.id,
-            title=c.title,
-            order_index=c.order_index,
-            status=c.status,
-            word_count=c.word_count,
+            id=chapter_id,
+            title=title,
+            order_index=order_index,
+            status=status,
+            word_count=word_count,
         )
-        if c.volume_id and c.volume_id in by_volume:
-            by_volume[c.volume_id].append(item)
+        if volume_id is not None and volume_id in by_volume:
+            by_volume[volume_id].append(item)
         else:
             loose.append(item)
 
     return schemas.BookTree(
         volumes=[
             schemas.TreeVolume(
-                id=v.id,
-                title=v.title,
-                order_index=v.order_index,
-                chapters=by_volume[v.id],
+                id=volume_id,
+                title=title,
+                order_index=order_index,
+                chapters=by_volume[volume_id],
             )
-            for v in volumes
+            for volume_id, title, order_index in volumes
         ],
         loose_chapters=loose,
     )

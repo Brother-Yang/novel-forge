@@ -1,6 +1,8 @@
+from itertools import batched
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from .. import models, schemas
 from ..agents.chapter_versions import (
@@ -12,16 +14,22 @@ from ..database import get_db
 from ..memory import sync as memory_sync
 
 router = APIRouter()
+_REORDER_BATCH_SIZE = 500
+
+
+def _validate_volume_owner(volume_owner: str | None, book_id: str) -> None:
+    if volume_owner is None:
+        raise HTTPException(404, "卷不存在")
+    if volume_owner != book_id:
+        raise HTTPException(400, "卷与章节必须属于同一本书")
 
 
 def _validate_volume(db: Session, volume_id: str | None, book_id: str) -> None:
-    if volume_id is None:
-        return
-    volume = db.get(models.Volume, volume_id)
-    if not volume:
-        raise HTTPException(404, "卷不存在")
-    if volume.book_id != book_id:
-        raise HTTPException(400, "卷与章节必须属于同一本书")
+    if volume_id is not None:
+        owner_id = db.scalar(
+            select(models.Volume.book_id).where(models.Volume.id == volume_id)
+        )
+        _validate_volume_owner(owner_id, book_id)
 
 
 @router.get("/books/{book_id}/chapters", response_model=list[schemas.ChapterOut])
@@ -35,7 +43,7 @@ def list_chapters(
     return db.scalars(
         select(models.Chapter)
         .where(models.Chapter.book_id == book_id)
-        .order_by(models.Chapter.order_index)
+        .order_by(models.Chapter.order_index, models.Chapter.id)
         .offset(offset)
         .limit(limit)
     ).all()
@@ -65,11 +73,19 @@ def create_chapter(payload: schemas.ChapterCreate, db: Session = Depends(get_db)
 def update_chapter(
     chapter_id: str, payload: schemas.ChapterUpdate, db: Session = Depends(get_db)
 ):
+    if payload.status == "done":
+        db.rollback()
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
         raise HTTPException(404, "章节不存在")
     if "volume_id" in payload.model_fields_set:
         _validate_volume(db, payload.volume_id, chapter.book_id)
+    if payload.status == "done" and (
+        chapter.content is None or not chapter.content.body.strip()
+    ):
+        db.rollback()
+        raise HTTPException(400, "正文为空，不能将章节标为完成")
     previous = (chapter.title, chapter.volume_id, chapter.order_index, chapter.status)
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(chapter, k, v)
@@ -110,37 +126,75 @@ def reorder_chapters(payload: schemas.ReorderRequest, db: Session = Depends(get_
     chapter_ids = [item.id for item in payload.items]
     if len(chapter_ids) != len(set(chapter_ids)):
         raise HTTPException(400, "排序列表不能包含重复章节")
-    chapters: list[models.Chapter] = []
-    book_id: str | None = None
-    # 先完整校验,避免后续查询触发 autoflush,使无效批次部分落库。
-    for item in payload.items:
-        chapter = db.get(models.Chapter, item.id)
-        if not chapter:
-            raise HTTPException(404, "章节不存在")
-        if book_id is not None and chapter.book_id != book_id:
-            raise HTTPException(400, "排序章节必须属于同一本书")
-        book_id = chapter.book_id
-        _validate_volume(db, item.volume_id, chapter.book_id)
-        chapters.append(chapter)
-    affected_volumes: set[str] = set()
-    for item, chapter in zip(payload.items, chapters, strict=True):
-        if (chapter.order_index, chapter.volume_id) == (
-            item.order_index,
-            item.volume_id,
-        ):
-            continue
-        if chapter.status == "done":
-            affected_volumes.update(
-                volume_id
-                for volume_id in (chapter.volume_id, item.volume_id)
-                if volume_id
+    if not chapter_ids:
+        return {"ok": True}
+
+    db.rollback()
+    with db.begin():
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        chapters = {
+            chapter.id: chapter
+            for batch in batched(chapter_ids, _REORDER_BATCH_SIZE)
+            for chapter in db.scalars(
+                select(models.Chapter)
+                .where(models.Chapter.id.in_(batch))
+                .options(
+                    load_only(
+                        models.Chapter.id,
+                        models.Chapter.book_id,
+                        models.Chapter.volume_id,
+                        models.Chapter.order_index,
+                        models.Chapter.status,
+                    )
+                )
             )
-        chapter.order_index = item.order_index
-        chapter.volume_id = item.volume_id
-    if book_id is not None:
-        for volume_id in affected_volumes:
-            memory_sync.enqueue(db, book_id, memory_sync.VOLUME, volume_id)
-    db.commit()
+        }
+        target_volumes = {
+            item.volume_id for item in payload.items if item.volume_id is not None
+        }
+        volume_books = {
+            volume_id: owner_id
+            for batch in batched(target_volumes, _REORDER_BATCH_SIZE)
+            for volume_id, owner_id in db.execute(
+                select(models.Volume.id, models.Volume.book_id).where(
+                    models.Volume.id.in_(batch)
+                )
+            )
+        }
+
+        book_id: str | None = None
+        # Validate the complete batch before mutating any chapter.
+        for item in payload.items:
+            chapter = chapters.get(item.id)
+            if chapter is None:
+                raise HTTPException(404, "章节不存在")
+            if book_id is not None and chapter.book_id != book_id:
+                raise HTTPException(400, "排序章节必须属于同一本书")
+            book_id = chapter.book_id
+            if item.volume_id is not None:
+                _validate_volume_owner(
+                    volume_books.get(item.volume_id), chapter.book_id
+                )
+
+        affected_volumes: set[str] = set()
+        for item in payload.items:
+            chapter = chapters[item.id]
+            if (chapter.order_index, chapter.volume_id) == (
+                item.order_index,
+                item.volume_id,
+            ):
+                continue
+            if chapter.status == "done":
+                affected_volumes.update(
+                    volume_id
+                    for volume_id in (chapter.volume_id, item.volume_id)
+                    if volume_id is not None
+                )
+            chapter.order_index = item.order_index
+            chapter.volume_id = item.volume_id
+        if book_id is not None:
+            for volume_id in affected_volumes:
+                memory_sync.enqueue(db, book_id, memory_sync.VOLUME, volume_id)
     return {"ok": True}
 
 

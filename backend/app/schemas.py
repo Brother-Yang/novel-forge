@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import ClassVar, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
@@ -15,6 +15,11 @@ NOVEL_TARGET_WORDS_MAX = (
     NOVEL_VOLUME_MAX * NOVEL_CHAPTERS_PER_VOLUME_MAX * NOVEL_WORDS_PER_CHAPTER_MAX
 )
 _TARGET_WORDS_DESCRIPTION = "规划目标字数，非实际生成字数保证；当前上限 320 万字"
+
+# 排序值经过浏览器 number，再写入 SQLite；两端都必须能精确表示。
+ORDER_INDEX_MAX = 2**53 - 1
+OrderIndex = Annotated[int, Field(ge=-ORDER_INDEX_MAX, le=ORDER_INDEX_MAX)]
+ChapterStatus = Literal["empty", "outline", "drafting", "done"]
 
 
 class ORMModel(BaseModel):
@@ -79,13 +84,13 @@ class BookOut(ORMModel):
 class VolumeCreate(BaseModel):
     book_id: str
     title: str
-    order_index: int = 0
+    order_index: OrderIndex = 0
     summary: str = ""
 
 
 class VolumeUpdate(PatchModel):
     title: str | None = None
-    order_index: int | None = None
+    order_index: OrderIndex | None = None
     summary: str | None = None
 
 
@@ -102,7 +107,7 @@ class ChapterCreate(BaseModel):
     book_id: str
     volume_id: str | None = None
     title: str
-    order_index: int = 0
+    order_index: OrderIndex = 0
     outline: str = ""
 
 
@@ -111,9 +116,9 @@ class ChapterUpdate(PatchModel):
 
     title: str | None = None
     volume_id: str | None = None
-    order_index: int | None = None
+    order_index: OrderIndex | None = None
     outline: str | None = None
-    status: str | None = None
+    status: ChapterStatus | None = None
 
 
 class ChapterOut(ORMModel):
@@ -145,7 +150,7 @@ class ChapterContentUpdate(BaseModel):
 
 class ReorderItem(BaseModel):
     id: str
-    order_index: int
+    order_index: OrderIndex
     volume_id: str | None = None
 
 
@@ -179,14 +184,14 @@ class CharacterCreate(BaseModel):
     book_id: str
     name: str
     md_content: str = ""
-    order_index: int = 0
+    order_index: OrderIndex = 0
 
 
 class CharacterUpdate(PatchModel):
     name: str | None = None
     md_content: str | None = None
     state_json: str | None = None
-    order_index: int | None = None
+    order_index: OrderIndex | None = None
 
 
 class CharacterOut(ORMModel):

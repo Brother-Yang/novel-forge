@@ -545,16 +545,13 @@ async def gen_chapter_body(
         return
 
     if is_ending is None:
-        # 未显式指定时,按结构自动判断:全书 order_index 最大的章节即末章,
-        # 兜底覆盖固定流水线(novel_generation)不会显式传 is_ending 的情况。
-        max_chapter_order = db.scalar(
-            select(func.max(models.Chapter.order_index)).where(
-                models.Chapter.book_id == expected.book_id
-            )
+        last_chapter_id = db.scalar(
+            select(models.Chapter.id)
+            .where(models.Chapter.book_id == expected.book_id)
+            .order_by(models.Chapter.order_index.desc(), models.Chapter.id.desc())
+            .limit(1)
         )
-        is_ending = (
-            max_chapter_order is not None and expected.order_index >= max_chapter_order
-        )
+        is_ending = expected.chapter_id == last_chapter_id
 
     try:
         ctx = await memory.build_chapter_context(db, chapter)

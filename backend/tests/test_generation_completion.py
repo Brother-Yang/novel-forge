@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app import models, schemas
-from app.agents import orchestrator, pipeline, planner, tools
+from app.agents import orchestrator, pipeline, planner, prompts, tools
 from app.agents.completion import chapter_counts, chapter_is_complete
 from app.api import chapters as chapter_api
 from app.config import settings
@@ -26,10 +26,13 @@ class ScriptedLLM:
         self.body = body
         self.decisions = list(decisions or [])
         self.calls = 0
+        self.body_prompts: list[str] = []
 
     async def chat_stream(
         self, prompt: str, system: str = "", temperature: float = 0.8
     ) -> AsyncIterator[str]:
+        if system == prompts.CHAPTER_BODY_SYSTEM:
+            self.body_prompts.append(prompt)
         yield self.body
 
     async def chat(
@@ -105,6 +108,25 @@ def task_for(
 def use_llm(monkeypatch: pytest.MonkeyPatch, llm: ScriptedLLM) -> None:
     monkeypatch.setattr(orchestrator, "get_llm", lambda: llm)
     monkeypatch.setattr(pipeline, "get_llm", lambda: llm)
+
+
+async def test_only_last_id_gets_ending_instruction_when_chapter_order_ties(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    book = models.Book(title="并列末章")
+    last = models.Chapter(id="z-last", book=book, title="后章", order_index=3)
+    prior = models.Chapter(id="a-prior", book=book, title="前章", order_index=3)
+    db.add(book)
+    db.commit()
+    llm = ScriptedLLM()
+    use_llm(monkeypatch, llm)
+
+    for chapter in (prior, last):
+        events = [event async for event in pipeline.gen_chapter_body(db, chapter.id)]
+        assert events[-1] == ("done", "")
+    assert len(llm.body_prompts) == 2
+    assert prompts.CHAPTER_BODY_ENDING_NOTE not in llm.body_prompts[0]
+    assert prompts.CHAPTER_BODY_ENDING_NOTE in llm.body_prompts[1]
 
 
 def test_progress_counts_nonblank_body_with_python_unicode_whitespace(

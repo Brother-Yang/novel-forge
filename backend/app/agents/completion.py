@@ -51,7 +51,7 @@ def book_chapters(db: Session, book_id: str) -> list[models.Chapter]:
             select(models.Chapter)
             .where(models.Chapter.book_id == book_id)
             .options(selectinload(models.Chapter.content))
-            .order_by(models.Chapter.order_index)
+            .order_by(models.Chapter.order_index, models.Chapter.id)
         )
     )
 
