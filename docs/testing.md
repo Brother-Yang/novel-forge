@@ -58,11 +58,25 @@ python tests/e2e_offline.py
 
 后端单元测试和离线 E2E 使用假模型及临时数据库,不得通过测试连接真实书稿数据库或消耗模型额度。新增网络逻辑使用 HTTP mock / ASGI transport,数据库行为使用临时 SQLite;迁移测试应构造真实历史表结构,不能用最新模型冒充旧库。
 
+## 浏览器回归
+
+完成前后端依赖安装后，在 `frontend/` 运行以下命令。
+
+```bash
+pnpm exec playwright install --only-shell chromium
+pnpm build
+pnpm test:e2e
+```
+
+测试使用 `dist/` 中以 `/api` 为 API 前缀的生产构建。每次运行在独立的回环端口启动预览与后端，自动迁移临时 SQLite，并在结束时清理 SQLite、Chroma 和服务。测试使用合成书稿和会话，模型地址指向本机不可用的端口。默认使用 `backend/.venv/bin/python`，也可以通过 `NOVEL_FORGE_E2E_PYTHON` 指定已安装后端依赖的 Python 路径。
+
+失败时查看 `frontend/test-results/` 中的截图、后端日志和 `trace.zip`，可用 `pnpm exec playwright show-trace <trace.zip>` 打开。
+
 ## 持续集成
 
-`quality.yml` 并行运行前后端检查,只读仓库权限,相同分支的新运行取消旧运行。后端模型地址设为不可用的本地端口,不注入模型密钥。真实模型表现需要独立评估;离线检查通过只证明程序契约和故障恢复,不能证明长篇叙事质量。
+`quality.yml` 并行运行前后端检查,只读仓库权限,相同分支的新运行取消旧运行。前端构建后运行 Chromium 回归，失败时上传 `browser-e2e-results`。后端模型地址设为不可用的本地端口,不注入模型密钥。真实模型表现需要独立评估;离线检查通过只证明程序契约和故障恢复,不能证明长篇叙事质量。
 
-工作流 Action 固定到官方发布的完整提交 SHA,便于复现和审查。更新版本时核对 [checkout](https://github.com/actions/checkout/releases)、[setup-node](https://github.com/actions/setup-node/releases)、[setup-python](https://github.com/actions/setup-python/releases) 和 [pnpm/action-setup](https://github.com/pnpm/action-setup/releases) 的发布说明,然后同步版本注释。
+工作流 Action 固定到官方发布的完整提交 SHA,便于复现和审查。更新版本时核对 [checkout](https://github.com/actions/checkout/releases)、[setup-node](https://github.com/actions/setup-node/releases)、[setup-python](https://github.com/actions/setup-python/releases)、[pnpm/action-setup](https://github.com/pnpm/action-setup/releases) 和 [upload-artifact](https://github.com/actions/upload-artifact/releases) 的发布说明,然后同步版本注释。
 
 ## 模型质量评估
 
