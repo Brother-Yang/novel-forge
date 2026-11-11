@@ -46,6 +46,28 @@ def _parse_tool_call(raw: object) -> ToolCall:
     return ToolCall(id=call_id, name=name, arguments=cast(dict[str, object], arguments))
 
 
+def _completion_message(raw: bytes, *, allow_tools: bool = False) -> dict[str, object]:
+    """Non-streaming replies need a real assistant message, even for tool calls."""
+    error = "模型返回的消息结构无效，请重试"
+    try:
+        data: object = json.loads(raw, parse_constant=_reject_json_constant)
+    except (ValueError, RecursionError):
+        raise ModelResponseError(error) from None
+    if not isinstance(data, dict) or "error" in data:
+        raise ModelResponseError("模型未完成本次输出，请重试")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ModelResponseError(error)
+    choice = choices[0]
+    validate_finish_reason(choice.get("finish_reason"), allow_tools=allow_tools)
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise ModelResponseError(error)
+    if message.get("content") is not None and not isinstance(message["content"], str):
+        raise ModelResponseError(error)
+    return cast(dict[str, object], message)
+
+
 class OpenAIClient:
     """OpenAI 兼容 API 客户端(云端切换用)。"""
 
@@ -138,14 +160,8 @@ class OpenAIClient:
                 headers=self._headers(),
             )
             resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict) or "error" in data:
-                raise ModelResponseError("模型未完成本次输出，请重试")
-            choices = data.get("choices") or []
-            if not choices:
-                return ""
-            validate_finish_reason(choices[0].get("finish_reason"))
-            return choices[0].get("message", {}).get("content") or ""
+            message = _completion_message(resp.content)
+            return cast(str, message.get("content") or "")
 
     async def embed(self, text: str) -> list[float]:
         require_model_budget()
@@ -190,15 +206,8 @@ class OpenAIClient:
                 headers=self._headers(),
             )
             resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict) or "error" in data:
-                raise ModelResponseError("模型未完成本次输出，请重试")
-            choices = data.get("choices") or []
-            if not choices:
-                return ToolChatResult(content="")
-            validate_finish_reason(choices[0].get("finish_reason"), allow_tools=True)
-            message = choices[0].get("message") or {}
-            content = message.get("content") or ""
+            message = _completion_message(resp.content, allow_tools=True)
+            content = cast(str, message.get("content") or "")
             raw_calls: object = message.get("tool_calls")
             if raw_calls is not None and not isinstance(raw_calls, list):
                 raise ModelResponseError("模型返回的工具调用列表无效，请重试")

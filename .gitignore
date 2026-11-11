@@ -9,6 +9,7 @@ backend/data/
 
 # Node
 node_modules/
+.pnpm-store/
 frontend/dist/
 frontend/test-results/
 frontend/.env

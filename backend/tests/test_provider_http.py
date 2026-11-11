@@ -17,8 +17,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app import llm, models
-from app.agents import pipeline
+from app.agents import pipeline, runner
 from app.agents.errors import public_failure
+from app.agents.guardrails import GuardrailLimits
+from app.agents.tools import ToolRegistry
 from app.config import Settings
 from app.db_base import Base
 from app.limits import WindowBudget
@@ -505,3 +507,59 @@ async def test_nonstreamed_provider_error_is_not_an_empty_success(
         with pytest.raises(ModelResponseError):
             await model.chat_with_tools([], [])
     assert all(client.is_closed for client in clients)
+
+
+@pytest.mark.parametrize("provider", ["openai", "bailian"])
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        {},
+        {"choices": []},
+        {"choices": "invalid"},
+        {"choices": [{}]},
+        {"choices": [{"message": {"content": 42}}]},
+    ],
+)
+async def test_malformed_completion_is_not_a_successful_empty_decision(
+    provider: str, response: object, wire: MockProvider
+) -> None:
+    wire(lambda _request: httpx.Response(200, json=response))
+    model = (
+        openai_client.OpenAIClient()
+        if provider == "openai"
+        else bailian_client.BailianClient()
+    )
+    with pytest.raises(ModelResponseError):
+        await model.chat("合成提示")
+    with pytest.raises(ModelResponseError):
+        await model.chat_with_tools([], [])
+
+
+async def test_missing_choices_stops_agent_instead_of_spending_more_model_calls(
+    wire: MockProvider,
+) -> None:
+    clients = wire(lambda _request: httpx.Response(200, json={"choices": []}))
+    engine = create_engine("sqlite://")
+    try:
+        with Session(engine) as db:
+            events = [
+                event
+                async for event in runner.run(
+                    db,
+                    "synthetic-book",
+                    llm=openai_client.OpenAIClient(),
+                    tool_registry=ToolRegistry(),
+                    messages=[],
+                    finish_tool="finish",
+                    review_tool="review",
+                    limits=GuardrailLimits(
+                        max_steps=10, max_tool_calls=10, max_rewrites=1
+                    ),
+                )
+            ]
+        assert [kind for kind, _ in events] == ["error"]
+        assert len(clients) == 1
+        assert clients[0].is_closed
+    finally:
+        engine.dispose()
