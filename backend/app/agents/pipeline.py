@@ -20,7 +20,7 @@ from .. import models
 from ..llm import get_llm
 from ..memory import context as memory
 from ..memory import sync as memory_sync
-from . import chapter_plans, chapter_writes, planner, prompts, stages
+from . import chapter_plans, chapter_writes, planner, prompts, stages, structure_writes
 from .chapter_versions import ChapterContentConflict
 from .errors import GenerationError, log_failure
 
@@ -103,36 +103,30 @@ async def gen_worldbuilding(
     if not book:
         yield ("error", "书籍不存在")
         return
-    existing = (
-        list(
-            db.scalars(
-                select(models.Worldbuilding)
-                .where(models.Worldbuilding.book_id == book_id)
-                .order_by(models.Worldbuilding.id)
-            )
-        )
-        if recovery
-        else []
-    )
-    saved = [stages.Section(item.title, item.md_content) for item in existing]
+    expected = structure_writes.worldbuilding(db, book_id) if recovery else None
+    saved = expected.sections if expected else []
     try:
         stages.validate_existing(saved, "世界观设定")
         previous = recovery.previous.get("worldbuilding", 0) if recovery else 0
         target = max(stages.WORLD_MIN, min(previous, stages.WORLD_MAX))
-        if recovery and len(existing) >= target:
-            stages.commit(db, recovery, worldbuilding=len(existing))
-            yield ("skipped", f"已保存 {len(existing)} 条完整设定")
+        if recovery and len(saved) >= target:
+            structure_writes.lock_current(
+                db, book_id, structure_writes.worldbuilding, expected, "世界观设定"
+            )
+            stages.commit(db, recovery, worldbuilding=len(saved))
+            yield ("skipped", f"已保存 {len(saved)} 条完整设定")
             yield ("done", "")
             return
 
-        minimum = target - len(existing)
-        maximum = minimum if existing or target > stages.WORLD_MIN else stages.WORLD_MAX
+        minimum = target - len(saved)
+        maximum = minimum if saved or target > stages.WORLD_MIN else stages.WORLD_MAX
         quantity = str(minimum) if minimum == maximum else f"{minimum}-{maximum}"
         user = prompts.WORLDBUILDING_USER.format(
             **_book_prompt(book),
             count=quantity,
             existing=_recovery_context(saved, "设定"),
         )
+        db.rollback()
         full = ""
         async with aclosing(_stream(prompts.WORLDBUILDING_SYSTEM, user)) as stream:
             async for ev, data in stream:
@@ -147,8 +141,12 @@ async def gen_worldbuilding(
             maximum=maximum,
             label="世界观设定",
         )
-        stages.require_distinct(sections, saved, "设定")
+        current = structure_writes.lock_current(
+            db, book_id, structure_writes.worldbuilding, expected, "世界观设定"
+        )
+        stages.require_distinct(sections, current.sections, "设定")
     except stages.InvalidStage as exc:
+        db.rollback()
         yield ("error", _retry_message(exc))
         return
 
@@ -168,7 +166,7 @@ async def gen_worldbuilding(
         db,
         recovery,
         before_commit=enqueue_memory,
-        worldbuilding=len(existing) + len(items),
+        worldbuilding=len(current.rows) + len(items),
     )
     for item in items:
         try:
@@ -213,24 +211,17 @@ async def gen_characters(
     if not book:
         yield ("error", "书籍不存在")
         return
-    existing = (
-        list(
-            db.scalars(
-                select(models.Character)
-                .where(models.Character.book_id == book_id)
-                .order_by(models.Character.order_index, models.Character.id)
-            )
-        )
-        if recovery
-        else []
-    )
-    saved = [stages.Section(item.name, item.md_content) for item in existing]
+    expected = structure_writes.characters(db, book_id) if recovery else None
+    saved = expected.sections if expected else []
     try:
         stages.validate_existing(saved, "人物", maximum=count)
-        missing = count - len(existing)
+        missing = count - len(saved)
         if recovery and missing == 0:
-            stages.commit(db, recovery, characters=len(existing))
-            yield ("skipped", f"已保存 {len(existing)} 个完整人物")
+            structure_writes.lock_current(
+                db, book_id, structure_writes.characters, expected, "人物卡"
+            )
+            stages.commit(db, recovery, characters=len(saved))
+            yield ("skipped", f"已保存 {len(saved)} 个完整人物")
             yield ("done", "")
             return
         user = prompts.CHARACTERS_USER.format(
@@ -239,6 +230,7 @@ async def gen_characters(
             count=missing,
             existing=_recovery_context(saved, "人物卡"),
         )
+        db.rollback()
         full = ""
         async with aclosing(_stream(prompts.CHARACTERS_SYSTEM, user)) as stream:
             async for ev, data in stream:
@@ -255,8 +247,12 @@ async def gen_characters(
             title_limit=128,
         )
         stages.validate_character_fields(sections)
-        stages.require_distinct(sections, saved, "人物")
+        current = structure_writes.lock_current(
+            db, book_id, structure_writes.characters, expected, "人物卡"
+        )
+        stages.require_distinct(sections, current.sections, "人物")
     except stages.InvalidStage as exc:
+        db.rollback()
         yield ("error", _retry_message(exc))
         return
 
@@ -277,7 +273,7 @@ async def gen_characters(
         for index, item in enumerate(sections)
     ]
     db.add_all(items)
-    stages.commit(db, recovery, characters=len(existing) + len(items))
+    stages.commit(db, recovery, characters=len(current.rows) + len(items))
     yield ("log", f"已生成 {len(items)} 个人物（各一份 Markdown）")
     yield ("done", "")
 
@@ -304,32 +300,9 @@ async def gen_outline(
     if not book:
         yield ("error", "书籍不存在")
         return
-    existing_volumes = (
-        list(
-            db.scalars(
-                select(models.Volume)
-                .where(models.Volume.book_id == book_id)
-                .order_by(models.Volume.order_index, models.Volume.id)
-            )
-        )
-        if recovery
-        else []
-    )
-    existing_threads = (
-        list(
-            db.scalars(
-                select(models.PlotThread)
-                .where(models.PlotThread.book_id == book_id)
-                .order_by(models.PlotThread.id)
-            )
-        )
-        if recovery
-        else []
-    )
-    saved_volumes = [stages.Section(row.title, row.summary) for row in existing_volumes]
-    saved_threads = [
-        stages.Section(row.name, row.description) for row in existing_threads
-    ]
+    expected = structure_writes.outline(db, book_id) if recovery else None
+    saved_volumes = expected[0].sections if expected else []
+    saved_threads = expected[1].sections if expected else []
 
     try:
         stages.validate_existing(saved_volumes, "分卷大纲", maximum=volume_count)
@@ -345,15 +318,18 @@ async def gen_outline(
             max(0, missing_threads) if previous_count or saved_threads else None
         )
         if not volume_numbers and thread_count == 0:
+            structure_writes.lock_current(
+                db, book_id, structure_writes.outline, expected, "分卷或剧情线程"
+            )
             stages.commit(
                 db,
                 recovery,
-                volumes=len(existing_volumes),
-                threads=len(existing_threads),
+                volumes=len(saved_volumes),
+                threads=len(saved_threads),
             )
             yield (
                 "skipped",
-                f"已保存 {len(existing_volumes)} 卷和 {len(existing_threads)} 条剧情线程",
+                f"已保存 {len(saved_volumes)} 卷和 {len(saved_threads)} 条剧情线程",
             )
             yield ("done", "")
             return
@@ -384,6 +360,7 @@ async def gen_outline(
             existing=_recovery_context(saved_volumes, "分卷大纲")
             + _recovery_context(saved_threads, "剧情线程"),
         )
+        db.rollback()
         full = ""
         async with aclosing(_stream(prompts.OUTLINE_SYSTEM, user)) as stream:
             async for ev, data in stream:
@@ -394,9 +371,13 @@ async def gen_outline(
         volume_sections, thread_sections = stages.parse_outline(
             full, volume_numbers, thread_count
         )
-        stages.require_distinct(volume_sections, saved_volumes, "分卷")
-        stages.require_distinct(thread_sections, saved_threads, "剧情线程")
+        current_volumes, current_threads = structure_writes.lock_current(
+            db, book_id, structure_writes.outline, expected, "分卷或剧情线程"
+        )
+        stages.require_distinct(volume_sections, current_volumes.sections, "分卷")
+        stages.require_distinct(thread_sections, current_threads.sections, "剧情线程")
     except stages.InvalidStage as exc:
+        db.rollback()
         yield ("error", _retry_message(exc))
         return
 
@@ -425,8 +406,8 @@ async def gen_outline(
     stages.commit(
         db,
         recovery,
-        volumes=len(existing_volumes) + len(volumes),
-        threads=len(existing_threads) + len(threads),
+        volumes=len(current_volumes.rows) + len(volumes),
+        threads=len(current_threads.rows) + len(threads),
     )
     yield ("log", f"已生成 {len(volumes)} 卷、{len(threads)} 条剧情线程")
     yield ("done", "")

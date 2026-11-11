@@ -1,10 +1,11 @@
 """生成结构的整批校验、事务失败与旧版任务恢复回归测试。"""
 
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -48,6 +49,19 @@ class FakeStream:
         yield self.replies[system].pop(0)
 
 
+class WaitingStream(FakeStream):
+    def __init__(self, system: str, output: str) -> None:
+        super().__init__({system: [output]})
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def chat_stream(self, prompt: str, system: str = "") -> AsyncIterator[str]:
+        self.entered.set()
+        await self.release.wait()
+        async for chunk in super().chat_stream(prompt, system):
+            yield chunk
+
+
 def seed(db: Session) -> tuple[models.Book, models.GenerationTask]:
     book = models.Book(title="验证之书", target_words=8000)
     db.add(book)
@@ -79,6 +93,172 @@ def events_for(
     if stage == "outline":
         return pipeline.gen_outline(db, book_id, 2, recovery=recovery)
     return pipeline.gen_chapter_outlines(db, volume_id, 2, recovery=recovery)
+
+
+@pytest.mark.parametrize("stage", ["worldbuilding", "characters", "outline"])
+@pytest.mark.parametrize("change", ["add", "edit", "delete", "manual_add"])
+async def test_author_structure_changes_during_stream_reject_the_generated_batch(
+    db: Session, monkeypatch: pytest.MonkeyPatch, stage: str, change: str
+) -> None:
+    book, task = seed(db)
+    book_id, task_id = book.id, task.id
+    if stage == "worldbuilding":
+        initial = models.Worldbuilding(
+            book_id=book_id, title="规则", md_content="作者原文"
+        )
+        added = models.Worldbuilding(
+            book_id=book_id, title="地理", md_content="作者新卡"
+        )
+        system, full, start = prompts.WORLDBUILDING_SYSTEM, WORLD, "## 地理"
+        table, title_field, body_field = "worldbuilding", "title", "md_content"
+    elif stage == "characters":
+        initial = models.Character(book_id=book_id, name="林秋", md_content="作者原文")
+        added = models.Character(book_id=book_id, name="沈雁", md_content="作者新卡")
+        system, full, start = prompts.CHARACTERS_SYSTEM, CAST, "# 沈雁"
+        table, title_field, body_field = "characters", "name", "md_content"
+    else:
+        initial = models.Volume(
+            book_id=book_id, title="第一卷 相遇", summary="作者原文"
+        )
+        added = models.Volume(book_id=book_id, title="第二卷 告别", summary="作者新卡")
+        system, full, start = prompts.OUTLINE_SYSTEM, OUTLINE, "## 第二卷"
+        table, title_field, body_field = "volumes", "title", "summary"
+    manual = change == "manual_add"
+    if manual:
+        setattr(initial, title_field, "已有的作者标题")
+    initial_title, added_title = (
+        getattr(initial, title_field),
+        getattr(added, title_field),
+    )
+    db.add(initial)
+    db.flush()
+    initial_id = initial.id
+    checkpoint = task.checkpoint_json
+    db.commit()
+
+    # Manual generation still requests a full batch. Recovery requests only missing rows.
+    llm = WaitingStream(system, full if manual else full[full.index(start) :])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: llm)
+    monkeypatch.setattr(pipeline.memory_sync, "process_source", skip_index)
+
+    def record(counts: dict[str, int]) -> None:
+        book_generation.merge_checkpoint(task, counts=counts)
+
+    async def generate() -> list[pipeline.Event]:
+        recovery = None if manual else stages.Recovery({"threads": 2}, record)
+        return [event async for event in events_for(db, book_id, "", stage, recovery)]
+
+    running = asyncio.create_task(generate())
+    try:
+        await asyncio.wait_for(llm.entered.wait(), timeout=3)
+        assert not db.in_transaction()
+        with Session(db.get_bind()) as author:
+            if change in {"add", "manual_add"}:
+                author.add(added)
+                expected = {(initial_title, "作者原文"), (added_title, "作者新卡")}
+            else:
+                saved = author.get(type(initial), initial_id)
+                assert saved is not None
+                if change == "edit":
+                    setattr(saved, body_field, "作者更新后的原文")
+                    expected = {(initial_title, "作者更新后的原文")}
+                else:
+                    author.delete(saved)
+                    expected = set()
+            author.commit()
+    finally:
+        llm.release.set()
+    events = await asyncio.wait_for(running, timeout=3)
+    assert events[-1][0] == "error"
+    assert ("重名" if manual else "已变动") in events[-1][1]
+    assert all(event != "done" for event, _ in events)
+    assert not db.in_transaction()
+
+    with Session(db.get_bind()) as check:
+        rows = check.execute(text(f"SELECT {title_field}, {body_field} FROM {table}"))
+        assert set(rows) == expected
+        saved_task = check.get(models.GenerationTask, task_id)
+        assert saved_task is not None and saved_task.checkpoint_json == checkpoint
+        assert check.scalar(select(func.count()).select_from(models.MemorySyncJob)) == 0
+        assert check.scalar(select(func.count()).select_from(models.PlotThread)) == 0
+
+
+@pytest.mark.parametrize("stage", ["worldbuilding", "characters", "outline"])
+async def test_recovery_rechecks_complete_structure_before_recording_skip(
+    db: Session, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    book, _ = seed(db)
+    book_id = book.id
+    if stage == "worldbuilding":
+        table, body_field = "worldbuilding", "md_content"
+        rows = [
+            models.Worldbuilding(book_id=book_id, title=f"设定{i}", md_content="原文")
+            for i in range(4)
+        ]
+    elif stage == "characters":
+        table, body_field = "characters", "md_content"
+        rows = [
+            models.Character(book_id=book_id, name=f"人物{i}", md_content="原文")
+            for i in range(3)
+        ]
+    else:
+        table, body_field = "plot_threads", "description"
+        rows = [models.PlotThread(book_id=book_id, name="剧情", description="原文")]
+        db.add_all(
+            models.Volume(book_id=book_id, title=f"第{i}卷", summary="原文")
+            for i in (1, 2)
+        )
+    db.add_all(rows)
+    db.commit()
+    monkeypatch.setattr(
+        pipeline, "get_llm", lambda: pytest.fail("完整恢复无需请求模型")
+    )
+
+    changed = False
+    bind = db.get_bind()
+
+    def edit_before_lock(
+        _conn: object, _cursor: object, stmt: str, *_args: object
+    ) -> None:
+        nonlocal changed
+        if changed or stmt != "BEGIN IMMEDIATE":
+            return
+        changed = True
+        with Session(bind) as author:
+            author.execute(text(f"UPDATE {table} SET {body_field}='作者并发修改'"))
+            author.commit()
+
+    event.listen(bind, "before_cursor_execute", edit_before_lock)
+    try:
+        recovery = stages.Recovery(record=lambda _: pytest.fail("过期快照不能记录跳过"))
+        events = [event async for event in events_for(db, book_id, "", stage, recovery)]
+    finally:
+        event.remove(bind, "before_cursor_execute", edit_before_lock)
+    assert changed and events[-1][0] == "error" and "已变动" in events[-1][1]
+    assert not db.in_transaction()
+
+
+async def test_manual_character_generation_still_appends_distinct_names(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    book, _ = seed(db)
+    existing = models.Character(
+        book_id=book.id, name="已有作者人物", md_content="作者原文"
+    )
+    db.add(existing)
+    db.commit()
+    llm = FakeStream({prompts.CHARACTERS_SYSTEM: [CAST]})
+    monkeypatch.setattr(pipeline, "get_llm", lambda: llm)
+
+    events = [event async for event in pipeline.gen_characters(db, book.id, 3)]
+    assert events[-1] == ("done", "")
+    assert set(db.scalars(select(models.Character.name))) == {
+        "已有作者人物",
+        "林秋",
+        "沈雁",
+        "高谦",
+    }
+    assert existing.md_content == "作者原文"
 
 
 @pytest.mark.parametrize(
