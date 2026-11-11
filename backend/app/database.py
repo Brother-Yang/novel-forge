@@ -48,14 +48,14 @@ def get_db() -> Generator[Session]:
         db.close()
 
 
-def init_db() -> None:
+def init_db(*, database_lock_held: bool = False) -> None:
     # All schema changes, including a fresh database, must be represented by a
     # migration. create_all would hide missing revisions in production.
     engine.dispose()
-    _run_alembic_upgrade()
+    _run_alembic_upgrade(database_lock_held=database_lock_held)
 
 
-def _run_alembic_upgrade() -> None:
+def _run_alembic_upgrade(*, database_lock_held: bool) -> None:
     from alembic import command
     from alembic.config import Config
 
@@ -63,4 +63,5 @@ def _run_alembic_upgrade() -> None:
     cfg = Config(os.path.join(here, "alembic.ini"))
     cfg.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
     cfg.attributes["database_url"] = settings.database_url
+    cfg.attributes["database_lock_held"] = database_lock_held
     command.upgrade(cfg, "head")

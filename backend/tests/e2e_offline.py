@@ -19,6 +19,7 @@ import tempfile
 import uuid
 import zipfile
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 # 保证可从 backend 根目录导入 app,并使用独立的临时数据目录
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -307,7 +308,8 @@ async def main() -> None:
     txt = "".join(export._export_txt(db, book))
     check(all(c.title in txt for c in chapters), "TXT 含全部章节标题")
     check("第一卷 觉醒" in txt and "第二卷 试炼" in txt, "TXT 含卷标题")
-    epub_path = export._build_epub(db, book)
+    epub_path = Path(_TMP) / "export.epub"
+    export._build_epub(db, book, epub_path)
     with zipfile.ZipFile(epub_path) as zf:
         names = zf.namelist()
         check(names[0] == "mimetype", "EPUB mimetype 在首位")

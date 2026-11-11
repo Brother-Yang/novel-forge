@@ -18,7 +18,7 @@ from .tasks import book_generation
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config: Settings = app.state.config
     with single_process_resources(config):
-        init_db()
+        init_db(database_lock_held=True)
         try:
             await sync.start_memory_worker()
             book_generation.recover_running_tasks()

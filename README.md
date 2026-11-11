@@ -114,6 +114,8 @@ docker run -p 8080:80 -e BACKEND_ORIGIN=http://<后端地址>:8000 novel-fronten
 
 SQLite 与本地 Chroma 由一个后端进程管理。生产请用 `uvicorn app.main:app --workers 1 --lifespan on`，同一数据目录只启动一个实例。启动时后端会锁住 SQLite 文件和 Chroma 目录对应的锁文件；共享任一存储的第二个进程会拒绝启动。锁文件由系统在进程退出时释放，文件本身应保留。
 
+启动时会自动升级数据库。单独运行会连接数据库的 Alembic 命令前，先关闭使用同一 SQLite 文件的后端。手动迁移与后端共用数据库锁，外键校验通过后才会提交迁移。
+
 默认 `APP_ENV=local` 适合在本机使用。公网部署前，将前端和 `/api` 放在同一个 HTTPS 站点，由反向代理提供 TLS，并在后端 `.env` 中配置：
 
 - `APP_ENV=production`；`ACCESS_PASSWORD` 使用至少 12 个字符的随机密码；`SESSION_SECRET` 使用独立的至少 32 字节随机值，可用 `python -c 'import secrets; print(secrets.token_urlsafe(48))'` 生成。

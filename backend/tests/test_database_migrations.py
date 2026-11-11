@@ -59,6 +59,68 @@ def test_empty_database_is_created_by_migrations_only(tmp_path: Path) -> None:
         engine.dispose()
 
 
+def test_fact_roster_migration_preserves_old_body_hash_and_makes_facts_repairable(
+    tmp_path: Path,
+) -> None:
+    from app.memory import facts, sync
+
+    path = tmp_path / "old-facts.db"
+    migrate(path, "20261111_chapter_facts")
+    engine = create_engine(f"sqlite:///{path}")
+    body = "阿青进入旧城。"
+    body_hash = facts.fingerprint(body)
+    payload = '{"characters":[],"threads":[]}'
+    try:
+        with Session(engine) as db:
+            book = models.Book(title="旧事实版本")
+            chapter = models.Chapter(
+                book=book,
+                title="旧章",
+                status="done",
+                content=models.ChapterContent(body=body),
+            )
+            db.add_all([book, chapter, models.Character(book=book, name="阿青")])
+            db.flush()
+            book_id, chapter_id = book.id, chapter.id
+            db.execute(
+                text(
+                    "INSERT INTO chapter_facts (chapter_id, source_hash, payload) VALUES (:id, :hash, :payload)"
+                ),
+                {"id": chapter_id, "hash": body_hash, "payload": payload},
+            )
+            db.add(
+                models.MemorySyncJob(
+                    book_id=book_id,
+                    source_type=sync.FACTS,
+                    source_id=chapter_id,
+                    source_hash=body_hash,
+                    status="done",
+                )
+            )
+            db.commit()
+
+        migrate(path)
+        with Session(engine) as db:
+            saved = db.get(models.ChapterFacts, chapter_id)
+            assert saved is not None and (
+                saved.source_hash,
+                saved.roster_hash,
+                saved.payload,
+            ) == (body_hash, "", payload)
+            assert not facts.replay(db, book_id).characters
+            sync.repair_book(db, book_id)
+            job = sync.find_job(db, book_id, sync.FACTS, chapter_id)
+            assert (
+                job is not None
+                and job.status == "pending"
+                and job.source_hash != body_hash
+            )
+            content = db.get(models.ChapterContent, chapter_id)
+            assert content is not None and content.body == body
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.parametrize(
     "stamped", [False, True], ids=["unversioned", "already-versioned"]
 )
@@ -250,7 +312,9 @@ def test_init_db_does_not_call_create_all(monkeypatch: pytest.MonkeyPatch) -> No
         raise AssertionError("Schema must be owned by Alembic")
 
     monkeypatch.setattr(Base.metadata, "create_all", forbidden)
-    monkeypatch.setattr(database, "_run_alembic_upgrade", lambda: upgraded.append(True))
+    monkeypatch.setattr(
+        database, "_run_alembic_upgrade", lambda **_: upgraded.append(True)
+    )
     database.init_db()
     assert upgraded == [True]
 

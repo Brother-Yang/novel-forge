@@ -53,19 +53,20 @@ def validate_runtime_settings(config: Settings) -> None:
         raise RuntimeError("生产模式 CORS_ALLOWED_ORIGINS 必须使用具体 HTTPS 来源")
 
 
+def _sqlite_lock_path(database_url: str) -> Path | None:
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite" or url.database in (None, "", ":memory:"):
+        return None
+    if url.database.startswith("file:"):
+        raise RuntimeError(
+            "DATABASE_URL 请使用普通 SQLite 文件路径，以便锁定真实数据目录"
+        )
+    database_path = Path(url.database).resolve()
+    return database_path.with_name(database_path.name + ".lock")
+
+
 @contextmanager
-def single_process_resources(config: Settings) -> Iterator[None]:
-    """Fail startup before migrations/recovery if either store is already owned."""
-    chroma = Path(config.chroma_dir).resolve()
-    locks = {chroma / ".novel-forge.lock"}
-    url = make_url(config.database_url)
-    if url.get_backend_name() == "sqlite" and url.database not in (None, ":memory:"):
-        if url.database.startswith("file:"):
-            raise RuntimeError(
-                "DATABASE_URL 请使用普通 SQLite 文件路径，以便锁定真实数据目录"
-            )
-        database_path = Path(url.database).resolve()
-        locks.add(database_path.with_name(database_path.name + ".lock"))
+def _hold_locks(locks: set[Path]) -> Iterator[None]:
     with ExitStack() as stack:
         for path in sorted(locks):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,12 +75,31 @@ def single_process_resources(config: Settings) -> Iterator[None]:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 raise RuntimeError(
-                    "数据目录已被其它后端进程占用；SQLite/本地 Chroma 仅支持单进程，"
-                    "请使用 uvicorn --workers 1 并关闭其它实例"
+                    "数据目录已被其它后端或迁移进程占用；SQLite/本地 Chroma 仅支持单进程，"
+                    "请使用 uvicorn --workers 1，并在执行迁移前关闭后端"
                 ) from exc
             stack.callback(fcntl.flock, handle.fileno(), fcntl.LOCK_UN)
             handle.seek(0)
             handle.truncate()
             handle.write(f"pid={os.getpid()}\n")
             handle.flush()
+        yield
+
+
+@contextmanager
+def sqlite_migration_lock(database_url: str) -> Iterator[None]:
+    path = _sqlite_lock_path(database_url)
+    with _hold_locks({path} if path is not None else set()):
+        yield
+
+
+@contextmanager
+def single_process_resources(config: Settings) -> Iterator[None]:
+    """Fail startup before migrations/recovery if either store is already owned."""
+    chroma = Path(config.chroma_dir).resolve()
+    locks = {chroma / ".novel-forge.lock"}
+    database = _sqlite_lock_path(config.database_url)
+    if database is not None:
+        locks.add(database)
+    with _hold_locks(locks):
         yield

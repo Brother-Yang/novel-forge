@@ -188,8 +188,9 @@ async def test_export_excludes_legacy_cross_book_volume_association(
         content=models.ChapterContent(body="不可泄漏的外书正文"),
     )
     db.add(leaked)
+    book_id = chapter.book_id
     db.commit()
-    response = await client.get(f"/books/{chapter.book_id}/export?format={format_}")
+    response = await client.get(f"/books/{book_id}/export?format={format_}")
     assert response.status_code == 200
     if format_ == "epub":
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:

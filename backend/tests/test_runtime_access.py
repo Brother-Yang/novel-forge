@@ -48,7 +48,7 @@ def database_sessions(
     sessions = sessionmaker(bind=engine)
     monkeypatch.setattr(database, "SessionLocal", sessions)
     monkeypatch.setattr(runtime, "SessionLocal", sessions)
-    monkeypatch.setattr(main, "init_db", lambda: None)
+    monkeypatch.setattr(main, "init_db", lambda **_: None)
 
     async def no_worker() -> None:
         return None
