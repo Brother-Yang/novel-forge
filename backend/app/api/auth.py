@@ -8,8 +8,8 @@ import secrets
 import time
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field, model_validator
 from starlette.datastructures import MutableHeaders
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -23,6 +23,8 @@ PUBLIC_PATHS = frozenset(
     ("/api/health", "/api/auth/session", "/api/auth/login", "/api/auth/logout")
 )
 SAFE_METHODS = frozenset(("GET", "HEAD", "OPTIONS"))
+INVALID_PASSWORD = "访问密码不正确"
+MAX_LOGIN_PASSWORD_LENGTH = 1024
 
 
 def _signature(config: Settings, payload: str) -> str:
@@ -145,7 +147,41 @@ class AccessControlMiddleware:
 
 
 class LoginRequest(BaseModel):
-    password: str = Field(min_length=1, max_length=1024)
+    password: str = Field(min_length=1, max_length=MAX_LOGIN_PASSWORD_LENGTH)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_password(cls, payload: object) -> object:
+        # Keep malformed credentials out of validation responses. Some JSON
+        # strings can be parsed but cannot be serialized as valid UTF-8.
+        password: object = (
+            payload.get("password") if isinstance(payload, dict) else None
+        )
+        if (
+            not isinstance(password, str)
+            or not 1 <= len(password) <= MAX_LOGIN_PASSWORD_LENGTH
+        ):
+            raise HTTPException(422, "请提供有效的密码字符串")
+        try:
+            _ = password.encode()
+        except UnicodeEncodeError:
+            raise HTTPException(401, INVALID_PASSWORD) from None
+        return payload
+
+
+def _check_login_attempt(request: Request) -> None:
+    config: Settings = request.app.state.config
+    if not config.access_password:
+        return
+    budget: WindowBudget = request.app.state.login_budget
+    host = request.client.host if request.client else "unknown"
+    wait = budget.consume(
+        host, config.login_attempts_per_window, config.login_window_seconds
+    )
+    if wait is not None:
+        raise HTTPException(
+            429, "登录尝试过于频繁，请稍后重试", headers={"Retry-After": str(wait)}
+        )
 
 
 @router.get("/auth/session")
@@ -157,25 +193,16 @@ def get_session(request: Request) -> dict[str, bool]:
     }
 
 
-@router.post("/auth/login")
+@router.post("/auth/login", dependencies=[Depends(_check_login_attempt)])
 def login(
     payload: LoginRequest, request: Request, response: Response
 ) -> dict[str, bool]:
     config: Settings = request.app.state.config
     if config.access_password:
-        budget: WindowBudget = request.app.state.login_budget
-        host = request.client.host if request.client else "unknown"
-        wait = budget.consume(
-            host, config.login_attempts_per_window, config.login_window_seconds
-        )
-        if wait is not None:
-            raise HTTPException(
-                429, "登录尝试过于频繁，请稍后重试", headers={"Retry-After": str(wait)}
-            )
         if not hmac.compare_digest(
             payload.password.encode(), config.access_password.encode()
         ):
-            raise HTTPException(401, "访问密码不正确")
+            raise HTTPException(401, INVALID_PASSWORD)
         response.set_cookie(
             COOKIE_NAME,
             session_token(config),

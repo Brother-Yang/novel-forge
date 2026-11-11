@@ -201,11 +201,13 @@ def _parse_review(raw: str) -> dict[str, object]:
     try:
         obj = planner.extract_json_object(raw)
     except ValueError:
-        return {"needs_revision": False, "feedback": "评审输出解析失败,默认视为通过"}
-    return {
-        "needs_revision": bool(obj.get("needs_revision", False)),
-        "feedback": str(obj.get("feedback", "")),
-    }
+        raise ToolError("评审未返回有效结论，请重新评审；未批准正文重写") from None
+    needs_revision, feedback = obj.get("needs_revision"), obj.get("feedback")
+    if not isinstance(needs_revision, bool) or not isinstance(feedback, str):
+        raise ToolError(
+            "评审结论必须包含布尔值 needs_revision 和文本 feedback，请重新评审"
+        )
+    return {"needs_revision": needs_revision, "feedback": feedback}
 
 
 async def tool_review_content(
@@ -216,6 +218,19 @@ async def tool_review_content(
     if not text.strip():
         return {"needs_revision": True, "feedback": f"{label}内容为空,需要先生成内容"}
     reviewed_version = content_version(text) if target_type == "chapter" else None
+    if reviewed_version is not None:
+        try:
+            # A fresh review supersedes an unused approval. A failed or malformed
+            # response must not leave an earlier permission active by accident.
+            chapter_writes.set_revision_approval(
+                db,
+                book_id,
+                _require_str(args.get("target_id"), "target_id"),
+                reviewed_version,
+                approved=False,
+            )
+        except GenerationError as exc:
+            raise ToolError(str(exc)) from exc
     db.rollback()
     llm = get_llm()
     raw = await call_with_retry(

@@ -376,6 +376,45 @@ async def test_review_content_no_revision_does_not_approve(db, monkeypatch):
     assert chapter.revision_approved is False
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        '{"needs_revision":"false","feedback":"通过"}',
+        '{"needs_revision":"true","feedback":"重写"}',
+        '{"needs_revision":1,"feedback":"重写"}',
+        '{"needs_revision":null,"feedback":"不明确"}',
+        '{"needs_revision":true,"feedback":{}}',
+        '{"feedback":"缺少结论"}',
+        "not a review object",
+    ],
+)
+async def test_malformed_review_revokes_old_approval_and_cannot_overwrite_body(
+    db: Session, monkeypatch: pytest.MonkeyPatch, reply: str
+) -> None:
+    book = _book(db)
+    chapter = models.Chapter(
+        book_id=book.id,
+        title="作者定稿",
+        status="done",
+        revision_approved=True,
+        content=models.ChapterContent(body="保留作者的完整正文"),
+    )
+    db.add(chapter)
+    db.commit()
+    model = _FakeReviewLLM(reply)
+    monkeypatch.setattr(tools, "get_llm", lambda: model)
+    monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
+    with pytest.raises(tools.ToolError, match="评审"):
+        await tools.tool_review_content(
+            db, book.id, {"target_type": "chapter", "target_id": chapter.id}
+        )
+    with pytest.raises(tools.ToolError, match="请先调用 review_content"):
+        await tools.tool_write_chapter(db, book.id, {"chapter_id": chapter.id})
+    db.refresh(chapter)
+    assert chapter.revision_approved is False
+    assert chapter.content is not None and chapter.content.body == "保留作者的完整正文"
+
+
 # ---------- replan_volume:参数/归属校验 ----------
 async def test_replan_volume_rejects_unknown_volume(db):
     book = _book(db)

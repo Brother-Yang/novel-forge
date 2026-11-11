@@ -316,6 +316,43 @@ async def test_login_attempt_limit_and_expired_session(
         assert response.status_code == 401
 
 
+@pytest.mark.parametrize(
+    ("payload", "status", "detail"),
+    [
+        (b'{"password":"\\ud800"}', 401, "访问密码不正确"),
+        (b'{"password":["\\ud800"]}', 422, "请提供有效的密码字符串"),
+        (b'{"other":"\\ud800"}', 422, "请提供有效的密码字符串"),
+    ],
+)
+async def test_login_rejects_unpaired_surrogates_and_counts_the_attempt(
+    tmp_path: Path,
+    database_sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    status: int,
+    detail: str,
+) -> None:
+    conf = config(tmp_path, production=True)
+    conf.login_attempts_per_window = 1
+    app = app_for(conf, monkeypatch)
+    seed(database_sessions)
+    async with client_for(app) as client:
+        invalid = await client.post(
+            "/api/auth/login",
+            headers={"Origin": ORIGIN, "Content-Type": "application/json"},
+            content=payload,
+        )
+        assert invalid.status_code == status
+        assert invalid.json() == {"detail": detail}
+        assert "set-cookie" not in invalid.headers
+        throttled = await client.post(
+            "/api/auth/login",
+            headers={"Origin": ORIGIN},
+            json={"password": TEST_PASSWORD},
+        )
+        assert throttled.status_code == 429
+
+
 async def test_generation_request_limit_covers_sse_background_resume_and_memory(
     tmp_path: Path,
     database_sessions: sessionmaker[Session],
