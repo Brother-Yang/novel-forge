@@ -1,16 +1,11 @@
 import { useEffect, useState } from "react";
+import { App, Button, Form, Input, InputNumber, Modal, Popconfirm, Space, Typography } from "antd";
 import {
-  App,
-  Button,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Popconfirm,
-  Space,
-  Typography,
-} from "antd";
-import { PlusOutlined, DeleteOutlined, RobotOutlined, ThunderboltOutlined } from "@ant-design/icons";
+  PlusOutlined,
+  DeleteOutlined,
+  RobotOutlined,
+  ThunderboltOutlined,
+} from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Book } from "../api/types";

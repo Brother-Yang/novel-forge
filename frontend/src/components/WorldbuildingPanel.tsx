@@ -1,6 +1,6 @@
 import { Button, Input, Popconfirm, Space } from "antd";
 import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined } from "@ant-design/icons";
-import MDEditor from "@uiw/react-md-editor";
+import MarkdownEditor from "./MarkdownEditor";
 import { api, sseEndpoints } from "../api";
 import type { Worldbuilding } from "../api/types";
 import { useMarkdownCardPanel } from "../hooks/useMarkdownCardPanel";
@@ -13,10 +13,10 @@ export default function WorldbuildingPanel({ bookId }: { bookId: string }) {
     md,
     setMd,
     generating,
-    load,
     select,
     add,
     save,
+    saveMetadata,
     remove,
     generate,
   } = useMarkdownCardPanel<Worldbuilding>({
@@ -82,26 +82,24 @@ export default function WorldbuildingPanel({ bookId }: { bookId: string }) {
               <Input
                 value={current.title}
                 onChange={(e) => setCurrent({ ...current, title: e.target.value })}
-                onBlur={() =>
-                  api.updateWorldbuilding(current.id, { title: current.title }).then(load)
-                }
+                onBlur={() => void saveMetadata({ title: current.title })}
                 style={{ width: 240, fontWeight: 600, fontFamily: "var(--font-serif)" }}
               />
               <Button type="primary" icon={<SaveOutlined />} onClick={save}>
                 保存设定
               </Button>
             </Space>
-            <MDEditor
+            <MarkdownEditor
               value={md}
               onChange={(v) => setMd(v ?? "")}
               height={window.innerHeight - 220}
             />
           </>
         ) : (
-            <div className="nf-empty nf-empty--fill">
-              <span className="nf-empty__glyph">界</span>
-              <p>维护世界观、地理、势力、物品等设定,生成正文时按需注入。</p>
-            </div>
+          <div className="nf-empty nf-empty--fill">
+            <span className="nf-empty__glyph">界</span>
+            <p>维护世界观、地理、势力、物品等设定,生成正文时按需注入。</p>
+          </div>
         )}
       </div>
     </div>

@@ -1,6 +1,6 @@
 import { Button, Input, Popconfirm, Space } from "antd";
 import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined } from "@ant-design/icons";
-import MDEditor from "@uiw/react-md-editor";
+import MarkdownEditor from "./MarkdownEditor";
 import { api, sseEndpoints } from "../api";
 import type { Character } from "../api/types";
 import { useMarkdownCardPanel } from "../hooks/useMarkdownCardPanel";
@@ -13,10 +13,10 @@ export default function CharacterPanel({ bookId }: { bookId: string }) {
     md,
     setMd,
     generating,
-    load,
     select,
     add,
     save,
+    saveMetadata,
     remove,
     generate,
   } = useMarkdownCardPanel<Character>({
@@ -82,24 +82,24 @@ export default function CharacterPanel({ bookId }: { bookId: string }) {
               <Input
                 value={current.name}
                 onChange={(e) => setCurrent({ ...current, name: e.target.value })}
-                onBlur={() => api.updateCharacter(current.id, { name: current.name }).then(load)}
+                onBlur={() => void saveMetadata({ name: current.name })}
                 style={{ width: 240, fontWeight: 600, fontFamily: "var(--font-serif)" }}
               />
               <Button type="primary" icon={<SaveOutlined />} onClick={save}>
                 保存人物卡
               </Button>
             </Space>
-            <MDEditor
+            <MarkdownEditor
               value={md}
               onChange={(v) => setMd(v ?? "")}
               height={window.innerHeight - 220}
             />
           </>
         ) : (
-            <div className="nf-empty nf-empty--fill">
-              <span className="nf-empty__glyph">人</span>
-              <p>选择或新增一个人物,每个人物维护一份 Markdown 人物卡。</p>
-            </div>
+          <div className="nf-empty nf-empty--fill">
+            <span className="nf-empty__glyph">人</span>
+            <p>选择或新增一个人物,每个人物维护一份 Markdown 人物卡。</p>
+          </div>
         )}
       </div>
     </div>

@@ -101,16 +101,20 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
     }
   };
 
-  const save = async () => {
-    if (!current || generation.current || pending.current.has(current.id)) return;
+  const persist = async (patch: Partial<T>, announce: boolean) => {
+    if (!current) return;
+    if (generation.current || pending.current.has(current.id)) {
+      message.info("请等待当前操作完成后重试保存");
+      return;
+    }
     const owner = scope.current;
     const id = current.id;
     pending.current.add(id);
     try {
-      await update(id, { md_content: md } as Partial<T>);
+      await update(id, patch);
       if (scope.current !== owner) return;
       // 保存的响应只刷新列表，编辑器始终保留当前选择及最新草稿。
-      message.success("已保存");
+      if (announce) message.success("已保存");
       await load();
     } catch (err: unknown) {
       if (scope.current === owner) message.error(err instanceof Error ? err.message : "保存失败");
@@ -118,6 +122,9 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
       if (scope.current === owner) pending.current.delete(id);
     }
   };
+
+  const save = () => persist({ md_content: md } as Partial<T>, true);
+  const saveMetadata = (patch: Partial<T>) => persist(patch, false);
 
   const removeItem = async (id: string) => {
     if (pending.current.has(id) || generation.current) {
@@ -192,6 +199,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
     select,
     add,
     save,
+    saveMetadata,
     remove: removeItem,
     generate,
   };

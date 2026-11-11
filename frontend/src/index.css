@@ -84,7 +84,9 @@ body::after {
     box-shadow: inset 0 0 0 1px var(--nf-line);
   }
   50% {
-    box-shadow: inset 0 0 0 1px var(--nf-cinnabar), 0 0 0 3px rgba(194, 59, 34, 0.14);
+    box-shadow:
+      inset 0 0 0 1px var(--nf-cinnabar),
+      0 0 0 3px rgba(194, 59, 34, 0.14);
   }
 }
 
@@ -235,7 +237,12 @@ button.nf-brand {
   position: absolute;
   inset: 0 auto 0 0;
   width: 7px;
-  background: linear-gradient(180deg, var(--nf-cinnabar-deep), var(--nf-cinnabar), var(--nf-cinnabar-deep));
+  background: linear-gradient(
+    180deg,
+    var(--nf-cinnabar-deep),
+    var(--nf-cinnabar),
+    var(--nf-cinnabar-deep)
+  );
 }
 
 .nf-book-card::after {
@@ -435,8 +442,7 @@ button.nf-brand {
 
 .nf-manuscript.ant-layout-content {
   overflow: auto;
-  background:
-    linear-gradient(180deg, rgba(255, 248, 232, 0.5), transparent 120px), var(--nf-paper);
+  background: linear-gradient(180deg, rgba(255, 248, 232, 0.5), transparent 120px), var(--nf-paper);
   color: var(--nf-ink-text);
 }
 

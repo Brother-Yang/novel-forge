@@ -148,4 +148,48 @@ describe("useMarkdownCardPanel 编辑安全", () => {
     await act(async () => result.current.save());
     expect(update).toHaveBeenLastCalledWith("a", { md_content: "未保存草稿" });
   });
+
+  it("名称保存失败保留标题与正文草稿，再次保存能够成功", async () => {
+    update.mockRejectedValueOnce(new Error("名称保存失败"));
+    const { result } = renderHook(() => useMarkdownCardPanel(options), { wrapper });
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+    act(() => {
+      result.current.select(a);
+      result.current.setCurrent({ ...a, title: "未保存标题" });
+      result.current.setMd("尚未提交的正文");
+    });
+    await act(async () => result.current.saveMetadata({ title: "未保存标题" }));
+    expect(await screen.findByText("名称保存失败")).toBeInTheDocument();
+    expect(result.current.current?.title).toBe("未保存标题");
+    expect(result.current.md).toBe("尚未提交的正文");
+    await act(async () => result.current.saveMetadata({ title: "未保存标题" }));
+    expect(update).toHaveBeenLastCalledWith("a", { title: "未保存标题" });
+    expect(result.current.md).toBe("尚未提交的正文");
+  });
+
+  it("名称保存的迟到响应不覆盖后来选择的卡片或新书，也不提示过期错误", async () => {
+    const pending = deferred<Card>();
+    update.mockReturnValueOnce(pending.promise);
+    const { result, rerender } = renderHook(
+      ({ bookId }) => useMarkdownCardPanel({ ...options, bookId }),
+      { wrapper, initialProps: { bookId: "first" } }
+    );
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+    act(() => result.current.select(a));
+    let saving!: Promise<void>;
+    act(() => {
+      saving = result.current.saveMetadata({ title: "保存中" });
+    });
+    rerender({ bookId: "second" });
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+    act(() => result.current.select(b));
+    act(() => result.current.setMd("新书草稿"));
+    await act(async () => {
+      pending.reject(new Error("旧书名称错误"));
+      await saving;
+    });
+    expect(result.current.current?.id).toBe("b");
+    expect(result.current.md).toBe("新书草稿");
+    expect(screen.queryByText("旧书名称错误")).not.toBeInTheDocument();
+  });
 });

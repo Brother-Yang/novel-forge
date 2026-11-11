@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import { App, Button, Dropdown, Space, Tree, Typography } from "antd";
-import type { TreeDataNode } from "antd";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, App, Button, Dropdown, Space, Tree, Typography } from "antd";
+import type { TreeDataNode, TreeProps } from "antd";
 import { PlusOutlined, FileAddOutlined, MoreOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import type { BookTree } from "../api/types";
 import { useAppStore } from "../store";
 import { CHAPTER_STATUS_COLOR } from "../constants/chapterStatus";
+import { reorderCatalog, type ChapterDropTarget } from "../utils/catalogReorder";
 
 interface Props {
   bookId: string;
@@ -15,28 +16,74 @@ interface Props {
 
 // key 规则:卷 "v-<id>",章 "c-<id>",未归卷根 "loose"
 export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }: Props) {
-  const [tree, setTree] = useState<BookTree | null>(null);
+  const [snapshot, setSnapshot] = useState<{ bookId: string; tree: BookTree } | null>(null);
+  const tree = snapshot?.bookId === bookId ? snapshot.tree : null;
+  const [loadError, setLoadError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [collapsedKeys, setCollapsedKeys] = useState<string[]>([]);
+  const pending = useRef(false);
+  const scope = useRef(0);
+  const requestVersion = useRef(0);
   const { message, modal } = App.useApp();
   const treeVersion = useAppStore((s) => s.treeVersion);
 
-  const load = useCallback(
-    () =>
-      api
-        .getTree(bookId)
-        .then(setTree)
-        .catch((err: unknown) => {
-          message.error(err instanceof Error ? err.message : "加载目录失败");
-        }),
-    [bookId, message]
-  );
   useEffect(() => {
-    load();
+    scope.current += 1;
+    pending.current = false;
+    return () => {
+      scope.current += 1;
+      requestVersion.current += 1;
+    };
+  }, [bookId]);
+
+  const load = useCallback(() => {
+    const request = ++requestVersion.current;
+    const owner = scope.current;
+    return api
+      .getTree(bookId)
+      .then((data) => {
+        if (scope.current !== owner || request !== requestVersion.current) return;
+        setSnapshot({ bookId, tree: data });
+        setLoadError("");
+      })
+      .catch((err: unknown) => {
+        if (scope.current !== owner || request !== requestVersion.current) return;
+        setLoadError(err instanceof Error ? err.message : "加载目录失败");
+      });
+  }, [bookId]);
+  useEffect(() => {
+    void load();
   }, [load, treeVersion]);
+
+  const mutate = async (action: () => Promise<unknown>): Promise<boolean> => {
+    if (pending.current) return false;
+    const owner = scope.current;
+    pending.current = true;
+    setBusy(true);
+    // 作废写入前的目录请求，避免它在写入后把旧节点放回界面。
+    requestVersion.current += 1;
+    try {
+      await action();
+      if (scope.current !== owner) return false;
+      await load();
+      return true;
+    } catch (err: unknown) {
+      if (scope.current === owner)
+        message.error(err instanceof Error ? err.message : "目录操作失败");
+      return false;
+    } finally {
+      if (scope.current === owner) {
+        pending.current = false;
+        setBusy(false);
+      }
+    }
+  };
 
   const addVolume = async () => {
     const order = tree ? tree.volumes.length : 0;
-    await api.createVolume({ book_id: bookId, title: `第 ${order + 1} 卷`, order_index: order });
-    load();
+    await mutate(() =>
+      api.createVolume({ book_id: bookId, title: `第 ${order + 1} 卷`, order_index: order })
+    );
   };
 
   const addChapter = async (volumeId: string | null) => {
@@ -44,19 +91,27 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
       volumeId == null
         ? (tree?.loose_chapters.length ?? 0)
         : (tree?.volumes.find((v) => v.id === volumeId)?.chapters.length ?? 0);
-    await api.createChapter({
-      book_id: bookId,
-      volume_id: volumeId,
-      title: `第 ${count + 1} 章`,
-      order_index: count,
-    });
-    load();
+    const chapters = [
+      ...(tree?.volumes.flatMap((volume) => volume.chapters) ?? []),
+      ...(tree?.loose_chapters ?? []),
+    ];
+    const nextOrder = Math.max(-1, ...chapters.map((chapter) => chapter.order_index)) + 1;
+    await mutate(() =>
+      api.createChapter({
+        book_id: bookId,
+        volume_id: volumeId,
+        title: `第 ${count + 1} 章`,
+        order_index: nextOrder,
+      })
+    );
   };
 
-  const rename = (kind: "volume" | "chapter", id: string, current: string) => {
+  const rename = async (kind: "volume" | "chapter", id: string, current: string) => {
     let value = current;
-    modal.confirm({
+    await modal.confirm({
       title: `重命名${kind === "volume" ? "卷" : "章节"}`,
+      okText: "保存",
+      cancelText: "取消",
       content: (
         <input
           defaultValue={current}
@@ -65,9 +120,16 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
         />
       ),
       onOk: async () => {
-        if (kind === "volume") await api.updateVolume(id, { title: value });
-        else await api.updateChapter(id, { title: value });
-        load();
+        if (!value.trim()) {
+          message.error("名称不能为空");
+          throw new Error("名称不能为空");
+        }
+        const saved = await mutate(() =>
+          kind === "volume"
+            ? api.updateVolume(id, { title: value.trim() })
+            : api.updateChapter(id, { title: value.trim() })
+        );
+        if (!saved) throw new Error("目录操作未完成");
       },
     });
   };
@@ -83,25 +145,19 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
       cancelText: "取消",
       okButtonProps: { danger: true },
       onOk: async () => {
-        try {
-          if (isVolume) await api.deleteVolume(id);
-          else await api.deleteChapter(id);
-        } catch (err: unknown) {
-          message.error(err instanceof Error ? err.message : "删除失败，请重试");
-          throw err;
-        }
+        const saved = await mutate(() => (isVolume ? api.deleteVolume(id) : api.deleteChapter(id)));
+        if (!saved) throw new Error("目录操作未完成");
         if (!isVolume && id === selectedChapter) onSelectChapter(null);
         message.success(isVolume ? "已删除卷，章节及正文已保留" : "已删除章节");
-        await load();
       },
     });
   };
 
   const nodeMenu = (kind: "volume" | "chapter", id: string, title: string) => ({
     items: [
-      { key: "rename", label: "重命名" },
-      ...(kind === "volume" ? [{ key: "addChapter", label: "新增章节" }] : []),
-      { key: "delete", label: "删除", danger: true },
+      { key: "rename", label: "重命名", disabled: busy },
+      ...(kind === "volume" ? [{ key: "addChapter", label: "新增章节", disabled: busy }] : []),
+      { key: "delete", label: "删除", danger: true, disabled: busy },
     ],
     onClick: ({ key, domEvent }: { key: string; domEvent: React.SyntheticEvent }) => {
       domEvent.stopPropagation();
@@ -110,6 +166,26 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
       else if (key === "addChapter") addChapter(id);
     },
   });
+
+  const onDrop: TreeProps["onDrop"] = async (info) => {
+    if (!tree || pending.current) return;
+    const sourceKey = String(info.dragNode.key);
+    const targetKey = String(info.node.key);
+    if (!sourceKey.startsWith("c-")) return;
+    let target: ChapterDropTarget;
+    if (targetKey.startsWith("c-") && info.dropToGap) {
+      const position = info.dropPosition - Number(info.node.pos.split("-").pop());
+      target = {
+        kind: "chapter",
+        id: targetKey.slice(2),
+        position: position < 0 ? "before" : "after",
+      };
+    } else if (!info.dropToGap && (targetKey.startsWith("v-") || targetKey === "loose")) {
+      target = { kind: "volume", id: targetKey === "loose" ? null : targetKey.slice(2) };
+    } else return;
+    const orders = reorderCatalog(tree, sourceKey.slice(2), target);
+    if (orders.length) await mutate(() => api.reorderChapters(orders));
+  };
 
   const treeData: TreeDataNode[] = [];
   if (tree) {
@@ -160,27 +236,58 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
     }));
 
     const looseNodes = tree.loose_chapters.map(renderChapter);
-    treeData.push(...volumeNodes, ...looseNodes);
+    treeData.push(...volumeNodes, { key: "loose", title: "未归卷", children: looseNodes });
   }
+
+  const groupKeys = [...(tree?.volumes.map((volume) => `v-${volume.id}`) ?? []), "loose"];
 
   return (
     <div className="nf-catalog">
       <div className="nf-catalog__bar">
         <span className="nf-catalog__label">目录</span>
         <Space size={6}>
-          <Button size="small" icon={<PlusOutlined />} onClick={addVolume}>
+          <Button
+            size="small"
+            aria-label="新增卷"
+            disabled={busy}
+            icon={<PlusOutlined />}
+            onClick={addVolume}
+          >
             卷
           </Button>
-          <Button size="small" icon={<FileAddOutlined />} onClick={() => addChapter(null)}>
+          <Button
+            size="small"
+            aria-label="新增章节"
+            disabled={busy}
+            icon={<FileAddOutlined />}
+            onClick={() => addChapter(null)}
+          >
             章
           </Button>
         </Space>
       </div>
+      {loadError && (
+        <Alert
+          type="error"
+          message={loadError}
+          action={
+            <Button size="small" onClick={() => void load()}>
+              重试
+            </Button>
+          }
+        />
+      )}
       <Tree
         key={tree ? "loaded" : "empty"}
         blockNode
         showLine={false}
-        defaultExpandAll
+        expandedKeys={groupKeys.filter((key) => !collapsedKeys.includes(key))}
+        onExpand={(keys) => setCollapsedKeys(groupKeys.filter((key) => !keys.includes(key)))}
+        draggable={!busy && { nodeDraggable: (node) => String(node.key).startsWith("c-") }}
+        allowDrop={({ dropNode, dropPosition }) =>
+          String(dropNode.key).startsWith("c-") ? dropPosition !== 0 : dropPosition === 0
+        }
+        onDrop={onDrop}
         height={window.innerHeight - 160}
         treeData={treeData}
         selectedKeys={selectedChapter ? [`c-${selectedChapter}`] : []}

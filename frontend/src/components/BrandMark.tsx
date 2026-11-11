@@ -18,7 +18,11 @@ export default function BrandMark({ compact, onClick }: BrandMarkProps) {
 
   if (onClick) {
     return (
-      <button type="button" className={`nf-brand${compact ? " nf-brand--compact" : ""}`} onClick={onClick}>
+      <button
+        type="button"
+        className={`nf-brand${compact ? " nf-brand--compact" : ""}`}
+        onClick={onClick}
+      >
         {inner}
       </button>
     );

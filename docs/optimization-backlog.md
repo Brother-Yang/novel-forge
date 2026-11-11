@@ -21,9 +21,6 @@
 
 | 编号 | 优先级 | 待解决问题与入口 | 验收条件 |
 | --- | --- | --- | --- |
-| OPT-012 | P2 | 当前目录树已移除拖拽排序/移卷，顶栏新建的未归卷章节无法通过界面移卷。入口：`frontend/src/components/CatalogTree.tsx`。 | 恢复排序和移卷；正确持久化顺序与归属，失败可见且不丢章节，补用户操作回归测试。 |
-| OPT-013 | P2 | 工作区请求失败静默吞错并持续转圈；目录新增/重命名、卡片名称保存等仍有未处理的请求错误；目录旧加载响应可能覆盖删除后的刷新结果。入口：`frontend/src/pages/BookWorkspace.tsx`、`components/CatalogTree.tsx`、`CharacterPanel.tsx`、`WorldbuildingPanel.tsx`。 | 加载失败有错误和重试入口；所有剩余 CRUD 失败可见，不产生未处理 Promise 拒绝或误报成功；过期加载结果不覆盖新目录。 |
-| OPT-014 | P3 | 所有路由及 Markdown 编辑器静态加载；评估时主 JS 约 2.07 MB、gzip 约 687 KB。入口：`frontend/src/router/index.tsx`、人物/设定面板。 | 按路由/重组件延迟加载，比较构建产物确认首页不提前下载编辑器，加载与失败体验完整。 |
 | OPT-015 | P3 | Agent 轮询每次拉取完整轨迹，并强制滚到底部，长任务传输累积且打断阅读历史。入口：`frontend/src/pages/AgentChat.tsx`、`backend/app/agents/observability.py`、`api/generate.py`。 | 轨迹增量/分页获取；用户上翻后不强制滚动；长任务下无重复/丢失事件，失败可恢复。 |
 
 ## 工程与部署
@@ -35,5 +32,11 @@
 | OPT-018 | P2 | Alembic 没有完整建库基线，应用仍先 `create_all()` 再迁移。入口：`backend/app/database.py`、`migrations/versions/`。 | 空库仅运行迁移即可建立完整结构；旧库升级保留数据；应用启动不掩盖缺失迁移。 |
 | OPT-019 | P2 | 缺少 CI；现有测试对 HTTP 契约、故障恢复、网络竞争和真实模型长篇表现覆盖不足。入口：`.github/workflows/`（待建立）、前后端测试。 | CI 跑 lint/test/build 与后端 pytest/离线 E2E；按具体风险补回归，另建可控成本的真实模型质量评估，不能把假模型通过等同成文质量。 |
 | OPT-020 | P3 | 本轮 P1 修复后 basedpyright 仍有 54 个存量测试文件错误、6 个警告；初次评估的 Ruff 有 62 条诊断，其中 43 条为 FastAPI Depends 默认参数规则。入口：`backend/tests/`、类型与 lint 配置。 | 修复真实类型问题，合理配置框架规则；不靠整文件禁用检查掩盖问题；检查结果可作为 CI 门禁。数量以修复时实际检查为准。 |
-| OPT-021 | P3 | 基线前端格式检查有 6 个文件未通过：BrandMark、CharacterPanel、WorldbuildingPanel、index.css、AgentChat、BookList。 | 使用既有 Prettier 配置清理格式；`pnpm format:check` 通过，不混入行为改动。 |
 | OPT-022 | P2 | RAG 检索异常被 `except Exception: pass` 静默忽略，流式接口异常仅返回 SSE 错误，日志定位不足。入口：`backend/app/memory/context.py`、`api/generate.py`。 | 降级/失败日志包含书籍、章节或任务标识及异常；不记录密钥；用户能区分记忆降级与正文失败。 |
+
+## 本轮追加检查
+
+| 编号 | 优先级 | 待解决问题与入口 | 验收条件 |
+| --- | --- | --- | --- |
+| OPT-023 | P2 | 手工生成面板的轮询可能重叠，离开页面没有中止 SSE，手工阶段未和按钮忙碌状态统一。入口：`frontend/src/components/TaskPanel.tsx`。 | 请求按书籍隔离且串行；卸载中止流并忽略旧回调；按钮互斥和失败恢复有测试；日志有合理长度限制。 |
+| OPT-024 | P3 | Markdown 编辑器虽已延迟加载，独立块仍约 1.05 MB；构建仍提示大块，测试还出现 Router future flags 和 jsdom 伪元素警告。 | 核实过时 API 和依赖兼容性；按实际使用裁剪编辑器依赖或按需加载，消除可处理警告且不靠提高警告阈值掩盖问题。 |
