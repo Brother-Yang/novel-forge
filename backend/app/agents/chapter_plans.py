@@ -8,6 +8,69 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from . import stages
+from .completion import chapter_complete_condition
+
+
+@dataclass(frozen=True)
+class SavedChapterOutline:
+    chapter_id: str
+    title: str
+    outline: str
+    order_index: int
+    status: str
+    complete: bool
+
+
+@dataclass(frozen=True)
+class VolumeOutlineInputs:
+    title: str
+    summary: str
+    order_index: int
+    is_final_volume: bool
+    chapters: tuple[SavedChapterOutline, ...]
+
+
+def is_final_volume(db: Session, book_id: str, order_index: int) -> bool:
+    max_order = db.scalar(
+        select(func.max(models.Volume.order_index)).where(
+            models.Volume.book_id == book_id
+        )
+    )
+    return max_order is not None and order_index >= max_order
+
+
+def volume_outline_inputs(
+    db: Session, book_id: str, volume_id: str
+) -> VolumeOutlineInputs:
+    """Read the author inputs and completion state without loading chapter prose."""
+    volume = db.execute(
+        select(
+            models.Volume.title, models.Volume.summary, models.Volume.order_index
+        ).where(models.Volume.id == volume_id, models.Volume.book_id == book_id)
+    ).one_or_none()
+    if volume is None:
+        raise stages.InvalidStage("生成期间分卷已删除或发生变动，请刷新目录")
+    title, summary, order_index = volume
+    chapters = db.execute(
+        select(
+            models.Chapter.id,
+            models.Chapter.title,
+            models.Chapter.outline,
+            models.Chapter.order_index,
+            models.Chapter.status,
+            chapter_complete_condition(),
+        )
+        .outerjoin(models.ChapterContent)
+        .where(models.Chapter.book_id == book_id, models.Chapter.volume_id == volume_id)
+        .order_by(models.Chapter.order_index, models.Chapter.id)
+    )
+    return VolumeOutlineInputs(
+        title=title,
+        summary=summary,
+        order_index=order_index,
+        is_final_volume=is_final_volume(db, book_id, order_index),
+        chapters=tuple(SavedChapterOutline(*chapter) for chapter in chapters.tuples()),
+    )
 
 
 def ordered_volume_chapters(

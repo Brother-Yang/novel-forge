@@ -432,32 +432,51 @@ async def gen_chapter_outlines(
     if not book:
         yield ("error", "书籍不存在")
         return
-    existing = (
-        chapter_plans.ordered_volume_chapters(db, book.id, volume_id)
-        if recovery
-        else []
-    )
-    saved = [stages.Section(item.title, item.outline) for item in existing]
+    book_id = book.id
+
+    def read_inputs(
+        session: Session, owner_id: str
+    ) -> tuple[chapter_plans.VolumeOutlineInputs, tuple[tuple[str, str], ...]]:
+        current_book = session.get(models.Book, owner_id, populate_existing=True)
+        if current_book is None:
+            raise stages.InvalidStage("生成期间书籍已删除，请刷新目录")
+        book_fields = _book_prompt(current_book)
+        return chapter_plans.volume_outline_inputs(session, owner_id, volume_id), tuple(
+            (name, book_fields[name]) for name in ("title", "genre", "brief")
+        )
+
     try:
+        expected = read_inputs(db, book_id) if recovery else None
+        if expected is not None:
+            inputs, book_fields = expected
+            volume_title, volume_summary = inputs.title, inputs.summary
+            is_final_volume = inputs.is_final_volume
+            saved = [
+                stages.Section(item.title, item.outline) for item in inputs.chapters
+            ]
+            retained_ids = {item.chapter_id for item in inputs.chapters}
+        else:
+            book_fields = tuple(_book_prompt(book).items())
+            volume_title, volume_summary = volume.title, volume.summary
+            is_final_volume = chapter_plans.is_final_volume(
+                db, book_id, volume.order_index
+            )
+            saved = []
+            retained_ids = None
         stages.validate_existing(saved, "章节细纲", maximum=chapter_count)
-        if recovery and len(saved) == chapter_count:
-            stages.commit(db, recovery, chapters=len(existing))
-            yield ("skipped", f"《{volume.title}》已有 {len(existing)} 章完整细纲")
+        if expected is not None and len(saved) == chapter_count:
+            structure_writes.lock_current(
+                db, book_id, read_inputs, expected, "书籍、分卷或章节细纲"
+            )
+            stages.commit(db, recovery, chapters=len(saved))
+            yield ("skipped", f"《{volume_title}》已有 {len(saved)} 章完整细纲")
             yield ("done", "")
             return
         numbers = _remaining_numbers(saved, chapter_count, "章")
-        max_volume_order = db.scalar(
-            select(func.max(models.Volume.order_index)).where(
-                models.Volume.book_id == book.id
-            )
-        )
-        is_final_volume = (
-            max_volume_order is not None and volume.order_index >= max_volume_order
-        )
         user = prompts.CHAPTER_OUTLINE_USER.format(
-            **_book_prompt(book),
-            volume_title=_esc(volume.title),
-            volume_summary=_esc(volume.summary),
+            **dict(book_fields),
+            volume_title=_esc(volume_title),
+            volume_summary=_esc(volume_summary),
             chapter_count=len(numbers),
             chapter_numbers="、".join(str(number) for number in numbers),
             existing=_recovery_context(saved, "章节细纲"),
@@ -465,6 +484,8 @@ async def gen_chapter_outlines(
                 prompts.CHAPTER_OUTLINE_ENDING_HINT if is_final_volume else ""
             ),
         )
+        if expected is not None:
+            db.rollback()
         full = ""
         async with aclosing(_stream(prompts.CHAPTER_OUTLINE_SYSTEM, user)) as stream:
             async for ev, data in stream:
@@ -481,22 +502,28 @@ async def gen_chapter_outlines(
         )
         stages.validate_ordinals(sections, numbers, "章")
         stages.require_distinct(sections, saved, "章节")
+        if expected is not None:
+            structure_writes.lock_current(
+                db, book_id, read_inputs, expected, "书籍、分卷或章节细纲"
+            )
         chapter_plans.stage_new_outlines(
             db,
             volume,
             sections,
-            retained_ids={chapter.id for chapter in existing} if recovery else None,
+            retained_ids=retained_ids,
         )
     except stages.InvalidStage as exc:
+        if recovery:
+            db.rollback()
         yield ("error", _retry_message(exc))
         return
 
     stages.commit(
         db,
         recovery,
-        chapters=len(existing) + len(sections),
+        chapters=len(saved) + len(sections),
     )
-    yield ("log", f"已为《{volume.title}》生成 {len(sections)} 章大纲")
+    yield ("log", f"已为《{volume_title}》生成 {len(sections)} 章大纲")
     yield ("done", "")
 
 

@@ -9,8 +9,11 @@ from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import models
+from app import models, schemas
 from app.agents import pipeline, prompts, stages
+from app.api import books as book_api
+from app.api import chapters as chapter_api
+from app.api import volumes as volume_api
 from app.db_base import Base
 from app.memory import sync as memory_sync
 from app.tasks import book_generation, novel_generation
@@ -259,6 +262,215 @@ async def test_manual_character_generation_still_appends_distinct_names(
         "高谦",
     }
     assert existing.md_content == "作者原文"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "rename",
+        "add",
+        "delete",
+        "complete",
+        "volume_edit",
+        "book_edit",
+        "ending",
+        "move",
+        "later_body",
+    ],
+)
+async def test_recovering_chapter_outline_revalidates_actual_inputs_before_shifting(
+    db: Session, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    book, task = seed(db)
+    early = models.Volume(book=book, title="第一卷", summary="原卷纲", order_index=0)
+    later = models.Volume(book=book, title="第二卷", summary="后卷纲", order_index=1)
+    existing = models.Chapter(
+        book=book, volume=early, title="第1章 原名", outline="原章纲", status="outline"
+    )
+    following = models.Chapter(
+        book=book,
+        volume=later,
+        title="后卷已有章",
+        outline="后章纲",
+        order_index=1,
+        status="outline",
+    )
+    db.add_all([existing, following])
+    db.flush()
+    book_id, volume_id, later_id = book.id, early.id, later.id
+    old_id, following_id, task_id = existing.id, following.id, task.id
+    original_checkpoint = task.checkpoint_json
+    db.commit()
+    llm = WaitingStream(prompts.CHAPTER_OUTLINE_SYSTEM, "## 第2章 作者新名\n模型补写纲")
+    monkeypatch.setattr(pipeline, "get_llm", lambda: llm)
+
+    def record(counts: dict[str, int]) -> None:
+        book_generation.merge_checkpoint(task, chapter_outline_counts=counts)
+
+    async def generate() -> list[pipeline.Event]:
+        return [
+            event
+            async for event in pipeline.gen_chapter_outlines(
+                db, volume_id, 2, recovery=stages.Recovery(record=record)
+            )
+        ]
+
+    def stored_chapters(
+        session: Session,
+    ) -> list[tuple[str, str | None, str, str, int, str, str | None]]:
+        return list(
+            session.execute(
+                select(
+                    models.Chapter.id,
+                    models.Chapter.volume_id,
+                    models.Chapter.title,
+                    models.Chapter.outline,
+                    models.Chapter.order_index,
+                    models.Chapter.status,
+                    models.ChapterContent.body,
+                )
+                .outerjoin(models.ChapterContent)
+                .order_by(models.Chapter.order_index, models.Chapter.id)
+            ).tuples()
+        )
+
+    def memory_revisions(session: Session) -> dict[str, str]:
+        return {
+            job_id: revision
+            for job_id, revision in session.execute(
+                select(models.MemorySyncJob.id, models.MemorySyncJob.revision)
+            ).tuples()
+        }
+
+    running = asyncio.create_task(generate())
+    try:
+        await asyncio.wait_for(llm.entered.wait(), timeout=3)
+        assert not db.in_transaction()
+        with Session(db.get_bind()) as author:
+            if change == "rename":
+                chapter_api.update_chapter(
+                    old_id,
+                    schemas.ChapterUpdate(title="第2章 作者新名", outline="作者新章纲"),
+                    author,
+                )
+            elif change == "add":
+                chapter_api.create_chapter(
+                    schemas.ChapterCreate(
+                        book_id=book_id,
+                        volume_id=volume_id,
+                        title="第2章 作者新名",
+                        outline="作者新章纲",
+                        order_index=2,
+                    ),
+                    author,
+                )
+            elif change == "delete":
+                chapter_api.delete_chapter(old_id, author)
+            elif change in {"complete", "later_body"}:
+                chapter_api.update_chapter_content(
+                    old_id if change == "complete" else following_id,
+                    schemas.ChapterContentUpdate(body="作者并发保存的完成正文"),
+                    author,
+                )
+            elif change == "volume_edit":
+                volume_api.update_volume(
+                    volume_id, schemas.VolumeUpdate(summary="作者新卷纲"), author
+                )
+            elif change == "book_edit":
+                book_api.update_book(
+                    book_id, schemas.BookUpdate(title="作者新书名"), author
+                )
+            elif change == "ending":
+                volume_api.update_volume(
+                    later_id, schemas.VolumeUpdate(order_index=-1), author
+                )
+            else:
+                chapter_api.reorder_chapters(
+                    schemas.ReorderRequest(
+                        items=[
+                            schemas.ReorderItem(
+                                id=old_id,
+                                volume_id=later_id,
+                                order_index=2,
+                            )
+                        ]
+                    ),
+                    author,
+                )
+            authored_chapters = stored_chapters(author)
+            authored_memory = memory_revisions(author)
+    finally:
+        llm.release.set()
+    events = await asyncio.wait_for(running, timeout=3)
+    with Session(db.get_bind()) as check:
+        saved_task = check.get(models.GenerationTask, task_id)
+        assert saved_task is not None
+        if change == "later_body":
+            assert events[-1] == ("done", "")
+            assert book_generation.load_checkpoint(saved_task)[
+                "chapter_outline_counts"
+            ] == {"chapters": 2}
+            rows = stored_chapters(check)
+            assert [title for _, _, title, *_ in rows] == [
+                "第1章 原名",
+                "第2章 作者新名",
+                "后卷已有章",
+            ]
+            _, _, _, _, order, status, body = rows[-1]
+            assert (order, status, body) == (2, "done", "作者并发保存的完成正文")
+        else:
+            assert events[-1][0] == "error" and "已变动" in events[-1][1]
+            assert all(event != "done" for event, _ in events)
+            assert not db.in_transaction()
+            assert saved_task.checkpoint_json == original_checkpoint
+            assert stored_chapters(check) == authored_chapters
+            if change == "volume_edit":
+                authored_volume = check.get(models.Volume, volume_id)
+                assert (
+                    authored_volume is not None
+                    and authored_volume.summary == "作者新卷纲"
+                )
+        assert memory_revisions(check) == authored_memory
+
+
+async def test_chapter_outline_skip_rechecks_author_inputs_under_lock(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    book, _ = seed(db)
+    volume = models.Volume(book=book, title="已有卷", summary="原卷纲")
+    db.add(models.Chapter(book=book, volume=volume, title="第1章", outline="原章纲"))
+    db.flush()
+    volume_id = volume.id
+    db.commit()
+    monkeypatch.setattr(pipeline, "get_llm", lambda: pytest.fail("完整章节无需生成"))
+    changed = False
+    bind = db.get_bind()
+
+    def edit_before_lock(
+        _conn: object, _cursor: object, stmt: str, *_args: object
+    ) -> None:
+        nonlocal changed
+        if changed or stmt != "BEGIN IMMEDIATE":
+            return
+        changed = True
+        with Session(bind) as author:
+            volume_api.update_volume(
+                volume_id, schemas.VolumeUpdate(summary="新卷纲"), author
+            )
+
+    records: list[dict[str, int]] = []
+    event.listen(bind, "before_cursor_execute", edit_before_lock)
+    try:
+        events = [
+            event
+            async for event in pipeline.gen_chapter_outlines(
+                db, volume_id, 1, recovery=stages.Recovery(record=records.append)
+            )
+        ]
+    finally:
+        event.remove(bind, "before_cursor_execute", edit_before_lock)
+    assert changed and events[-1][0] == "error" and "已变动" in events[-1][1]
+    assert not records and not db.in_transaction()
 
 
 @pytest.mark.parametrize(
