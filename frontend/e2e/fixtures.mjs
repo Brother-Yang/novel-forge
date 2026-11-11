@@ -8,7 +8,7 @@ import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
 import { fileURLToPath, URL } from "node:url";
 import { expect, test as base } from "@playwright/test";
-import { preview } from "vite";
+import { loadConfigFromFile, preview } from "vite";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const backend = fileURLToPath(new URL("../../backend/", import.meta.url));
@@ -104,9 +104,17 @@ export const test = base.extend({
           )
           .toBe(true);
 
+        const loaded = await loadConfigFromFile(
+          { command: "serve", mode: "production", isPreview: true },
+          join(frontend, "vite.config.ts"),
+          directory,
+          "error"
+        );
+        const proxy = loaded?.config.server?.proxy?.["/api"];
+        if (!proxy || typeof proxy === "string") throw new Error("未找到 Vite 的 /api 代理配置");
         server = await preview({
           configFile: false,
-          envFile: false,
+          envDir: false,
           root: directory,
           build: { outDir: dist },
           logLevel: "error",
@@ -114,7 +122,7 @@ export const test = base.extend({
             host: loopback,
             port: 0,
             strictPort: true,
-            proxy: { "/api": { target, changeOrigin: false } },
+            proxy: { "/api": { ...proxy, target } },
           },
         });
         const address = server.httpServer.address();

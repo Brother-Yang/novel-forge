@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { App, Button, Input, InputNumber, Progress, Space, Tag, Typography } from "antd";
 import { ArrowLeftOutlined, SendOutlined } from "@ant-design/icons";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
+import { ApiError } from "../api/client";
 import type { NovelGenerationResult } from "../api/types";
 import AgentTrace, { SystemNote } from "../components/AgentTrace";
 import BrandMark from "../components/BrandMark";
@@ -147,24 +148,30 @@ function AgentSession({ taskId, initialResult }: AgentSessionProps) {
   const [task, setTask] = useState(initialResult?.task);
   const [taskError, setTaskError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+  const knownActive = useRef(isTaskActive(initialResult?.task.status));
 
   useEffect(() => {
     const request = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     async function loadProgress() {
-      let running = true;
       try {
         const updatedTask = await api.getTask(taskId, request.signal);
         if (request.signal.aborted) return;
         setTask(updatedTask);
         setTaskError(null);
-        running = isTaskActive(updatedTask.status);
+        knownActive.current = isTaskActive(updatedTask.status);
       } catch (error) {
         if (request.signal.aborted) return;
+        if (error instanceof ApiError && error.status === 404) {
+          knownActive.current = false;
+          setTask(undefined);
+          setTaskError("任务不存在或已删除");
+          return;
+        }
         setTaskError(errMessage(error));
       }
-      if (running && !request.signal.aborted) timer = setTimeout(loadProgress, 2500);
+      if (knownActive.current && !request.signal.aborted) timer = setTimeout(loadProgress, 2500);
     }
 
     void loadProgress();
@@ -200,7 +207,7 @@ function AgentSession({ taskId, initialResult }: AgentSessionProps) {
           onClick={() => navigate(paths.home)}
         />
         <BrandMark compact onClick={() => navigate(paths.home)} />
-        <span className="nf-session__title">{book?.title ?? "AI 自主创作"}</span>
+        <span className="nf-session__title">{(task && book?.title) ?? "AI 自主创作"}</span>
         {statusTag && <Tag color={statusTag.color}>{statusTag.text}</Tag>}
         <div style={{ flex: 1 }} />
         {task && task.status === "running" && (

@@ -4,6 +4,7 @@ import { App as AntdApp, ConfigProvider } from "antd";
 import { MemoryRouter, Route, Routes, useParams, useSearchParams } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentTracePage, AgentTracePageEntry, Book, GenerationTask } from "../api/types";
+import { ApiError } from "../api/client";
 import { routePatterns } from "../router/paths";
 import AgentChat from "./AgentChat";
 
@@ -321,6 +322,59 @@ describe("AgentChat", () => {
     renderChat(["/agent?bookId=bbbbbbbb-cccc-dddd-eeee-ffffffffffff&taskId=task-1"]);
     expect(await screen.findByText("少年觉醒")).toBeInTheDocument();
     expect(await screen.findByText(/创作完成/)).toBeInTheDocument();
+  });
+
+  it.each([
+    { situation: "首次打开", wasRunning: false },
+    { situation: "活动任务已删除", wasRunning: true },
+  ])("$situation 返回 404 时停止轮询，允许手动重试", async ({ wasRunning }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const getTask = vi.mocked(api.getTask);
+    if (wasRunning) getTask.mockResolvedValueOnce(agentTask());
+    getTask
+      .mockRejectedValueOnce(new ApiError(404, "任务不存在"))
+      .mockResolvedValueOnce(agentTask({ status: "done", progress: 100 }));
+    vi.mocked(api.getBook).mockResolvedValue(book);
+    vi.mocked(api.getTaskTracePage).mockResolvedValue({ entries: [], has_more: false });
+
+    await act(async () => {
+      renderChat(["/agent?taskId=task-1"]);
+    });
+    if (wasRunning) await act(async () => vi.advanceTimersByTimeAsync(2500));
+    expect(screen.getByRole("alert")).toHaveTextContent("任务不存在或已删除");
+    expect(screen.queryByRole("region", { name: "执行轨迹" })).not.toBeInTheDocument();
+    const callsBeforeRetry = wasRunning ? 2 : 1;
+    await act(async () => vi.advanceTimersByTimeAsync(7500));
+    expect(getTask).toHaveBeenCalledTimes(callsBeforeRetry);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "重试加载任务" }));
+    });
+    expect(getTask).toHaveBeenCalledTimes(callsBeforeRetry + 1);
+    expect(screen.getByText(/创作完成/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("活动任务遇到网络故障仍会轮询并显示最终状态", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.mocked(api.getTask)
+      .mockResolvedValueOnce(agentTask())
+      .mockRejectedValueOnce(new TypeError("连接暂时中断"))
+      .mockResolvedValueOnce(agentTask({ status: "done", progress: 100 }));
+    vi.mocked(api.getBook).mockResolvedValue(book);
+    vi.mocked(api.getTaskTracePage).mockResolvedValue({ entries: [], has_more: false });
+
+    await act(async () => {
+      renderChat(["/agent?taskId=task-1"]);
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(2500));
+    expect(screen.getByRole("alert")).toHaveTextContent("连接暂时中断");
+    expect(screen.getByRole("region", { name: "执行轨迹" })).toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTimeAsync(2500));
+    expect(screen.getByText(/创作完成/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(api.getTask).toHaveBeenCalledTimes(3);
   });
 
   it("生成中点击查看书籍会带上返回对话所需的任务参数", async () => {
