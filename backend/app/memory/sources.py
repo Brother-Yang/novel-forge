@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -29,7 +29,7 @@ def chapter_body_hash(chapter: models.Chapter) -> str:
     return _hash(body) if body.strip() else ""
 
 
-def chapter_fact_hash(chapter: models.Chapter) -> str:
+def chapter_fact_body_hash(chapter: models.Chapter) -> str:
     return facts.fingerprint(chapter.content.body) if chapter.content else ""
 
 
@@ -57,21 +57,33 @@ def source_hash(db: Session, book_id: str, source_type: str, source_id: str) -> 
         chapter = db.get(models.Chapter, source_id)
         if not chapter or chapter.book_id != book_id:
             return ""
+        if source_type == CHAPTER:
+            return chapter_hash(chapter)
+        body_hash = chapter_fact_body_hash(chapter)
         return (
-            chapter_hash(chapter)
-            if source_type == CHAPTER
-            else chapter_fact_hash(chapter)
+            facts.extraction_fingerprint(
+                body_hash, facts.roster_for_book(db, book_id).fingerprint()
+            )
+            if body_hash
+            else ""
         )
     if source_type != VOLUME:
         return ""
     volume = db.get(models.Volume, source_id)
     if not volume or volume.book_id != book_id:
         return ""
-    chapters = db.scalars(
+    return volume_hash(volume, completed_volume_chapters(db, book_id, source_id))
+
+
+def completed_volume_chapters(
+    db: Session, book_id: str, volume_id: str
+) -> Sequence[models.Chapter]:
+    """Chapter order used for both the volume fingerprint and the summary input."""
+    return db.scalars(
         select(models.Chapter)
         .where(
-            models.Chapter.volume_id == source_id,
-            models.Chapter.book_id == volume.book_id,
+            models.Chapter.volume_id == volume_id,
+            models.Chapter.book_id == book_id,
             models.Chapter.status == "done",
         )
         .options(
@@ -79,7 +91,6 @@ def source_hash(db: Session, book_id: str, source_type: str, source_id: str) -> 
         )
         .order_by(models.Chapter.order_index, models.Chapter.id)
     ).all()
-    return volume_hash(volume, chapters)
 
 
 def volume_hash(volume: models.Volume, chapters: Iterable[models.Chapter]) -> str:

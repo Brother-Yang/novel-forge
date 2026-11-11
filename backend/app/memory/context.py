@@ -86,19 +86,16 @@ def _volume_summary(db: Session, chapter: models.Chapter) -> str:
         return ""
     volume = db.get(models.Volume, chapter.volume_id)
     job = sources.find_job(db, chapter.book_id, sources.VOLUME, chapter.volume_id)
-    if not volume or not job or job.status != "done":
-        return ""
-    if job.source_hash != sources.source_hash(
-        db, chapter.book_id, sources.VOLUME, volume.id
+    if (
+        not volume
+        or volume.book_id != chapter.book_id
+        or not job
+        or job.status != "done"
     ):
         return ""
-    completed = db.scalars(
-        select(models.Chapter).where(
-            models.Chapter.volume_id == volume.id,
-            models.Chapter.status == "done",
-            models.Chapter.book_id == chapter.book_id,
-        )
-    ).all()
+    completed = sources.completed_volume_chapters(db, chapter.book_id, volume.id)
+    if job.source_hash != sources.volume_hash(volume, completed):
+        return ""
     # A rolling volume summary can include later events. Never use it to rewrite
     # an earlier chapter, or use the initial outline as if it were history.
     if not completed or any(ch.order_index >= chapter.order_index for ch in completed):
@@ -152,6 +149,22 @@ def _valid_hits(
 
 async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
     """在 token 预算内拼装本章生成所需上下文。"""
+    book_id, chapter_id = chapter.book_id, chapter.id
+    query_text = chapter.outline or chapter.title
+    db.rollback()
+    query_emb: list[float] = []
+    degraded = False
+    try:
+        query_emb = await get_llm().embed(query_text)
+        if not query_emb:
+            raise ValueError("empty query embedding")
+    except Exception as exc:  # noqa: BLE001 - provider errors allow SQL fallback
+        _log_retrieval_failure(book_id, chapter_id, "embed", exc)
+        degraded = True
+
+    # Every SQL context component is read after the final await. While the
+    # model is embedding the query, an edit can change prose or chapter order.
+    db.expire_all()
     budget = settings.context_token_budget
     book = db.get(models.Book, chapter.book_id)
     parts: list[str] = []
@@ -200,56 +213,44 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
             )
         )
 
-    # 向量召回:世界观 + 历史相关片段。检索失败不阻断正文生成。
-    degraded = False
-    operation = "embed"
-    book_id, chapter_id = chapter.book_id, chapter.id
-    query_text = chapter.outline or chapter.title
-    db.rollback()
-    try:
-        llm = get_llm()
-        query_emb = await llm.embed(query_text)
-        if not query_emb:
-            raise ValueError("empty query embedding")
-        # An edit can commit while the embedding request is awaiting the model.
-        db.expire_all()
+    if query_emb:
         operation = "worldbuilding_query"
-        wb_hits = vector_store.query(
-            chapter.book_id, query_emb, top_k=12, where={"source_type": sources.WORLD}
-        )
-        world_documents = _valid_hits(db, chapter, wb_hits, sources.WORLD)[:4]
-        if world_documents:
-            parts.append("# 相关设定(检索)\n" + "\n".join(world_documents))
-        operation = "chapter_query"
-        # Current SQL order determines eligibility before ranking. Reordering
-        # chapters changes the very next recall without a model re-embedding.
-        if history_ids := _history_source_ids(db, chapter):
-            sum_hits = vector_store.query(
+        try:
+            wb_hits = vector_store.query(
                 chapter.book_id,
                 query_emb,
                 top_k=12,
-                where={
-                    "$and": [
-                        {"source_type": sources.CHAPTER},
-                        {"source_id": {"$in": history_ids}},
-                    ]
-                },
+                where={"source_type": sources.WORLD},
             )
-            history_documents = _valid_hits(db, chapter, sum_hits, sources.CHAPTER)[:4]
-            if history_documents:
-                parts.append("# 相关历史情节(检索)\n" + "\n".join(history_documents))
-    except Exception as exc:  # noqa: BLE001 - provider/Chroma errors allow SQL fallback
-        logger.warning(
-            "RAG degraded book_id=%s chapter_id=%s operation=%s error_type=%s",
-            book_id,
-            chapter_id,
-            operation,
-            type(exc).__name__,
-        )
-        degraded = True
+            world_documents = _valid_hits(db, chapter, wb_hits, sources.WORLD)[:4]
+            if world_documents:
+                parts.append("# 相关设定(检索)\n" + "\n".join(world_documents))
+            operation = "chapter_query"
+            # Use the current SQL order before ranking, including after a reorder.
+            if history_ids := _history_source_ids(db, chapter):
+                sum_hits = vector_store.query(
+                    chapter.book_id,
+                    query_emb,
+                    top_k=12,
+                    where={
+                        "$and": [
+                            {"source_type": sources.CHAPTER},
+                            {"source_id": {"$in": history_ids}},
+                        ]
+                    },
+                )
+                history_documents = _valid_hits(db, chapter, sum_hits, sources.CHAPTER)[
+                    :4
+                ]
+                if history_documents:
+                    parts.append(
+                        "# 相关历史情节(检索)\n" + "\n".join(history_documents)
+                    )
+        except Exception as exc:  # noqa: BLE001 - Chroma errors allow SQL fallback
+            _log_retrieval_failure(book_id, chapter_id, operation, exc)
+            degraded = True
 
     # 前情摘要;超预算则降级为卷摘要
-    db.expire_all()
     prev = _previous_summaries(db, chapter)
     current = "\n\n".join(parts)
     prev_block = "# 前情提要\n" + "\n".join(prev) if prev else ""
@@ -266,3 +267,15 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
     if degraded:
         context += MEMORY_DEGRADED_BLOCK
     return context
+
+
+def _log_retrieval_failure(
+    book_id: str, chapter_id: str, operation: str, exc: Exception
+) -> None:
+    logger.warning(
+        "RAG degraded book_id=%s chapter_id=%s operation=%s error_type=%s",
+        book_id,
+        chapter_id,
+        operation,
+        type(exc).__name__,
+    )

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import models
 from app.agents import pipeline, prompts, state
-from app.memory import facts, sync
+from app.memory import context, facts, sync
 from tests.memory_support import FakeLLM, FakeVectors, chapter_context, drain, seed
 from tests.memory_support import client as memory_client_fixture  # noqa: F401
 from tests.memory_support import fakes as memory_fakes_fixture  # noqa: F401
@@ -160,6 +160,196 @@ async def test_fact_replay_respects_live_order_and_keeps_author_fields(
         assert db.get(models.ChapterFacts, later_id) is None
         assert sync.find_job(db, book_id, sync.FACTS, later_id) is None
         assert state.load_state(db, book_id).open_plot_threads[0].status == "active"
+
+
+@pytest.mark.parametrize("edit", ["rewrite", "delete", "reorder"])
+async def test_context_reloads_story_facts_after_waiting_for_query_embedding(
+    storage: sessionmaker[Session],
+    client: httpx.AsyncClient,
+    fakes: tuple[FakeLLM, FakeVectors],
+    edit: str,
+) -> None:
+    llm, _ = fakes
+    with storage() as db:
+        book_id, volume_id, chapter_id, target_id = seed(db)
+        character_id, thread_id = seed_cast(db, book_id)
+    original_body = "阿青在旧山庄定位解开了暗号。"
+    rewritten_body = "阿青在新渡口继续查暗号。"
+    llm.fact_replies[original_body] = reply(
+        character_id,
+        thread_id,
+        evidence=original_body,
+        location="旧山庄定位",
+        status="closed",
+    )
+    llm.fact_replies[rewritten_body] = reply(
+        character_id,
+        thread_id,
+        evidence=rewritten_body,
+        location="新渡口",
+        status="active",
+    )
+    content_url = f"/chapters/{chapter_id}/content"
+    assert (
+        await client.put(content_url, json={"body": original_body})
+    ).status_code == 200
+    await drain(storage, book_id)
+    assert '"location": "旧山庄定位"' in await chapter_context(storage, target_id)
+
+    with storage() as db:
+        target = db.get(models.Chapter, target_id)
+        assert target is not None
+        llm.block_embed_for = target.title
+        pending = asyncio.create_task(context.build_chapter_context(db, target))
+        try:
+            await asyncio.wait_for(llm.entered.wait(), timeout=3)
+            if edit == "rewrite":
+                assert (
+                    await client.put(content_url, json={"body": rewritten_body})
+                ).status_code == 200
+                await drain(storage, book_id)
+            elif edit == "delete":
+                assert (
+                    await client.delete(f"/chapters/{chapter_id}")
+                ).status_code == 200
+            else:
+                response = await client.post(
+                    "/chapters/reorder",
+                    json={
+                        "items": [
+                            {
+                                "id": chapter_id,
+                                "order_index": 3,
+                                "volume_id": volume_id,
+                            },
+                        ]
+                    },
+                )
+                assert response.status_code == 200
+        finally:
+            llm.release.set()
+        recalled = await pending
+    assert "旧山庄定位" not in recalled
+    if edit == "rewrite":
+        assert '"location": "新渡口"' in recalled and "(active) 岸边暗号" in recalled
+    else:
+        assert "前章确立的人物状态" not in recalled and "(open) 岸边暗号" in recalled
+
+
+async def test_new_character_makes_completed_fact_job_repairable_without_a_body_edit(
+    storage: sessionmaker[Session],
+    client: httpx.AsyncClient,
+    fakes: tuple[FakeLLM, FakeVectors],
+) -> None:
+    llm, _ = fakes
+    with storage() as db:
+        book_id, _, chapter_id, _ = seed(db)
+    body = "阿青抵达北门。"
+    assert (
+        await client.put(f"/chapters/{chapter_id}/content", json={"body": body})
+    ).status_code == 200
+    await drain(storage, book_id)
+    assert facts.FACTS_SYSTEM not in llm.chats
+    with storage() as db:
+        previous = db.get(models.ChapterFacts, chapter_id)
+        assert previous is not None
+        old_roster_hash = previous.roster_hash
+
+    added = await client.post("/characters", json={"book_id": book_id, "name": "阿青"})
+    assert added.status_code == 200
+    character_id = added.json()["id"]
+    llm.fact_replies[body] = json.dumps(
+        {
+            "characters": [
+                {
+                    "character_id": character_id,
+                    "state": {"location": "北门"},
+                    "evidence": body,
+                }
+            ],
+            "threads": [],
+        },
+        ensure_ascii=False,
+    )
+    state_url = f"/books/{book_id}/memory/status"
+    assert (await client.get(state_url)).json()["missing"] == 1
+    repaired = await client.post(f"/books/{book_id}/memory/repair")
+    assert (
+        repaired.json()["pending"] == 1
+        and repaired.json()["items"][0]["source_type"] == sync.FACTS
+    )
+    await drain(storage, book_id)
+    assert llm.chats.count(facts.FACTS_SYSTEM) == 1
+    assert (await client.get(state_url)).json()["missing"] == 0
+    with storage() as db:
+        assert facts.replay(db, book_id).characters == {
+            character_id: {"location": "北门"}
+        }
+        saved = db.get(models.ChapterFacts, chapter_id)
+        source = db.get(models.ChapterContent, chapter_id)
+        assert saved is not None and source is not None
+        assert (
+            saved.source_hash == facts.fingerprint(body)
+            and saved.roster_hash != old_roster_hash
+        )
+        assert source.body == body
+        # The row remains tied to the actual body even if an import bypasses
+        # the outbox and preserves the matching roster and job revision.
+        source.body = "实际正文已被外部导入替换。"
+        db.commit()
+        assert not facts.replay(db, book_id).characters
+
+
+async def test_roster_change_during_extraction_requeues_and_discards_old_reply(
+    storage: sessionmaker[Session],
+    client: httpx.AsyncClient,
+    fakes: tuple[FakeLLM, FakeVectors],
+) -> None:
+    llm, _ = fakes
+    with storage() as db:
+        book_id, _, chapter_id, _ = seed(db)
+        character_id, thread_id = seed_cast(db, book_id)
+    body = "阿青和阿宁抵达北门调查暗号。"
+    llm.fact_replies[body] = reply(
+        character_id, thread_id, evidence=body, location="北门", status="active"
+    )
+    assert (
+        await client.put(f"/chapters/{chapter_id}/content", json={"body": body})
+    ).status_code == 200
+    llm.block_chat_for = body
+    with storage() as db:
+        job = sync.find_job(db, book_id, sync.FACTS, chapter_id)
+        assert job is not None
+        old_revision = job.revision
+        pending = asyncio.create_task(sync.process_job(db, job.id))
+        try:
+            await asyncio.wait_for(llm.entered.wait(), timeout=3)
+            added = await client.post(
+                "/characters", json={"book_id": book_id, "name": "阿宁"}
+            )
+            assert added.status_code == 200
+            added_id = added.json()["id"]
+        finally:
+            llm.release.set()
+        assert not await pending
+        refreshed = sync.find_job(db, book_id, sync.FACTS, chapter_id)
+        assert (
+            refreshed is not None
+            and refreshed.revision != old_revision
+            and refreshed.status == "pending"
+        )
+        assert db.get(models.ChapterFacts, chapter_id) is None
+    batch = json.loads(llm.fact_replies[body])
+    batch["characters"].append(
+        {"character_id": added_id, "state": {"location": "北门"}, "evidence": body}
+    )
+    llm.fact_replies[body] = json.dumps(batch, ensure_ascii=False)
+    await drain(storage, book_id)
+    with storage() as db:
+        assert facts.replay(db, book_id).characters == {
+            character_id: {"location": "北门"},
+            added_id: {"location": "北门"},
+        }
 
 
 async def test_invalid_facts_are_retryable_and_revisions_rebuild_without_rewriting_prose(

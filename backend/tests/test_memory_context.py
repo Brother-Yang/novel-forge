@@ -131,6 +131,35 @@ async def test_refresh_volume_summary_skips_chapters_without_summary(db, monkeyp
     assert volume.summary == "旧摘要"
 
 
+async def test_volume_summary_input_uses_chapter_id_to_break_equal_order(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    volume = _book_with_volume(db)
+    for chapter_id, title in (
+        ("zz-inserted-first", "先插入"),
+        ("aa-inserted-last", "后插入"),
+    ):
+        chapter = models.Chapter(
+            id=chapter_id,
+            book_id=volume.book_id,
+            volume_id=volume.id,
+            title=title,
+            order_index=0,
+            status="done",
+            content=models.ChapterContent(body=f"{title}正文"),
+        )
+        chapter.summary = models.ChapterSummary(
+            summary=f"{title}摘要", source_hash=sync.chapter_body_hash(chapter)
+        )
+        db.add(chapter)
+    db.commit()
+    llm = FakeLLM("卷摘要")
+    monkeypatch.setattr(sync, "get_llm", lambda: llm)
+    assert await _refresh_volume(db, volume)
+    assert llm.last_prompt is not None
+    assert llm.last_prompt.index("[后插入]") < llm.last_prompt.index("[先插入]")
+
+
 async def test_chapter_context_includes_creative_brief(db, monkeypatch):
     brief = "AI时代，中年程序员靠古法编程力挽狂澜"
     book = models.Book(

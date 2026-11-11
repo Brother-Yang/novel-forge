@@ -287,7 +287,10 @@ class ChapterFacts(Base):
     __tablename__ = "chapter_facts"
 
     chapter_id: Mapped[str] = mapped_column(
-        String(BOOK_ID_LEN), ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True
+        String(BOOK_ID_LEN),
+        ForeignKey("chapters.id", ondelete="CASCADE"),
+        primary_key=True,
     )
     source_hash: Mapped[str] = mapped_column(String(64))
+    roster_hash: Mapped[str] = mapped_column(String(64), default="")
     payload: Mapped[str] = mapped_column(Text)

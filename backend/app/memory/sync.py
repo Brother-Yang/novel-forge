@@ -28,8 +28,9 @@ from .sources import (
     VOLUME,
     WORLD,
     chapter_body_hash,
-    chapter_fact_hash,
+    chapter_fact_body_hash,
     chapter_hash,
+    completed_volume_chapters,
     find_job,
     source_hash,
     valid_summary,
@@ -128,10 +129,10 @@ def enqueue_chapter(
     old_volume_id: str | None = None,
 ) -> models.MemorySyncJob:
     job = enqueue(db, chapter.book_id, CHAPTER, chapter.id)
-    if chapter_fact_hash(chapter):
-        fact_job = enqueue(db, chapter.book_id, FACTS, chapter.id)
+    if fact_body_hash := chapter_fact_body_hash(chapter):
+        enqueue(db, chapter.book_id, FACTS, chapter.id)
         previous_facts = db.get(models.ChapterFacts, chapter.id)
-        if previous_facts and previous_facts.source_hash != fact_job.source_hash:
+        if previous_facts and previous_facts.source_hash != fact_body_hash:
             db.delete(previous_facts)
     else:
         clear_chapter_facts(db, chapter)
@@ -240,20 +241,21 @@ async def _write_chapter_facts(
     job: models.MemorySyncJob,
     revision: str,
 ) -> bool:
-    job_id, book_id, chapter_id, source_hash = (
+    job_id, book_id, chapter_id = (
         job.id,
         job.book_id,
         job.source_id,
-        job.source_hash,
     )
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter or not chapter.content:
         return False
     body = chapter.content.body
+    body_hash = facts.fingerprint(body)
     roster = facts.roster_for_book(db, book_id)
+    roster_hash = roster.fingerprint()
     saved = db.get(models.ChapterFacts, chapter_id)
     batch: facts.FactBatch | None = None
-    if saved and saved.source_hash == source_hash:
+    if saved and saved.source_hash == body_hash and saved.roster_hash == roster_hash:
         try:
             batch = facts.FactBatch.model_validate_json(saved.payload)
             facts.validate(batch, body, roster)
@@ -268,13 +270,17 @@ async def _write_chapter_facts(
     current = _current(db, job_id, revision, lock=True)
     if current is None:
         return False
-    # The author's cast may change while the model is running. Never attach a
-    # fact to an entity that no longer belongs to this book.
-    facts.validate(batch, body, facts.roster_for_book(db, book_id))
+    # Check the exact snapshot used by the model, including a roster change
+    # between the initial job check and the prompt read.
+    if current.source_hash != facts.extraction_fingerprint(body_hash, roster_hash):
+        enqueue(db, book_id, FACTS, chapter_id, force=True)
+        db.commit()
+        return False
     db.merge(
         models.ChapterFacts(
             chapter_id=chapter_id,
-            source_hash=source_hash,
+            source_hash=body_hash,
+            roster_hash=roster_hash,
             payload=batch.model_dump_json(exclude_none=True),
         )
     )
@@ -438,28 +444,12 @@ async def _process_job(
             volume = db.get(models.Volume, source_id)
             if volume is None:
                 return False
-            chapters = list(
-                db.scalars(
-                    select(models.Chapter)
-                    .where(
-                        models.Chapter.volume_id == source_id,
-                        models.Chapter.book_id == book_id,
-                        models.Chapter.status == "done",
-                    )
-                    .options(
-                        selectinload(models.Chapter.content),
-                        selectinload(models.Chapter.summary),
-                    )
-                    .order_by(models.Chapter.order_index)
-                ).all()
-            )
-            if any(chapter_hash(ch) and not valid_summary(ch) for ch in chapters):
-                raise MissingChapterSummary()
-            summaries = [
-                f"[{ch.title}] {valid_summary(ch)}"
-                for ch in chapters
-                if valid_summary(ch)
-            ]
+            summaries: list[str] = []
+            for chapter in completed_volume_chapters(db, book_id, source_id):
+                if chapter_summary := valid_summary(chapter):
+                    summaries.append(f"[{chapter.title}] {chapter_summary}")
+                elif chapter_body_hash(chapter):
+                    raise MissingChapterSummary()
             if summaries:
                 prompt = prompts.VOLUME_SUMMARY_USER.format(
                     volume_title=volume.title, chapter_summaries="\n".join(summaries)
@@ -590,10 +580,15 @@ def _book_memory(
     }
     expected: dict[MemoryKey, str] = {}
     missing_artifacts: set[MemoryKey] = set()
+    roster_hash = facts.roster_for_book(db, book_id).fingerprint()
     fact_hashes = {
-        chapter_id: digest
-        for chapter_id, digest in db.execute(
-            select(models.ChapterFacts.chapter_id, models.ChapterFacts.source_hash)
+        chapter_id: (body_hash, saved_roster)
+        for chapter_id, body_hash, saved_roster in db.execute(
+            select(
+                models.ChapterFacts.chapter_id,
+                models.ChapterFacts.source_hash,
+                models.ChapterFacts.roster_hash,
+            )
             .join(models.Chapter)
             .where(models.Chapter.book_id == book_id)
         )
@@ -623,12 +618,14 @@ def _book_memory(
             if chapter.volume_id and chapter.status == "done":
                 chapters_by_volume.setdefault(chapter.volume_id, []).append(chapter)
             facts_key = (FACTS, chapter.id)
-            fact_hash = chapter_fact_hash(chapter)
-            expected[facts_key] = fact_hash
+            fact_body_hash = chapter_fact_body_hash(chapter)
+            expected[facts_key] = facts.extraction_fingerprint(
+                fact_body_hash, roster_hash
+            )
             if (
                 (job := jobs.get(facts_key))
                 and job.status == "done"
-                and fact_hashes.get(chapter.id) != fact_hash
+                and fact_hashes.get(chapter.id) != (fact_body_hash, roster_hash)
             ):
                 missing_artifacts.add(facts_key)
     for volume in db.scalars(
