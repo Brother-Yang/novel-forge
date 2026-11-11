@@ -1,15 +1,17 @@
 """真实 SQLite 与脚本化 LLM 验证生成完成边界,禁止访问实际模型/记忆库。"""
 
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from app import models
+from app import models, schemas
 from app.agents import orchestrator, pipeline, planner, tools
 from app.agents.completion import chapter_counts, chapter_is_complete
+from app.api import chapters as chapter_api
 from app.config import settings
 from app.db_base import Base
 from app.llm.base import ToolCall, ToolChatResult
@@ -183,6 +185,102 @@ async def test_blank_body_never_replaces_content_or_marks_done(
     assert chapter_is_complete(chapter)
     assert chapter.content is not None
     assert chapter.content.body == "重试后的有效正文"
+
+
+@pytest.mark.parametrize("output", ["模型生成的正文", " \n\t\u3000"])
+@pytest.mark.parametrize("change", ["save", "delete", "outline", "volume"])
+async def test_chapter_generation_preserves_concurrent_author_changes(
+    db: Session, monkeypatch: pytest.MonkeyPatch, output: str, change: str
+) -> None:
+    book, chapter = seed(db, body="原有正文", status="done")
+    original_volume = models.Volume(book_id=book.id, title="第一卷", order_index=0)
+    new_volume = models.Volume(book_id=book.id, title="第二卷", order_index=1)
+    chapter.volume = original_volume
+    chapter.outline = "原有章纲"
+    db.add(new_volume)
+    db.commit()
+    chapter_id, new_volume_id = chapter.id, new_volume.id
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class DelayedModel:
+        async def chat_stream(
+            self, _prompt: str, system: str = ""
+        ) -> AsyncIterator[str]:
+            entered.set()
+            await release.wait()
+            yield output
+
+    async def collect() -> list[pipeline.Event]:
+        return [event async for event in pipeline.gen_chapter_body(db, chapter_id)]
+
+    async def unexpected_memory(_db: Session, _chapter: models.Chapter) -> bool:
+        raise AssertionError("冲突后不应处理生成正文的记忆")
+
+    def saved_fields(row: models.Chapter | None) -> object:
+        if row is None:
+            return None
+        return (
+            row.title,
+            row.outline,
+            row.status,
+            row.volume_id,
+            row.order_index,
+            row.word_count,
+            row.content.body if row.content else None,
+        )
+
+    def memory_jobs(session: Session) -> set[tuple[str, str, str, str]]:
+        return {
+            (job.id, job.revision, job.status, job.source_hash)
+            for job in session.scalars(select(models.MemorySyncJob))
+        }
+
+    monkeypatch.setattr(pipeline, "get_llm", DelayedModel)
+    monkeypatch.setattr(
+        pipeline.memory_sync, "process_chapter_memory", unexpected_memory
+    )
+    generation = asyncio.create_task(collect())
+    await asyncio.wait_for(entered.wait(), 2)
+    try:
+        with Session(db.get_bind()) as editor:
+            active = editor.get(models.Chapter, chapter_id)
+            assert active is not None and active.status == "drafting"
+            if change == "save":
+                chapter_api.update_chapter_content(
+                    chapter_id,
+                    schemas.ChapterContentUpdate(body="作者另存的正文"),
+                    editor,
+                )
+            elif change == "delete":
+                chapter_api.delete_chapter(chapter_id, editor)
+            elif change == "outline":
+                chapter_api.update_chapter(
+                    chapter_id,
+                    schemas.ChapterUpdate(title="作者的新标题", outline="作者的新章纲"),
+                    editor,
+                )
+            else:
+                chapter_api.update_chapter(
+                    chapter_id,
+                    schemas.ChapterUpdate(volume_id=new_volume_id, order_index=10),
+                    editor,
+                )
+            author_state = saved_fields(editor.get(models.Chapter, chapter_id))
+            author_memory = memory_jobs(editor)
+    finally:
+        release.set()
+
+    events = await asyncio.wait_for(generation, 2)
+    assert events[-1][0] == "error"
+    if change == "delete":
+        assert "章节已删除" in events[-1][1]
+    else:
+        assert "章节已修改" in events[-1][1]
+    with Session(db.get_bind()) as reader:
+        assert saved_fields(reader.get(models.Chapter, chapter_id)) == author_state
+        assert memory_jobs(reader) == author_memory
+        if change == "delete":
+            assert reader.get(models.ChapterContent, chapter_id) is None
 
 
 @pytest.mark.parametrize(

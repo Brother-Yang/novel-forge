@@ -54,6 +54,41 @@ beforeEach(() => {
 });
 
 describe("ChapterEditor 编辑安全", () => {
+  it.each(["error", "stop"])("已有生成预览时%s仍保留原编辑草稿", async (ending) => {
+    const stream = deferred<void>();
+    vi.mocked(sseFetch).mockReturnValueOnce(stream.promise);
+    render(editor());
+    const body = await screen.findByPlaceholderText(bodyPlaceholder);
+    fireEvent.change(body, { target: { value: "未保存的作者草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: /生成正文/ }));
+    const handlers = vi.mocked(sseFetch).mock.calls[0][2];
+    await act(async () => handlers.onEvent("token", "模型正在生成的预览"));
+    expect(body).toHaveValue("模型正在生成的预览");
+    if (ending === "stop") fireEvent.click(screen.getByRole("button", { name: /停止/ }));
+    else await act(async () => handlers.onEvent("error", "章节已在其他窗口更新，本次生成未保存"));
+    await act(async () => stream.resolve());
+    expect(body).toHaveValue("未保存的作者草稿");
+    fireEvent.click(screen.getByRole("button", { name: /保存$/ }));
+    await waitFor(() => expect(api.saveContent).toHaveBeenLastCalledWith("a", "未保存的作者草稿"));
+  });
+
+  it("只有收到已保存结束事件后，生成预览才成为编辑稿", async () => {
+    const stream = deferred<void>();
+    vi.mocked(sseFetch).mockReturnValueOnce(stream.promise);
+    render(editor());
+    const body = await screen.findByPlaceholderText(bodyPlaceholder);
+    fireEvent.click(screen.getByRole("button", { name: /生成正文/ }));
+    const handlers = vi.mocked(sseFetch).mock.calls[0][2];
+    await act(async () => handlers.onEvent("token", "  新生成正文\n"));
+    expect(body).toBeDisabled();
+    await act(async () => {
+      handlers.onEvent("done", "");
+      stream.resolve();
+    });
+    expect(body).toHaveValue("新生成正文");
+    expect(body).toBeEnabled();
+  });
+
   it("正文仍在加载时不能输入、保存或生成，加载后才展示已有正文", async () => {
     const content = deferred<{ chapter_id: string; body: string }>();
     vi.mocked(api.getContent).mockReturnValue(content.promise);

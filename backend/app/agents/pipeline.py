@@ -14,12 +14,14 @@ from contextlib import aclosing
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from .. import models
 from ..llm import get_llm
 from ..memory import context as memory
 from ..memory import sync as memory_sync
-from . import planner, prompts, stages
+from . import chapter_plans, chapter_writes, planner, prompts, stages
+from .errors import GenerationError
 
 logger = logging.getLogger(__name__)
 Event = tuple[str, str]
@@ -430,60 +432,6 @@ async def gen_outline(
 
 
 # ---------- 4. 章节大纲 ----------
-def _chapter_insert_position(
-    db: Session,
-    volume: models.Volume,
-    count: int,
-    retained_ids: set[str] | None,
-) -> tuple[int, list[models.Chapter], int]:
-    if retained_ids is None:
-        base = db.scalar(
-            select(func.max(models.Chapter.order_index)).where(
-                models.Chapter.book_id == volume.book_id
-            )
-        )
-        return (base if base is not None else -1) + 1, [], 0
-
-    rows = db.execute(
-        select(models.Chapter, models.Volume.order_index)
-        .outerjoin(models.Volume, models.Volume.id == models.Chapter.volume_id)
-        .where(models.Chapter.book_id == volume.book_id)
-        .order_by(models.Chapter.order_index, models.Chapter.id)
-        .execution_options(populate_existing=True)
-    ).all()
-    existing = [chapter for chapter, _ in rows]
-    current = [chapter for chapter in existing if chapter.volume_id == volume.id]
-    if {chapter.id for chapter in current} != retained_ids:
-        raise stages.InvalidStage("生成期间卷内章节发生变动，请核对目录")
-    if len({chapter.order_index for chapter in existing}) != len(existing):
-        raise stages.InvalidStage("已有章节序号重复，请先调整目录顺序")
-    following = next(
-        (
-            chapter.order_index
-            for chapter, volume_order in rows
-            if volume_order is not None and volume_order > volume.order_index
-        ),
-        None,
-    )
-    if following is None:
-        return (existing[-1].order_index + 1 if existing else 0), [], 0
-    if any(chapter.order_index >= following for chapter in current):
-        raise stages.InvalidStage("本卷与后续卷章节交错，请先调整目录顺序")
-
-    preceding = [
-        chapter.order_index for chapter in existing if chapter.order_index < following
-    ]
-    start = preceding[-1] + 1 if preceding else min(0, following)
-    offset = max(0, start + count - following)
-    # 插入所需的最少空位，已有章节保留相对顺序。
-    shifted = (
-        [chapter for chapter in existing if chapter.order_index >= following]
-        if offset
-        else []
-    )
-    return start, shifted, offset
-
-
 async def gen_chapter_outlines(
     db: Session,
     volume_id: str,
@@ -503,13 +451,7 @@ async def gen_chapter_outlines(
         yield ("error", "书籍不存在")
         return
     existing = (
-        list(
-            db.scalars(
-                select(models.Chapter)
-                .where(models.Chapter.volume_id == volume_id)
-                .order_by(models.Chapter.order_index, models.Chapter.id)
-            )
-        )
+        chapter_plans.ordered_volume_chapters(db, book.id, volume_id)
         if recovery
         else []
     )
@@ -557,37 +499,22 @@ async def gen_chapter_outlines(
         )
         stages.validate_ordinals(sections, numbers, "章")
         stages.require_distinct(sections, saved, "章节")
-        order, shifted, offset = _chapter_insert_position(
+        chapter_plans.stage_new_outlines(
             db,
             volume,
-            len(numbers),
-            {chapter.id for chapter in existing} if recovery else None,
+            sections,
+            retained_ids={chapter.id for chapter in existing} if recovery else None,
         )
     except stages.InvalidStage as exc:
         yield ("error", _retry_message(exc))
         return
 
-    items = [
-        models.Chapter(
-            book_id=book.id,
-            volume_id=volume_id,
-            title=item.title,
-            order_index=order + index,
-            outline=item.body,
-            status="outline",
-        )
-        for index, item in enumerate(sections)
-    ]
-    for chapter in shifted:
-        chapter.order_index += offset
-    db.add_all(items)
-
     stages.commit(
         db,
         recovery,
-        chapters=len(existing) + len(items),
+        chapters=len(existing) + len(sections),
     )
-    yield ("log", f"已为《{volume.title}》生成 {len(items)} 章大纲")
+    yield ("log", f"已为《{volume.title}》生成 {len(sections)} 章大纲")
     yield ("done", "")
 
 
@@ -595,40 +522,41 @@ async def gen_chapter_outlines(
 async def gen_chapter_body(
     db: Session, chapter_id: str, words: int = 2000, is_ending: bool | None = None
 ) -> AsyncIterator[Event]:
-    chapter = db.get(models.Chapter, chapter_id)
-    if not chapter:
-        yield ("error", "章节不存在")
+    try:
+        chapter, expected, book_title = chapter_writes.begin_draft(db, chapter_id)
+    except GenerationError as exc:
+        yield ("error", str(exc))
         return
-    book = db.get(models.Book, chapter.book_id)
-    if not book:
-        yield ("error", "书籍不存在")
-        return
-    chapter.status = "drafting"
-    db.commit()
 
     if is_ending is None:
         # 未显式指定时,按结构自动判断:全书 order_index 最大的章节即末章,
         # 兜底覆盖固定流水线(novel_generation)不会显式传 is_ending 的情况。
         max_chapter_order = db.scalar(
             select(func.max(models.Chapter.order_index)).where(
-                models.Chapter.book_id == chapter.book_id
+                models.Chapter.book_id == expected.book_id
             )
         )
         is_ending = (
-            max_chapter_order is not None and chapter.order_index >= max_chapter_order
+            max_chapter_order is not None and expected.order_index >= max_chapter_order
         )
 
-    ctx = await memory.build_chapter_context(db, chapter)
+    try:
+        ctx = await memory.build_chapter_context(db, chapter)
+    except ObjectDeletedError:
+        db.rollback()
+        yield ("error", chapter_writes.DELETED_DURING_GENERATION)
+        return
     if ctx.endswith(memory.MEMORY_DEGRADED_BLOCK):
         yield ("log", memory.MEMORY_DEGRADED_NOTE)
         ctx = ctx.removesuffix(memory.MEMORY_DEGRADED_BLOCK)
     user = prompts.CHAPTER_BODY_USER.format(
-        title=book.title,
-        chapter_title=chapter.title,
+        title=book_title,
+        chapter_title=expected.title,
         context=ctx,
         words=words,
         ending_note=(prompts.CHAPTER_BODY_ENDING_NOTE if is_ending else ""),
     )
+    db.rollback()
 
     full = ""
     async with aclosing(_stream(prompts.CHAPTER_BODY_SYSTEM, user)) as stream:
@@ -639,20 +567,14 @@ async def gen_chapter_body(
                 yield ev, data
 
     body = full.strip()
+    try:
+        chapter = chapter_writes.save_result(db, expected, body)
+    except GenerationError as exc:
+        yield ("error", str(exc))
+        return
     if not body:
-        # 重写失败时保留旧正文和字数,且不能留下可被续跑跳过的 done 状态。
-        chapter.status = "outline"
-        db.commit()
         yield ("error", "模型未生成有效章节正文,请重试")
         return
-    if chapter.content:
-        chapter.content.body = body
-    else:
-        chapter.content = models.ChapterContent(body=body)
-    chapter.word_count = len(body)
-    chapter.status = "done"
-    memory_sync.enqueue_chapter(db, chapter)
-    db.commit()
 
     # 一致性回写:生成章摘要并写入记忆库
     yield ("log", "正在提取章摘要并回写记忆...")
@@ -677,19 +599,10 @@ async def replan_volume_chapters(
         yield ("error", "书籍不存在")
         return
 
-    chapters = list(
-        db.scalars(
-            select(models.Chapter)
-            .where(models.Chapter.volume_id == volume_id)
-            .order_by(models.Chapter.order_index)
-        )
-    )
-    pending = [
-        c
-        for c in chapters
-        if c.status != "done" and not (c.content and c.content.body.strip())
-    ]
-    if not pending:
+    book_id, volume_title = book.id, volume.title
+    chapters = chapter_plans.ordered_volume_chapters(db, book_id, volume_id)
+    targets = chapter_plans.replan_targets(chapters)
+    if not targets:
         yield ("log", f"《{volume.title}》所有章节已完成正文,无需重新规划")
         yield ("done", "")
         return
@@ -709,8 +622,11 @@ async def replan_volume_chapters(
         volume_summary=_esc(volume.summary),
         completed_summaries=_esc(completed_summaries),
         reason=_esc(reason),
-        pending_count=len(pending),
+        pending_count=len(targets),
     )
+    # Release the read transaction during the model call. The apply step
+    # obtains a write lock before reading the current chapter slots again.
+    db.rollback()
     full = ""
     async with aclosing(_stream(prompts.CHAPTER_REPLAN_SYSTEM, user)) as stream:
         async for ev, data in stream:
@@ -723,22 +639,18 @@ async def replan_volume_chapters(
         sections = stages.parse_sections(
             full,
             level=2,
-            minimum=len(pending),
-            maximum=len(pending),
+            minimum=len(targets),
+            maximum=len(targets),
             label="章节细纲",
         )
-        retained = [
-            stages.Section(ch.title, ch.outline) for ch in chapters if ch not in pending
-        ]
-        stages.require_distinct(sections, retained, "章节")
+        chapter_plans.stage_replanned_outlines(
+            db, book_id, volume_id, targets, sections
+        )
     except stages.InvalidStage as exc:
+        db.rollback()
         yield ("error", _retry_message(exc))
         return
-    for chapter, section in zip(pending, sections, strict=True):
-        chapter.title = section.title
-        chapter.outline = section.body
-        chapter.status = "outline"
     stages.commit(db, None)
 
-    yield ("log", f"已重新规划《{volume.title}》{len(pending)} 章细纲")
+    yield ("log", f"已重新规划《{volume_title}》{len(targets)} 章细纲")
     yield ("done", "")

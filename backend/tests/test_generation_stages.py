@@ -437,3 +437,77 @@ async def test_resuming_earlier_volume_inserts_without_reordering_existing_prose
     assert {
         job.id: job.revision for job in db.scalars(select(models.MemorySyncJob))
     } == original_revisions
+
+
+@pytest.mark.parametrize(("later_order", "expected_later"), [(8, 8), (6, 7)])
+async def test_recovered_outlines_use_available_gap_and_keep_loose_chapter_order(
+    db: Session, monkeypatch: pytest.MonkeyPatch, later_order: int, expected_later: int
+) -> None:
+    book, _ = seed(db)
+    earlier = models.Volume(book_id=book.id, title="第一卷", order_index=0)
+    later = models.Volume(book_id=book.id, title="第二卷", order_index=1)
+    retained = models.Chapter(
+        book_id=book.id,
+        volume=earlier,
+        title="第1章 初识",
+        outline="旧纲",
+        order_index=2,
+    )
+    loose_before = models.Chapter(book_id=book.id, title="未归卷前", order_index=4)
+    following = models.Chapter(
+        book_id=book.id, volume=later, title="后卷一章", order_index=later_order
+    )
+    loose_after = models.Chapter(book_id=book.id, title="未归卷后", order_index=9)
+    db.add_all([retained, loose_before, following, loose_after])
+    db.commit()
+    monkeypatch.setattr(
+        pipeline,
+        "get_llm",
+        lambda: FakeStream(
+            {
+                prompts.CHAPTER_OUTLINE_SYSTEM: [
+                    "## 第2章 相约\n续写一段\n## 第3章 远行\n启程"
+                ]
+            }
+        ),
+    )
+
+    events = [
+        event
+        async for event in pipeline.gen_chapter_outlines(
+            db, earlier.id, 3, recovery=stages.Recovery()
+        )
+    ]
+
+    assert events[-1] == ("done", "")
+    chapters = list(
+        db.scalars(
+            select(models.Chapter)
+            .where(models.Chapter.book_id == book.id)
+            .order_by(models.Chapter.order_index)
+        )
+    )
+    assert [chapter.title for chapter in chapters] == [
+        "第1章 初识",
+        "未归卷前",
+        "第2章 相约",
+        "第3章 远行",
+        "后卷一章",
+        "未归卷后",
+    ]
+    assert [chapter.order_index for chapter in chapters] == [
+        2,
+        4,
+        5,
+        6,
+        expected_later,
+        9 + expected_later - later_order,
+    ]
+    assert [chapter.volume_id for chapter in chapters] == [
+        earlier.id,
+        None,
+        earlier.id,
+        earlier.id,
+        later.id,
+        None,
+    ]

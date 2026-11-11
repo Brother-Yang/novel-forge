@@ -21,6 +21,7 @@ export default function ChapterEditor({ bookId, chapterId }: Props) {
 function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [body, setBody] = useState("");
+  const [generationPreview, setGenerationPreview] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [savingBody, setSavingBody] = useState(false);
@@ -138,6 +139,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
     const owner = scope.current;
     const version = ++generationVersion.current;
     let generatedBody = "";
+    setGenerationPreview(null);
     start(
       sseEndpoints.chapter,
       { chapter_id: chapter.id },
@@ -145,10 +147,12 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
         onEvent: (event, data) => {
           if (event !== "token") return;
           generatedBody += data;
-          // 无有效输出的失败必须保留原稿，避免把空白生成结果再次保存。
-          if (generatedBody.trim()) setBody(generatedBody);
+          // 流中的文本只是预览；服务端确认落库后才替换编辑草稿。
+          if (generatedBody.trim()) setGenerationPreview(generatedBody);
         },
         onDone: () => {
+          if (generatedBody.trim()) setBody(generatedBody.trim());
+          setGenerationPreview(null);
           refreshTree();
           void api
             .getChapter(chapter.id, requestRef.current?.signal)
@@ -167,10 +171,19 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
               }
             });
         },
-        onError: (err) => message.error(err instanceof Error ? err.message : "生成失败"),
+        onError: (err) => {
+          setGenerationPreview(null);
+          message.error(err instanceof Error ? err.message : "生成失败");
+        },
       }
     );
   };
+
+  const stop = () => {
+    cancel();
+    setGenerationPreview(null);
+  };
+  const displayedBody = generationPreview ?? body;
 
   return (
     <div className="nf-editor">
@@ -188,7 +201,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
             {CHAPTER_STATUS_LABEL[chapter.status] ?? chapter.status}
           </Tag>
           {generating ? (
-            <Button danger icon={<StopOutlined />} onClick={cancel}>
+            <Button danger icon={<StopOutlined />} onClick={stop}>
               停止
             </Button>
           ) : (
@@ -223,10 +236,12 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
         />
       </Card>
 
-      <span className="nf-editor__count">正文 {body.length} 字</span>
+      <span className="nf-editor__count">
+        {generating ? "生成预览" : "正文"} {displayedBody.length} 字
+      </span>
       <Input.TextArea
         className={`nf-editor__body${generating ? " nf-editor__body--live" : ""}`}
-        value={body}
+        value={displayedBody}
         disabled={generating}
         onChange={(e) => setBody(e.target.value)}
         autoSize={{ minRows: 18 }}
