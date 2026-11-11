@@ -106,7 +106,7 @@ class OllamaClient:
         tools: list[dict[str, object]],
         temperature: float = 0.7,
     ) -> ToolChatResult:
-        # 本地 Ollama 后端不支持 function calling;智能体自主决策模式应在启动前
+        # 当前适配器未实现 function calling；智能体自主决策模式应在启动前
         # 用 ..llm.supports_tool_calling() 探测并降级到固定流水线,不应调用到这里。
         raise NotImplementedError(
             "OllamaClient 不支持 function calling(智能体自主决策)"

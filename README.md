@@ -63,11 +63,11 @@ DASHSCOPE_API_KEY=sk-你的百炼APIKey
 # 可选:BAILIAN_GENERATION_MODEL=qwen-max、BAILIAN_EMBEDDING_MODEL=text-embedding-v3
 ```
 
-模型名与提供方均可在 `backend/.env` 中修改(见 `backend/.env.example`)。
+模型名与提供方均可在 `backend/.env` 中修改(见 `backend/.env.example`)。 当前 Ollama 适配器实现文本生成和嵌入；配置为 Ollama 时，自主决策入口会转为固定流程生成。工具决策由 OpenAI 兼容适配器处理。
 
 已知限制与后续工作见 [待优化问题清单](docs/optimization-backlog.md)。清单只保留未解决项，修复并验证后删除对应条目。
 
-接手开发时可先读 [维护指南与模块边界](docs/architecture.md),了解生成、事务、记忆同步和前端草稿分别由哪个模块负责。
+接手开发时可先读 [维护指南与模块边界](docs/architecture.md),了解生成、事务、记忆同步和前端草稿分别由哪个模块负责。 早期构想保存在[设计草案](docs/agent-design-draft.md)，用来理解产品方向。
 
 ### 1. 启动后端
 

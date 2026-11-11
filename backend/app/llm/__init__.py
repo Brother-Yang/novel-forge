@@ -10,8 +10,8 @@ from .base import LLMClient
 from .ollama_client import OllamaClient
 from .openai_client import OpenAIClient
 
-# 目前只有走 OpenAI 兼容协议的后端原生支持 function calling;
-# 本地 Ollama 暂不支持,智能体自主决策模式应在启动前用此函数探测并降级。
+# 这里检查本项目适配器已实现的能力，而非供应商支持的全部功能。
+# 当前 OllamaClient 未实现工具调用，自主决策入口需降级到固定流程。
 _TOOL_CALLING_PROVIDERS = ("openai", "bailian", "dashscope")
 
 

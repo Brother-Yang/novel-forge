@@ -1,4 +1,6 @@
-# 小说 Agent — Production Agent 设计
+# 小说 Agent 早期设计草案
+
+> 本文保留早期产品构想，其中多智能体分工等内容属于设计设想。当前已实现的流程、存储和部署约束以[维护指南](architecture.md)与根目录 [README](../README.md)为准。
 
 ## 1. 项目目标
 

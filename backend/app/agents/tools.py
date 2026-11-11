@@ -174,7 +174,7 @@ async def tool_replan_volume(
     )
 
 
-# ---------- 质检反思(新增能力) ----------
+# ---------- 内容评审 ----------
 def _load_review_target(
     db: Session, book_id: str, target_type: str, target_id: object
 ) -> tuple[str, str]:
