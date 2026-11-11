@@ -5,13 +5,14 @@ import logging
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import models
 from app.agents import pipeline, prompts
 from app.config import settings
-from app.memory import context, sync
+from app.memory import context, sync, vector_store
 from tests.memory_support import (
     SECRET,
     FakeLLM,
@@ -23,6 +24,90 @@ from tests.memory_support import (
 from tests.memory_support import client as memory_client_fixture  # noqa: F401
 from tests.memory_support import fakes as memory_fakes_fixture  # noqa: F401
 from tests.memory_support import storage as memory_storage_fixture  # noqa: F401
+
+
+async def test_progress_reads_only_queue_and_keeps_full_audit_separate(
+    storage: sessionmaker[Session],
+    client: httpx.AsyncClient,
+    fakes: tuple[FakeLLM, FakeVectors],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _llm, _vectors = fakes
+    with storage() as db:
+        book_id, _, chapter_id, _ = seed(db)
+        other = models.Book(title="他书")
+        db.add(other)
+        db.flush()
+        chapter = db.get(models.Chapter, chapter_id)
+        assert chapter is not None
+        chapter.content = models.ChapterContent(body="历史旧正文，需要全量审计才能发现")
+        chapter.status = "done"
+        db.add_all(
+            [
+                models.MemorySyncJob(
+                    book_id=book_id,
+                    source_type=sync.WORLD,
+                    source_id=models.new_id(),
+                    source_hash="queue-only",
+                    status=status,
+                )
+                for status in ("pending", "running", "error", "done")
+            ]
+        )
+        db.add(
+            models.MemorySyncJob(
+                book_id=other.id, source_type=sync.WORLD, source_id=models.new_id()
+            )
+        )
+        db.commit()
+
+    audited = (await client.get(f"/books/{book_id}/memory/status")).json()
+    assert audited["missing"] > 0
+
+    def forbid_vectors(_book_id: str) -> set[str]:
+        pytest.fail("progress must not read Chroma")
+
+    def inspect_sql(
+        _conn: object, _cursor: object, statement: str, *_args: object
+    ) -> None:
+        assert not any(
+            name in statement.lower()
+            for name in (
+                "chapter_content",
+                "chapter_summaries",
+                "chapter_facts",
+                "worldbuilding",
+                "embeddings",
+                "volumes",
+            )
+        ), statement
+
+    monkeypatch.setattr(vector_store, "existing_ids", forbid_vectors)
+    engine = storage.kw["bind"]
+    assert isinstance(engine, Engine)
+    event.listen(engine, "before_cursor_execute", inspect_sql)
+    try:
+        response = await client.get(f"/books/{book_id}/memory/progress")
+    finally:
+        event.remove(engine, "before_cursor_execute", inspect_sql)
+    assert response.status_code == 200
+    progress = response.json()
+    assert "missing" not in progress
+    assert {
+        key: progress[key] for key in ("pending", "running", "failed", "ready", "total")
+    } == {
+        "pending": 1,
+        "running": 1,
+        "failed": 1,
+        "ready": 1,
+        "total": 4,
+    }
+    assert {item["status"] for item in progress["items"]} == {
+        "pending",
+        "running",
+        "error",
+    }
+    assert (await client.get("/books/missing/memory/progress")).status_code == 404
 
 
 async def test_world_crud_hides_stale_vectors_even_when_storage_delete_fails(

@@ -8,10 +8,7 @@ unavailable during deletion. The application runs one process (see runtime lock)
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
-from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, TypedDict
@@ -22,14 +19,25 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session, selectinload
 
 from .. import models
+from ..llm import get_llm
 from ..llm.budget import ModelBudgetExceeded
 from . import facts, vector_store
+from .sources import (
+    CHAPTER,
+    FACTS,
+    VOLUME,
+    WORLD,
+    chapter_body_hash,
+    chapter_fact_hash,
+    chapter_hash,
+    find_job,
+    source_hash,
+    valid_summary,
+    volume_hash,
+    worldbuilding_hash,
+)
 
 logger = logging.getLogger(__name__)
-WORLD = "worldbuilding"
-CHAPTER = "chapter_summary"
-FACTS = facts.SOURCE_TYPE
-VOLUME = "volume_summary"
 _worker: asyncio.Task[None] | None = None
 _active: dict[tuple[str, str], _ActiveJob] = {}
 _suspended: set[str] = set()
@@ -55,103 +63,17 @@ class MemoryJobStatus(TypedDict):
     updated_at: str
 
 
-class MemoryStatus(TypedDict):
+class MemoryProgress(TypedDict):
     pending: int
     running: int
     failed: int
-    missing: int
     ready: int
     total: int
     items: list[MemoryJobStatus]
 
 
-def _hash(values: object) -> str:
-    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
-
-
-def chapter_body_hash(chapter: models.Chapter) -> str:
-    body = chapter.content.body if chapter.content else ""
-    return _hash(body) if body.strip() else ""
-
-
-def _fact_hash(chapter: models.Chapter) -> str:
-    return facts.fingerprint(chapter.content.body) if chapter.content else ""
-
-
-def chapter_hash(chapter: models.Chapter) -> str:
-    body_hash = chapter_body_hash(chapter)
-    return _hash([chapter.title, body_hash]) if body_hash else ""
-
-
-def valid_summary(chapter: models.Chapter) -> str:
-    summary = chapter.summary
-    if (
-        summary
-        and summary.source_hash
-        and summary.source_hash == chapter_body_hash(chapter)
-    ):
-        return summary.summary
-    return ""
-
-
-def source_hash(db: Session, book_id: str, source_type: str, source_id: str) -> str:
-    if source_type == WORLD:
-        item = db.get(models.Worldbuilding, source_id)
-        return (
-            _hash([item.title, item.md_content])
-            if item and item.book_id == book_id
-            else ""
-        )
-    if source_type in (CHAPTER, FACTS):
-        chapter = db.get(models.Chapter, source_id)
-        if not chapter or chapter.book_id != book_id:
-            return ""
-        return chapter_hash(chapter) if source_type == CHAPTER else _fact_hash(chapter)
-    if source_type != VOLUME:
-        return ""
-    volume = db.get(models.Volume, source_id)
-    if not volume or volume.book_id != book_id:
-        return ""
-    chapters = db.scalars(
-        select(models.Chapter)
-        .where(
-            models.Chapter.volume_id == source_id,
-            models.Chapter.book_id == volume.book_id,
-            models.Chapter.status == "done",
-        )
-        .options(
-            selectinload(models.Chapter.content), selectinload(models.Chapter.summary)
-        )
-        .order_by(models.Chapter.order_index, models.Chapter.id)
-    ).all()
-    return _volume_hash(volume, chapters)
-
-
-def _volume_hash(volume: models.Volume, chapters: Iterable[models.Chapter]) -> str:
-    return _hash(
-        [
-            volume.title,
-            [
-                [ch.id, fingerprint, valid_summary(ch)]
-                for ch in chapters
-                if (fingerprint := chapter_hash(ch))
-            ],
-        ]
-    )
-
-
-def find_job(
-    db: Session, book_id: str, source_type: str, source_id: str
-) -> models.MemorySyncJob | None:
-    return db.scalar(
-        select(models.MemorySyncJob)
-        .where(
-            models.MemorySyncJob.book_id == book_id,
-            models.MemorySyncJob.source_type == source_type,
-            models.MemorySyncJob.source_id == source_id,
-        )
-        .execution_options(populate_existing=True)
-    )
+class MemoryStatus(MemoryProgress):
+    missing: int
 
 
 def enqueue(
@@ -206,7 +128,7 @@ def enqueue_chapter(
     old_volume_id: str | None = None,
 ) -> models.MemorySyncJob:
     job = enqueue(db, chapter.book_id, CHAPTER, chapter.id)
-    if _fact_hash(chapter):
+    if chapter_fact_hash(chapter):
         fact_job = enqueue(db, chapter.book_id, FACTS, chapter.id)
         previous_facts = db.get(models.ChapterFacts, chapter.id)
         if previous_facts and previous_facts.source_hash != fact_job.source_hash:
@@ -318,8 +240,6 @@ async def _write_chapter_facts(
     job: models.MemorySyncJob,
     revision: str,
 ) -> bool:
-    from .context import get_llm
-
     job_id, book_id, chapter_id, source_hash = (
         job.id,
         job.book_id,
@@ -371,18 +291,19 @@ async def process_job(db: Session, job_id: str) -> bool:
     """
     job = db.get(models.MemorySyncJob, job_id, populate_existing=True)
     if job is None or job.book_id in _suspended:
+        db.rollback()
         return False
     key = (job_id, job.revision)
     active = _active.get(key)
-    if active:
-        db.rollback()
-        return await asyncio.shield(active.task)
-    if job.status == "done":
-        return True
-    if job.status != "pending":
-        return False
+    status = job.status
     book_id, source_type, source_id = job.book_id, job.source_type, job.source_id
     db.rollback()
+    if active:
+        return await asyncio.shield(active.task)
+    if status == "done":
+        return True
+    if status != "pending":
+        return False
     task = asyncio.create_task(
         _process_job(db, job_id, key[1], book_id, source_type, source_id)
     )
@@ -391,6 +312,17 @@ async def process_job(db: Session, job_id: str) -> bool:
         return await task
     finally:
         _active.pop(key, None)
+
+
+async def process_source(
+    db: Session, book_id: str, source_type: str, source_id: str
+) -> bool:
+    """Process a job already persisted with its source; never enqueue here."""
+    job = find_job(db, book_id, source_type, source_id)
+    if job is None:
+        db.rollback()
+        return False
+    return await process_job(db, job.id)
 
 
 async def _process_job(
@@ -403,7 +335,6 @@ async def _process_job(
 ) -> bool:
     """Rebuild derived data; a repair never modifies chapter content/status."""
     from ..agents import prompts
-    from .context import get_llm
 
     operation = "claim"
     try:
@@ -622,15 +553,10 @@ async def _process_job(
 async def process_chapter_memory(db: Session, chapter: models.Chapter) -> bool:
     book_id, chapter_id, volume_id = chapter.book_id, chapter.id, chapter.volume_id
     try:
-        job = find_job(db, book_id, CHAPTER, chapter_id)
-        ok = job is not None and await process_job(db, job.id)
-        fact_job = find_job(db, book_id, FACTS, chapter_id)
-        if fact_job:
-            ok = await process_job(db, fact_job.id) and ok
+        ok = await process_source(db, book_id, CHAPTER, chapter_id)
+        ok = await process_source(db, book_id, FACTS, chapter_id) and ok
         if volume_id:
-            volume_job = find_job(db, book_id, VOLUME, volume_id)
-            if volume_job:
-                ok = await process_job(db, volume_job.id) and ok
+            ok = await process_source(db, book_id, VOLUME, volume_id) and ok
         return ok
     except Exception as exc:  # noqa: BLE001 - content already committed successfully
         db.rollback()
@@ -675,7 +601,7 @@ def _book_memory(
     for item in db.scalars(
         select(models.Worldbuilding).where(models.Worldbuilding.book_id == book_id)
     ):
-        expected[(WORLD, item.id)] = _hash([item.title, item.md_content])
+        expected[(WORLD, item.id)] = worldbuilding_hash(item)
     chapters_by_volume: dict[str, list[models.Chapter]] = {}
     for chapter in db.scalars(
         select(models.Chapter)
@@ -697,7 +623,7 @@ def _book_memory(
             if chapter.volume_id and chapter.status == "done":
                 chapters_by_volume.setdefault(chapter.volume_id, []).append(chapter)
             facts_key = (FACTS, chapter.id)
-            fact_hash = _fact_hash(chapter)
+            fact_hash = chapter_fact_hash(chapter)
             expected[facts_key] = fact_hash
             if (
                 (job := jobs.get(facts_key))
@@ -711,7 +637,7 @@ def _book_memory(
         if volume.id in chapters_by_volume or (VOLUME, volume.id) in jobs:
             key = (VOLUME, volume.id)
             completed = chapters_by_volume.get(volume.id, [])
-            expected[key] = _volume_hash(volume, completed)
+            expected[key] = volume_hash(volume, completed)
             if (
                 (job := jobs.get(key))
                 and job.status == "done"
@@ -787,26 +713,59 @@ def memory_status(db: Session, book_id: str) -> MemoryStatus:
             continue
         counts[job.status] += 1
         if job.status != "done":
-            items.append(
-                {
-                    "id": job.id,
-                    "source_type": job.source_type,
-                    "source_id": job.source_id,
-                    "status": job.status,
-                    "attempts": job.attempts,
-                    "error": job.error,
-                    "updated_at": job.updated_at.isoformat(),
-                }
-            )
+            items.append(_job_status(job))
     return {
-        "pending": counts["pending"],
-        "running": counts["running"],
-        "failed": counts["error"],
-        "ready": counts["done"],
+        **_progress_payload(counts, items[:100]),
         "missing": len(missing),
         "total": sum(counts.values()) + len(missing),
-        "items": items[:100],
     }
+
+
+def _job_status(job: models.MemorySyncJob) -> MemoryJobStatus:
+    return {
+        "id": job.id,
+        "source_type": job.source_type,
+        "source_id": job.source_id,
+        "status": job.status,
+        "attempts": job.attempts,
+        "error": job.error,
+        "updated_at": job.updated_at.isoformat(),
+    }
+
+
+def _progress_payload(
+    counts: dict[str, int], items: list[MemoryJobStatus]
+) -> MemoryProgress:
+    return {
+        "pending": counts.get("pending", 0),
+        "running": counts.get("running", 0),
+        "failed": counts.get("error", 0),
+        "ready": counts.get("done", 0),
+        "total": sum(counts.values()),
+        "items": items,
+    }
+
+
+def memory_progress(db: Session, book_id: str) -> MemoryProgress:
+    """Lightweight polling snapshot: inspect queue rows, never source or vector data."""
+    counts = {
+        status: count
+        for status, count in db.execute(
+            select(models.MemorySyncJob.status, func.count())
+            .where(models.MemorySyncJob.book_id == book_id)
+            .group_by(models.MemorySyncJob.status)
+        )
+    }
+    jobs = db.scalars(
+        select(models.MemorySyncJob)
+        .where(
+            models.MemorySyncJob.book_id == book_id,
+            models.MemorySyncJob.status != "done",
+        )
+        .order_by(models.MemorySyncJob.updated_at.desc(), models.MemorySyncJob.id)
+        .limit(100)
+    )
+    return _progress_payload(counts, [_job_status(job) for job in jobs])
 
 
 async def _worker_loop() -> None:

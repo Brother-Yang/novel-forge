@@ -16,7 +16,6 @@ import {
 import { RobotOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { api, sseEndpoints } from "../api";
-import { sseFetch } from "../api/client";
 import { paths } from "../router/paths";
 import { useAppStore } from "../store";
 import { startAgentWithFallback } from "../utils/agentFallback";
@@ -27,6 +26,7 @@ import {
   taskStageLabel,
 } from "../constants/taskStatus";
 import MemoryPanel from "./MemoryPanel";
+import { useGenerationStream } from "../hooks/useGenerationStream";
 import { useTaskPanelData } from "../hooks/useTaskPanelData";
 
 function errMessage(err: unknown): string {
@@ -44,12 +44,13 @@ export default function TaskPanel(props: TaskPanelProps) {
 
 function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
   const [log, setLog] = useState("");
-  const [stage, setStage] = useState<string | null>(null);
+  const [stageName, setStageName] = useState<string | null>(null);
   const [volumeId, setVolumeId] = useState<string | undefined>();
   const [submitting, setSubmitting] = useState(false);
   const operationPending = useRef(false);
   const active = useRef(true);
-  const abortStream = useRef<AbortController | null>(null);
+  const stream = useGenerationStream(bookId);
+  const stage = stream.running ? stageName : null;
   const {
     tasks,
     tree,
@@ -75,7 +76,6 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
     active.current = true;
     return () => {
       active.current = false;
-      abortStream.current?.abort();
     };
   }, []);
 
@@ -93,46 +93,31 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
     tasks.some((task) => task.status === "paused");
 
   const appendLog = (text: string) => setLog((previous) => (previous + text).slice(-50_000));
-  const endStage = () => {
-    operationPending.current = false;
-    abortStream.current = null;
-    setStage(null);
-    loadTasks();
-  };
 
   const runStage = (name: string, path: string, body: unknown) => {
-    if (busy || operationPending.current) return;
-    operationPending.current = true;
-    setStage(name);
+    if (busy || operationPending.current || stream.isRunning()) return;
+    setStageName(name);
     setLog(`【${name}】开始...\n`);
-    const controller = new AbortController();
-    abortStream.current = controller;
-    void sseFetch(path, body, {
-      signal: controller.signal,
+    stream.start(path, body, {
       onEvent: (event, data) => {
-        if (!active.current) return;
         if (event === "token") appendLog(data);
         else if (event === "log") appendLog(`\n${data}\n`);
-        else if (event === "done") {
-          appendLog(`\n【${name}】完成。\n`);
-          endStage();
-          refreshTree();
-          loadTree();
-        } else if (event === "error") {
-          appendLog(`\n错误:${data}\n`);
-          endStage();
-        }
+      },
+      onDone: () => {
+        appendLog(`\n【${name}】完成。\n`);
+        loadTasks();
+        refreshTree();
+        loadTree();
       },
       onError: (err) => {
-        if (!active.current) return;
         appendLog(`\n错误:${errMessage(err)}\n`);
-        endStage();
+        loadTasks();
       },
     });
   };
 
   const submit = async (action: () => Promise<void>, controlTask = false) => {
-    if ((!controlTask && busy) || operationPending.current) return;
+    if ((!controlTask && busy) || operationPending.current || stream.isRunning()) return;
     operationPending.current = true;
     setSubmitting(true);
     try {

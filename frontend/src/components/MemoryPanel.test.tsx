@@ -4,7 +4,9 @@ import { api } from "../api";
 import type { MemoryStatus } from "../api/types";
 import MemoryPanel from "./MemoryPanel";
 
-vi.mock("../api", () => ({ api: { getMemoryStatus: vi.fn(), repairMemory: vi.fn() } }));
+vi.mock("../api", () => ({
+  api: { getMemoryStatus: vi.fn(), getMemoryProgress: vi.fn(), repairMemory: vi.fn() },
+}));
 
 const failed: MemoryStatus = {
   pending: 0,
@@ -40,6 +42,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.useFakeTimers();
   vi.mocked(api.getMemoryStatus).mockResolvedValue(failed);
+  vi.mocked(api.getMemoryProgress).mockResolvedValue(pending);
   vi.mocked(api.repairMemory).mockResolvedValue(pending);
 });
 afterEach(() => vi.useRealTimers());
@@ -94,17 +97,16 @@ describe("创作记忆状态与修复", () => {
 
   it("后台处理时串行轮询，完成后停止；查询失败不会无限刷请求", async () => {
     const slow = deferred<MemoryStatus>();
-    vi.mocked(api.getMemoryStatus)
-      .mockResolvedValueOnce(pending)
-      .mockReturnValueOnce(slow.promise)
-      .mockResolvedValue(ready);
+    vi.mocked(api.getMemoryStatus).mockResolvedValueOnce(pending).mockResolvedValue(ready);
+    vi.mocked(api.getMemoryProgress).mockReturnValueOnce(slow.promise).mockResolvedValue(ready);
     await act(async () => {
       render(<MemoryPanel bookId="book-a" />);
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(12500);
     });
-    expect(api.getMemoryStatus).toHaveBeenCalledTimes(2);
+    expect(api.getMemoryStatus).toHaveBeenCalledTimes(1);
+    expect(api.getMemoryProgress).toHaveBeenCalledTimes(1);
     await act(async () => {
       slow.resolve(pending);
     });
@@ -115,7 +117,8 @@ describe("创作记忆状态与修复", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(25000);
     });
-    expect(api.getMemoryStatus).toHaveBeenCalledTimes(3);
+    expect(api.getMemoryStatus).toHaveBeenCalledTimes(2);
+    expect(api.getMemoryProgress).toHaveBeenCalledTimes(2);
     vi.mocked(api.getMemoryStatus).mockRejectedValueOnce(new Error("网络已断开"));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "刷新状态" }));
@@ -123,7 +126,7 @@ describe("创作记忆状态与修复", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(25000);
     });
-    expect(api.getMemoryStatus).toHaveBeenCalledTimes(4);
+    expect(api.getMemoryStatus).toHaveBeenCalledTimes(3);
     expect(screen.getByText("网络已断开")).toBeInTheDocument();
   });
 
@@ -156,11 +159,34 @@ describe("创作记忆状态与修复", () => {
     await act(async () => {
       view.rerender(<MemoryPanel bookId="book-b" />);
     });
-    expect(api.getMemoryStatus).toHaveBeenLastCalledWith("book-b");
+    expect(api.getMemoryStatus).toHaveBeenLastCalledWith("book-b", expect.any(AbortSignal));
     await act(async () => {
       oldQuery.resolve(failed);
     });
     expect(screen.getByText("可用 4 / 4")).toBeInTheDocument();
     expect(screen.queryByText("失败 1")).not.toBeInTheDocument();
+  });
+
+  it("同步中只查轻量进度，可用数量仍来自完整校验；离开面板取消请求", async () => {
+    vi.mocked(api.getMemoryStatus).mockResolvedValue(pending);
+    vi.mocked(api.getMemoryProgress).mockResolvedValue({
+      ...pending,
+      ready: 99,
+      total: 100,
+      pending: 1,
+    });
+    const view = render(<MemoryPanel bookId="book-a" />);
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(api.getMemoryStatus).toHaveBeenCalledTimes(1);
+    expect(api.getMemoryProgress).toHaveBeenCalledTimes(4);
+    expect(screen.getByText("可用 2 / 4")).toBeInTheDocument();
+    expect(screen.getByText("等待 1")).toBeInTheDocument();
+    expect(screen.queryByText("可用 99 / 100")).not.toBeInTheDocument();
+    const signal = vi.mocked(api.getMemoryProgress).mock.calls[0][1];
+    view.unmount();
+    expect(signal?.aborted).toBe(true);
   });
 });

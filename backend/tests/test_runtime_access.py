@@ -14,6 +14,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import create_engine, event, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import database, main, models
@@ -24,7 +25,7 @@ from app.db_base import Base
 from app.llm.base import ToolChatResult
 from app.memory import sync, vector_store
 from app.runtime import single_process_resources
-from app.tasks import agent_generation, novel_generation
+from app.tasks import admission, agent_generation, novel_generation
 from app.tasks import book_generation as runtime
 
 ORIGIN = "https://workbench.test"
@@ -81,11 +82,16 @@ def app_for(conf: Settings, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
 
 
 @asynccontextmanager
-async def client_for(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+async def client_for(
+    app: FastAPI, *, raise_app_exceptions: bool = True
+) -> AsyncIterator[httpx.AsyncClient]:
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url=ORIGIN
+            transport=httpx.ASGITransport(
+                app=app, raise_app_exceptions=raise_app_exceptions
+            ),
+            base_url=ORIGIN,
         ) as client,
     ):
         yield client
@@ -99,6 +105,114 @@ def seed(sessions: sessionmaker[Session], title: str = "离线书稿") -> tuple[
         db.add(chapter)
         db.commit()
         return book.id, chapter.id
+
+
+async def test_unsupported_agent_fallback_creates_only_the_successful_book(
+    tmp_path: Path,
+    database_sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = app_for(config(tmp_path), monkeypatch)
+    monkeypatch.setattr(admission, "supports_tool_calling", lambda: False)
+    visible: list[tuple[str, str]] = []
+    started = asyncio.Event()
+
+    async def waiting_novel(db: Session, task: models.GenerationTask) -> None:
+        book = db.get(models.Book, task.book_id)
+        assert book is not None
+        visible.append((task.id, book.brief))
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setitem(runtime._task_runners, "novel", waiting_novel)
+    async with client_for(app) as client:
+        rejected = await client.post("/api/generate/agent", json={"brief": "星海冒险"})
+        assert (
+            rejected.status_code == 400
+            and "不支持自主决策" in rejected.json()["detail"]
+        )
+        assert (await client.get("/api/books")).json() == []
+
+        fallback = await client.post(
+            "/api/generate/novel", json={"brief": " 星海冒险 "}
+        )
+        assert fallback.status_code == 200
+        payload = fallback.json()
+        await asyncio.wait_for(started.wait(), 2)
+        assert visible == [(payload["task"]["id"], "星海冒险")]
+        books = (await client.get("/api/books")).json()
+        assert [book["id"] for book in books] == [payload["book"]["id"]]
+
+    with database_sessions() as db:
+        assert len(db.scalars(select(models.GenerationTask)).all()) == 1
+
+
+@pytest.mark.parametrize("existing", [False, True])
+async def test_task_write_failure_rolls_back_new_book_or_existing_brief(
+    tmp_path: Path,
+    database_sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+) -> None:
+    app = app_for(config(tmp_path), monkeypatch)
+    book_id = ""
+    if existing:
+        with database_sessions() as db:
+            book = models.Book(title="原有书稿", intro="已有简介", brief="")
+            db.add(book)
+            db.commit()
+            book_id = book.id
+
+    def fail_insert(_mapper: object, _connection: object, _task: object) -> None:
+        raise SQLAlchemyError("injected task insert failure")
+
+    event.listen(models.GenerationTask, "before_insert", fail_insert)
+    try:
+        async with client_for(app, raise_app_exceptions=False) as client:
+            failed = (
+                await client.post(
+                    "/api/generate/novel/from-book", json={"book_id": book_id}
+                )
+                if existing
+                else await client.post(
+                    "/api/generate/novel", json={"brief": "不会留下空书"}
+                )
+            )
+            assert failed.status_code == 500
+            assert runtime._running == {} and runtime._active_books == {}
+    finally:
+        event.remove(models.GenerationTask, "before_insert", fail_insert)
+
+    with database_sessions() as db:
+        assert db.scalars(select(models.GenerationTask)).all() == []
+        books = db.scalars(select(models.Book)).all()
+        if existing:
+            assert len(books) == 1 and books[0].id == book_id
+            assert books[0].brief == "" and books[0].intro == "已有简介"
+        else:
+            assert books == []
+
+
+async def test_competing_background_requests_create_one_task_for_the_book(
+    tmp_path: Path,
+    database_sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = app_for(config(tmp_path), monkeypatch)
+    book_id, _ = seed(database_sessions)
+
+    async def hold(_db: Session, _task: models.GenerationTask) -> None:
+        await asyncio.Event().wait()
+
+    for task_type in ("book", "novel"):
+        monkeypatch.setitem(runtime._task_runners, task_type, hold)
+    async with client_for(app) as client:
+        first, second = await asyncio.gather(
+            client.post("/api/generate/book", json={"book_id": book_id}),
+            client.post("/api/generate/novel/from-book", json={"book_id": book_id}),
+        )
+        assert sorted([first.status_code, second.status_code]) == [200, 409]
+        assert len((await client.get(f"/api/books/{book_id}/tasks")).json()) == 1
 
 
 async def test_signed_cookie_protects_manuscript_export_and_writes(

@@ -139,12 +139,15 @@ export interface MemorySyncItem {
   updated_at: string;
 }
 
-export interface MemoryStatus {
+export interface MemoryProgress {
   pending: number;
   running: number;
   failed: number;
-  missing: number;
   ready: number;
   total: number;
   items: MemorySyncItem[];
+}
+
+export interface MemoryStatus extends MemoryProgress {
+  missing: number;
 }

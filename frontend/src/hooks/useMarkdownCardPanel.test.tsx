@@ -2,6 +2,7 @@ import type { PropsWithChildren } from "react";
 import { App } from "antd";
 import { act, renderHook, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { sseFetch } from "../api/client";
 import { useMarkdownCardPanel } from "./useMarkdownCardPanel";
 
 vi.mock("../api/client", () => ({ sseFetch: vi.fn() }));
@@ -191,5 +192,32 @@ describe("useMarkdownCardPanel 编辑安全", () => {
     expect(result.current.current?.id).toBe("b");
     expect(result.current.md).toBe("新书草稿");
     expect(screen.queryByText("旧书名称错误")).not.toBeInTheDocument();
+  });
+
+  it("切换书籍取消生成，只有当前书籍的完成事件会刷新列表", async () => {
+    vi.mocked(sseFetch).mockImplementation(() => new Promise<void>(() => {}));
+    const { result, rerender } = renderHook(
+      ({ bookId }) => useMarkdownCardPanel({ ...options, bookId }),
+      { wrapper, initialProps: { bookId: "first" } }
+    );
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+    act(() => result.current.generate());
+    const previous = vi.mocked(sseFetch).mock.calls[0][2];
+    expect(result.current.generating).toBe(true);
+    rerender({ bookId: "second" });
+    expect(previous.signal?.aborted).toBe(true);
+    expect(result.current.generating).toBe(false);
+    expect(list).toHaveBeenCalledTimes(2);
+    act(() => {
+      previous.onEvent("done", "");
+      previous.onError?.(new Error("过期生成失败"));
+      result.current.generate();
+    });
+    expect(screen.queryByText("过期生成失败")).not.toBeInTheDocument();
+    expect(list).toHaveBeenCalledTimes(2);
+    await act(async () => vi.mocked(sseFetch).mock.calls[1][2].onEvent("done", ""));
+    expect(result.current.generating).toBe(false);
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(list).toHaveBeenLastCalledWith("second");
   });
 });

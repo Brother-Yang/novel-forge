@@ -47,6 +47,7 @@ def test_record_step_persists_all_fields(db):
     observability.record_step(
         db, task.id, 1, "decision", "write_chapter({})", tool_name="write_chapter"
     )
+    db.commit()
 
     rows = observability.list_trace(db, task.id)
     assert len(rows) == 1
@@ -62,6 +63,7 @@ def test_record_step_tool_name_optional(db):
     task = _task(db)
 
     observability.record_step(db, task.id, 1, "thought", "我在思考")
+    db.commit()
 
     rows = observability.list_trace(db, task.id)
     assert rows[0].tool_name is None
@@ -74,6 +76,7 @@ def test_list_trace_orders_by_insertion_and_scopes_to_task(db):
     observability.record_step(db, task_a.id, 1, "log", "a-1")
     observability.record_step(db, task_b.id, 1, "log", "b-1")
     observability.record_step(db, task_a.id, 2, "log", "a-2")
+    db.commit()
 
     rows_a = observability.list_trace(db, task_a.id)
     assert [r.payload for r in rows_a] == ["a-1", "a-2"]
@@ -86,6 +89,7 @@ def test_list_trace_respects_limit(db):
     task = _task(db)
     for i in range(5):
         observability.record_step(db, task.id, i, "log", f"entry-{i}")
+    db.commit()
 
     rows = observability.list_trace(db, task.id, limit=2)
     assert [r.payload for r in rows] == ["entry-0", "entry-1"]
@@ -98,6 +102,7 @@ def test_same_task_writers_commit_unique_sequences(db: Session) -> None:
     def record(index: int) -> None:
         with Session(bind) as writer:
             observability.record_step(writer, task_id, 1, "log", f"entry-{index}")
+            writer.commit()
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         list(executor.map(record, range(24)))
@@ -105,6 +110,32 @@ def test_same_task_writers_commit_unique_sequences(db: Session) -> None:
     rows = observability.list_trace(db, task_id)
     assert [row.sequence for row in rows] == list(range(1, 25))
     assert {row.payload for row in rows} == {f"entry-{index}" for index in range(24)}
+
+
+def test_trace_rollback_restores_progress_and_does_not_consume_sequence(
+    db: Session,
+) -> None:
+    task = _task(db)
+    task_id = task.id
+    task.progress = 25
+    observability.record_step(db, task_id, 1, "log", "已保存")
+    db.commit()
+
+    task.progress = 50
+    task.checkpoint_json = '{"decisions":["未提交"]}'
+    observability.record_step(db, task_id, 2, "log", "未提交")
+    db.rollback()
+
+    assert task.progress == 25 and task.checkpoint_json == "{}"
+    assert task.trace_sequence == 1
+    observability.record_step(db, task_id, 2, "log", "重试完成")
+    db.commit()
+    with Session(db.get_bind()) as reader:
+        traces = observability.list_trace(reader, task_id)
+        assert [(entry.sequence, entry.payload) for entry in traces] == [
+            (1, "已保存"),
+            (2, "重试完成"),
+        ]
 
 
 async def test_trace_http_pages_through_retries_and_new_events(db: Session) -> None:
@@ -124,6 +155,7 @@ async def test_trace_http_pages_through_retries_and_new_events(db: Session) -> N
     for index in range(1, 6):
         observability.record_step(db, task_id, 1, "log", f"第{index}条")
     observability.record_step(db, other_id, 1, "log", "另一个任务")
+    db.commit()
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
@@ -138,6 +170,7 @@ async def test_trace_http_pages_through_retries_and_new_events(db: Session) -> N
 
         for index in range(6, 9):
             observability.record_step(db, task_id, 1, "log", f"第{index}条")
+        db.commit()
         newer = (await client.get(url, params={"limit": 2, "after": 5})).json()
         assert newer["has_more"] is True
         assert [entry["sequence"] for entry in newer["entries"]] == [6, 7]
@@ -172,6 +205,7 @@ async def test_trace_http_pages_through_retries_and_new_events(db: Session) -> N
 
         for index in range(9, 509):
             observability.record_step(db, task_id, 1, "log", f"第{index}条")
+        db.commit()
         long_run_tail = (await client.get(url)).json()
         assert long_run_tail["has_more"] is True
         assert [entry["sequence"] for entry in long_run_tail["entries"]] == list(

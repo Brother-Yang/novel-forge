@@ -29,22 +29,6 @@ PROGRESS = {
 }
 
 
-def start_novel_generation(db: Session, book_id: str) -> models.GenerationTask:
-    runtime.ensure_book_idle(db, book_id)
-    task = models.GenerationTask(
-        book_id=book_id,
-        type="novel",
-        status="running",
-        progress=0,
-        checkpoint_json="{}",
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    runtime.launch(task.id)
-    return task
-
-
 async def _ensure_plan(db: Session, task: models.GenerationTask) -> planner.NovelPlan:
     book = db.get(models.Book, task.book_id)
     if not book:

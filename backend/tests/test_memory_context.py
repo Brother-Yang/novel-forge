@@ -1,6 +1,4 @@
-"""app/memory/context.py::refresh_volume_summary 测试:基于已完成章节的
-ChapterSummary 重新提炼卷摘要,不依赖真实 LLM(打桩)。
-"""
+"""Context retrieval and queued volume summaries with a fake model."""
 
 from __future__ import annotations
 
@@ -50,7 +48,13 @@ def _book_with_volume(db: Session) -> models.Volume:
 
 
 async def test_refresh_volume_summary_missing_volume_is_noop(db):
-    await memory_context.refresh_volume_summary(db, "missing")  # 不应抛异常
+    assert not await sync.process_source(db, "missing-book", sync.VOLUME, "missing")
+
+
+async def _refresh_volume(db: Session, volume: models.Volume) -> bool:
+    sync.enqueue(db, volume.book_id, sync.VOLUME, volume.id)
+    db.commit()
+    return await sync.process_source(db, volume.book_id, sync.VOLUME, volume.id)
 
 
 async def test_refresh_volume_summary_noop_without_done_chapters(db, monkeypatch):
@@ -68,9 +72,9 @@ async def test_refresh_volume_summary_noop_without_done_chapters(db, monkeypatch
     def _boom_llm():
         raise AssertionError("没有已完成章节时不应调用 LLM")
 
-    monkeypatch.setattr(memory_context, "get_llm", _boom_llm)
+    monkeypatch.setattr(sync, "get_llm", _boom_llm)
 
-    await memory_context.refresh_volume_summary(db, volume.id)
+    assert await _refresh_volume(db, volume)
 
     db.refresh(volume)
     assert volume.summary == "旧摘要"
@@ -95,9 +99,9 @@ async def test_refresh_volume_summary_rewrites_from_chapter_summaries(db, monkey
     db.commit()
 
     fake_llm = FakeLLM("新的卷摘要:主角踏上冒险之路")
-    monkeypatch.setattr(memory_context, "get_llm", lambda: fake_llm)
+    monkeypatch.setattr(sync, "get_llm", lambda: fake_llm)
 
-    await memory_context.refresh_volume_summary(db, volume.id)
+    assert await _refresh_volume(db, volume)
 
     db.refresh(volume)
     assert volume.summary == "旧摘要"
@@ -119,9 +123,9 @@ async def test_refresh_volume_summary_skips_chapters_without_summary(db, monkeyp
     def _boom_llm():
         raise AssertionError("没有可用摘要时不应调用 LLM")
 
-    monkeypatch.setattr(memory_context, "get_llm", _boom_llm)
+    monkeypatch.setattr(sync, "get_llm", _boom_llm)
 
-    await memory_context.refresh_volume_summary(db, volume.id)
+    assert await _refresh_volume(db, volume)
 
     db.refresh(volume)
     assert volume.summary == "旧摘要"

@@ -8,14 +8,16 @@ run_agent_task 对 done/error/暂停三种终态的处理是否正确落库。
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app import models
 from app.agents import orchestrator
 from app.db_base import Base
-from app.tasks import agent_generation
+from app.tasks import admission, agent_generation
 from app.tasks import book_generation as runtime
 
 
@@ -55,20 +57,20 @@ def _task(db: Session, book: models.Book, **kwargs: object) -> models.Generation
 # ---------- 启动前置校验 ----------
 def test_start_agent_generation_rejects_unsupported_backend(db, monkeypatch):
     book = _book(db)
-    monkeypatch.setattr(agent_generation, "supports_tool_calling", lambda: False)
+    monkeypatch.setattr(admission, "supports_tool_calling", lambda: False)
 
-    with pytest.raises(agent_generation.UnsupportedBackend):
-        agent_generation.start_agent_generation(db, book.id)
+    with pytest.raises(admission.UnsupportedBackend):
+        admission.start_existing_book(db, book, "agent")
 
 
 def test_start_agent_generation_rejects_when_book_busy(db, monkeypatch):
     book = _book(db)
     db.add(models.GenerationTask(book_id=book.id, type="book", status="running"))
     db.commit()
-    monkeypatch.setattr(agent_generation, "supports_tool_calling", lambda: True)
+    monkeypatch.setattr(admission, "supports_tool_calling", lambda: True)
 
     with pytest.raises(runtime.BookBusyError):
-        agent_generation.start_agent_generation(db, book.id)
+        admission.start_existing_book(db, book, "agent")
 
 
 # ---------- checkpoint 决策历史截断 ----------
@@ -179,6 +181,36 @@ async def test_run_agent_task_marks_error_on_error_event(db, monkeypatch):
     db.refresh(task)
     assert task.status == "error"
     assert "网络超时" in task.error
+
+
+async def test_failed_progress_update_does_not_publish_incomplete_agent_event(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    book = _book(db)
+    task = _task(db, book)
+    task_id = task.id
+
+    async def one_event(_db: Session, _book_id: str) -> AsyncIterator[tuple[str, str]]:
+        yield ("log", "未提交的模型事件")
+
+    def fail_progress(_db: Session, _task: models.GenerationTask) -> None:
+        raise RuntimeError("injected progress failure")
+
+    monkeypatch.setattr(orchestrator, "run_agent", one_event)
+    monkeypatch.setattr(agent_generation, "_update_progress", fail_progress)
+    await agent_generation.run_agent_task(db, task)
+
+    with Session(db.get_bind()) as reader:
+        persisted = reader.get(models.GenerationTask, task_id)
+        assert persisted is not None and persisted.status == "error"
+        assert persisted.progress == 0 and persisted.trace_sequence == 1
+        assert "decisions" not in runtime.load_checkpoint(persisted)
+        rows = reader.scalars(
+            select(models.AgentTraceEntry).where(
+                models.AgentTraceEntry.task_id == task_id
+            )
+        ).all()
+        assert [(row.sequence, row.kind) for row in rows] == [(1, "error")]
 
 
 async def test_run_agent_task_paused_mid_flight_keeps_paused_not_error(db, monkeypatch):

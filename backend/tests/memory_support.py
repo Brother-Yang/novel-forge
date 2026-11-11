@@ -176,6 +176,7 @@ async def client(storage: sessionmaker[Session]) -> AsyncIterator[httpx.AsyncCli
 def fakes(monkeypatch: pytest.MonkeyPatch) -> tuple[FakeLLM, FakeVectors]:
     llm, vectors = FakeLLM(), FakeVectors()
     monkeypatch.setattr(context, "get_llm", lambda: llm)
+    monkeypatch.setattr(sync, "get_llm", lambda: llm)
     monkeypatch.setattr(pipeline, "get_llm", lambda: llm)
     for name in (
         "upsert",

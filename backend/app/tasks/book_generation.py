@@ -363,18 +363,6 @@ def launch(task_id: str) -> None:
         handle.add_done_callback(finished)
 
 
-def start_book_generation(db: Session, book_id: str) -> models.GenerationTask:
-    ensure_book_idle(db, book_id)
-    task = models.GenerationTask(
-        book_id=book_id, type="book", status="running", progress=0
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    launch(task.id)
-    return task
-
-
 def pause_task(db: Session, task_id: str) -> None:
     task = db.get(models.GenerationTask, task_id)
     if task and task.status == "running":

@@ -1,4 +1,4 @@
-"""RAG 记忆:章摘要索引 + 正文上下文构造(带 token 预算)。
+"""从当前有效记忆构造正文上下文，不写入内容或同步任务。
 
 token 以中文字符数粗略近似,足以做预算控制。
 """
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import settings
 from ..llm import get_llm
-from . import facts, sync, vector_store
+from . import facts, sources, vector_store
 
 logger = logging.getLogger(__name__)
 MEMORY_DEGRADED_NOTE = (
@@ -24,16 +24,6 @@ MEMORY_DEGRADED_BLOCK = "\n\n# 记忆状态\n" + MEMORY_DEGRADED_NOTE
 
 def estimate_tokens(text: str) -> int:
     return len(text)
-
-
-async def index_worldbuilding(db: Session, item: models.Worldbuilding) -> bool:
-    job = sync.enqueue(db, item.book_id, sync.WORLD, item.id)
-    db.commit()
-    return await sync.process_job(db, job.id)
-
-
-async def process_chapter_memory(db: Session, chapter: models.Chapter) -> bool:
-    return await sync.process_chapter_memory(db, chapter)
 
 
 def _relevant_characters(
@@ -66,7 +56,7 @@ def _previous_summaries(db: Session, chapter: models.Chapter) -> list[str]:
     ).all()
     summaries: list[str] = []
     for ch in reversed(rows):
-        summary = sync.valid_summary(ch)
+        summary = sources.valid_summary(ch)
         if summary:
             summaries.append(f"[{ch.title}] {summary}")
     return summaries
@@ -75,7 +65,7 @@ def _previous_summaries(db: Session, chapter: models.Chapter) -> list[str]:
 def _history_source_ids(db: Session, chapter: models.Chapter) -> list[str]:
     indexed = select(models.MemorySyncJob.source_id).where(
         models.MemorySyncJob.book_id == chapter.book_id,
-        models.MemorySyncJob.source_type == sync.CHAPTER,
+        models.MemorySyncJob.source_type == sources.CHAPTER,
         models.MemorySyncJob.status == "done",
         models.MemorySyncJob.source_hash != "",
     )
@@ -95,10 +85,12 @@ def _volume_summary(db: Session, chapter: models.Chapter) -> str:
     if not chapter.volume_id:
         return ""
     volume = db.get(models.Volume, chapter.volume_id)
-    job = sync.find_job(db, chapter.book_id, sync.VOLUME, chapter.volume_id)
+    job = sources.find_job(db, chapter.book_id, sources.VOLUME, chapter.volume_id)
     if not volume or not job or job.status != "done":
         return ""
-    if job.source_hash != sync.source_hash(db, chapter.book_id, sync.VOLUME, volume.id):
+    if job.source_hash != sources.source_hash(
+        db, chapter.book_id, sources.VOLUME, volume.id
+    ):
         return ""
     completed = db.scalars(
         select(models.Chapter).where(
@@ -111,18 +103,9 @@ def _volume_summary(db: Session, chapter: models.Chapter) -> str:
     # an earlier chapter, or use the initial outline as if it were history.
     if not completed or any(ch.order_index >= chapter.order_index for ch in completed):
         return ""
-    if not any(sync.valid_summary(ch) for ch in completed):
+    if not any(sources.valid_summary(ch) for ch in completed):
         return ""
     return volume.memory_summary
-
-
-async def refresh_volume_summary(db: Session, volume_id: str) -> None:
-    volume = db.get(models.Volume, volume_id)
-    if not volume:
-        return
-    job = sync.enqueue(db, volume.book_id, sync.VOLUME, volume.id)
-    db.commit()
-    await sync.process_job(db, job.id)
 
 
 def _valid_hits(
@@ -134,7 +117,7 @@ def _valid_hits(
         source_id = meta.get("source_id")
         if not isinstance(source_id, str) or meta.get("source_type") != source_type:
             continue
-        job = sync.find_job(db, chapter.book_id, source_type, source_id)
+        job = sources.find_job(db, chapter.book_id, source_type, source_id)
         if not job or job.status != "done" or not job.source_hash:
             continue
         if (
@@ -142,14 +125,14 @@ def _valid_hits(
             or meta.get("source_hash") != job.source_hash
         ):
             continue
-        if source_type == sync.CHAPTER:
+        if source_type == sources.CHAPTER:
             source = db.get(models.Chapter, source_id)
             if (
                 not source
                 or source.book_id != chapter.book_id
                 or source.status != "done"
                 or source.order_index >= chapter.order_index
-                or not sync.valid_summary(source)
+                or not sources.valid_summary(source)
             ):
                 continue
         else:
@@ -157,7 +140,7 @@ def _valid_hits(
             if not source or source.book_id != chapter.book_id:
                 continue
         if (
-            sync.source_hash(db, chapter.book_id, source_type, source_id)
+            sources.source_hash(db, chapter.book_id, source_type, source_id)
             != job.source_hash
         ):
             continue
@@ -232,9 +215,9 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
         db.expire_all()
         operation = "worldbuilding_query"
         wb_hits = vector_store.query(
-            chapter.book_id, query_emb, top_k=12, where={"source_type": sync.WORLD}
+            chapter.book_id, query_emb, top_k=12, where={"source_type": sources.WORLD}
         )
-        world_documents = _valid_hits(db, chapter, wb_hits, sync.WORLD)[:4]
+        world_documents = _valid_hits(db, chapter, wb_hits, sources.WORLD)[:4]
         if world_documents:
             parts.append("# 相关设定(检索)\n" + "\n".join(world_documents))
         operation = "chapter_query"
@@ -247,12 +230,12 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
                 top_k=12,
                 where={
                     "$and": [
-                        {"source_type": sync.CHAPTER},
+                        {"source_type": sources.CHAPTER},
                         {"source_id": {"$in": history_ids}},
                     ]
                 },
             )
-            history_documents = _valid_hits(db, chapter, sum_hits, sync.CHAPTER)[:4]
+            history_documents = _valid_hits(db, chapter, sum_hits, sources.CHAPTER)[:4]
             if history_documents:
                 parts.append("# 相关历史情节(检索)\n" + "\n".join(history_documents))
     except Exception as exc:  # noqa: BLE001 - provider/Chroma errors allow SQL fallback

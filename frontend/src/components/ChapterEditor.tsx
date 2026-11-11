@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { App, Button, Card, Input, Space, Tag } from "antd";
 import { SaveOutlined, ThunderboltOutlined, StopOutlined } from "@ant-design/icons";
 import { api, sseEndpoints } from "../api";
-import { sseFetch } from "../api/client";
 import type { Chapter } from "../api/types";
 import { CHAPTER_STATUS_LABEL } from "../constants/chapterStatus";
+import { useGenerationStream } from "../hooks/useGenerationStream";
 import { useAppStore } from "../store";
 
 interface Props {
@@ -23,15 +23,14 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   const [body, setBody] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
-  const [generating, setGenerating] = useState(false);
   const [savingBody, setSavingBody] = useState(false);
   const [savingFields, setSavingFields] = useState<MetaField[]>([]);
   const scope = useRef(0);
   const bodySave = useRef(false);
   const metaSaves = useRef(new Set<MetaField>());
-  const abortRef = useRef<AbortController | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const generationVersion = useRef(0);
+  const { running: generating, isRunning, start, cancel } = useGenerationStream(chapterId);
   const { message } = App.useApp();
   const refreshTree = useAppStore((s) => s.refreshTree);
 
@@ -62,8 +61,6 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
     return () => {
       scope.current += 1;
       request.abort();
-      abortRef.current?.abort();
-      abortRef.current = null;
       bodySave.current = false;
       pendingMetadata.clear();
     };
@@ -89,7 +86,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   }
 
   const saveMeta = async (field: MetaField) => {
-    if (abortRef.current || metaSaves.current.has(field)) return;
+    if (isRunning() || metaSaves.current.has(field)) return;
     const owner = scope.current;
     metaSaves.current.add(field);
     setSavingFields([...metaSaves.current]);
@@ -109,7 +106,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   };
 
   const saveBody = async () => {
-    if (bodySave.current || abortRef.current) return;
+    if (bodySave.current || isRunning()) return;
     const owner = scope.current;
     generationVersion.current += 1;
     bodySave.current = true;
@@ -137,71 +134,42 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   };
 
   const generate = () => {
-    if (abortRef.current || bodySave.current || metaSaves.current.size > 0) return;
+    if (isRunning() || bodySave.current || metaSaves.current.size > 0) return;
     const owner = scope.current;
     const version = ++generationVersion.current;
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setGenerating(true);
     let generatedBody = "";
-    const active = () => scope.current === owner && abortRef.current === ctrl;
-    const finish = () => {
-      abortRef.current = null;
-      setGenerating(false);
-    };
-    void sseFetch(
+    start(
       sseEndpoints.chapter,
       { chapter_id: chapter.id },
       {
-        signal: ctrl.signal,
         onEvent: (event, data) => {
-          if (!active()) return;
-          if (event === "token") {
-            generatedBody += data;
-            // 无有效输出的失败必须保留原稿，避免把空白生成结果再次保存。
-            if (generatedBody.trim()) setBody(generatedBody);
-          } else if (event === "done") {
-            finish();
-            refreshTree();
-            void api
-              .getChapter(chapter.id, requestRef.current?.signal)
-              .then((updated) => {
-                if (scope.current !== owner || generationVersion.current !== version) return;
-                // 生成只改变状态、字数；标题和大纲仍由本地编辑状态拥有。
-                setChapter((draft) =>
-                  draft?.id === updated.id
-                    ? { ...draft, status: updated.status, word_count: updated.word_count }
-                    : draft
-                );
-              })
-              .catch((err: unknown) => {
-                if (scope.current === owner)
-                  message.error(err instanceof Error ? err.message : "章节状态刷新失败");
-              });
-          } else if (event === "error") {
-            message.error(data || "生成失败");
-            finish();
-          }
+          if (event !== "token") return;
+          generatedBody += data;
+          // 无有效输出的失败必须保留原稿，避免把空白生成结果再次保存。
+          if (generatedBody.trim()) setBody(generatedBody);
         },
-        onError: (err) => {
-          if (!active()) return;
-          message.error(err instanceof Error ? err.message : "生成失败");
-          finish();
+        onDone: () => {
+          refreshTree();
+          void api
+            .getChapter(chapter.id, requestRef.current?.signal)
+            .then((updated) => {
+              if (scope.current !== owner || generationVersion.current !== version) return;
+              // 生成只改变状态、字数；标题和大纲仍由本地编辑状态拥有。
+              setChapter((draft) =>
+                draft?.id === updated.id
+                  ? { ...draft, status: updated.status, word_count: updated.word_count }
+                  : draft
+              );
+            })
+            .catch((err: unknown) => {
+              if (scope.current === owner && generationVersion.current === version) {
+                message.error(err instanceof Error ? err.message : "章节状态刷新失败");
+              }
+            });
         },
+        onError: (err) => message.error(err instanceof Error ? err.message : "生成失败"),
       }
-    ).then(() => {
-      if (active()) {
-        message.error("生成连接已结束，请重新加载章节确认结果");
-        finish();
-      }
-    });
-  };
-
-  const stop = () => {
-    const ctrl = abortRef.current;
-    abortRef.current = null;
-    ctrl?.abort();
-    setGenerating(false);
+    );
   };
 
   return (
@@ -220,7 +188,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
             {CHAPTER_STATUS_LABEL[chapter.status] ?? chapter.status}
           </Tag>
           {generating ? (
-            <Button danger icon={<StopOutlined />} onClick={stop}>
+            <Button danger icon={<StopOutlined />} onClick={cancel}>
               停止
             </Button>
           ) : (

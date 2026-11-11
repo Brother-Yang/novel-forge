@@ -43,8 +43,8 @@ from app.config import settings as app_settings
 from app.database import SessionLocal, init_db
 from app.llm.base import LLMClient, ToolCall, ToolChatResult
 from app.memory import context as memory
-from app.memory import facts, vector_store
-from app.tasks import agent_generation, book_generation, novel_generation
+from app.memory import facts, sync, vector_store
+from app.tasks import admission, book_generation
 
 FAILURES: list[str] = []
 
@@ -194,6 +194,7 @@ async def main() -> None:
     pipeline.get_llm = lambda: fake
     planner.get_llm = lambda: fake
     memory.get_llm = lambda: fake
+    sync.get_llm = lambda: fake
     tools.get_llm = lambda: fake
     # 智能体模式需要支持 function calling 的后端;离线测试里没有真实的
     # openai/bailian 账号,只需让能力探测放行,决策本身用 FakeAgentLLM 打桩。
@@ -263,7 +264,7 @@ async def main() -> None:
     check(orders == sorted(orders) and len(set(orders)) == 6, f"order_index 唯一且有序:{orders}")
 
     print("\n[5] 全书批量正文任务")
-    task = book_generation.start_book_generation(db, book.id)
+    task = admission.start_existing_book(db, book, "book")
     await book_generation._running[task.id]
     db.expire_all()
     task = db.get(models.GenerationTask, task.id)
@@ -292,7 +293,7 @@ async def main() -> None:
     db.commit()
     pending_before = book_generation._pending_chapters(db, book.id)
     check(pending_before == [c0.id], f"仅1章待写:{pending_before}")
-    task2 = book_generation.start_book_generation(db, book.id)
+    task2 = admission.start_existing_book(db, book, "book")
     await book_generation._running[task2.id]
     db.expire_all()
     c0 = db.get(models.Chapter, c0.id)
@@ -351,12 +352,9 @@ async def main() -> None:
         tone="",
         target_words=12000,
     )
-    db.add(book_n)
-    db.commit()
-    db.refresh(book_n)
-    task_n = novel_generation.start_novel_generation(db, book_n.id)
+    task_n = admission.start_new_book(db, book_n, "novel")
     try:
-        novel_generation.start_novel_generation(db, book_n.id)
+        admission.start_existing_book(db, book_n, "novel")
         check(False, "同一本书不应允许第二个全书任务")
     except book_generation.BookBusyError:
         check(True, "重复启动全书任务被拒绝")
@@ -420,7 +418,7 @@ async def main() -> None:
             yield item
 
     pipeline.gen_chapter_outlines = flaky_outlines
-    task_f = novel_generation.start_novel_generation(db, book_f.id)
+    task_f = admission.start_existing_book(db, book_f, "novel")
     await book_generation._running[task_f.id]
     db.expire_all()
     task_f = db.get(models.GenerationTask, task_f.id)
@@ -468,7 +466,7 @@ async def main() -> None:
     wb_before = db.query(models.Worldbuilding).filter_by(book_id=book_s.id).count()
     char_before = db.query(models.Character).filter_by(book_id=book_s.id).count()
     check(wb_before == 4 and char_before == 3, "预置4条设定和3个人物")
-    task_s = novel_generation.start_novel_generation(db, book_s.id)
+    task_s = admission.start_existing_book(db, book_s, "novel")
     await book_generation._running[task_s.id]
     db.expire_all()
     wb_after = db.query(models.Worldbuilding).filter_by(book_id=book_s.id).count()
@@ -551,7 +549,7 @@ async def main() -> None:
     # 固定的 2 卷、每卷 3 章(与本文件其它章节的 FakeLLM 输出一致)。
     book_a_id = book_a.id
     orchestrator.get_llm = lambda: FakeAgentLLM(db, book_a_id, volume_count=2, chapter_count=3)
-    task_a = agent_generation.start_agent_generation(db, book_a.id)
+    task_a = admission.start_existing_book(db, book_a, "agent")
     await book_generation._running[task_a.id]
     db.expire_all()
     task_a = db.get(models.GenerationTask, task_a.id)
@@ -591,7 +589,7 @@ async def main() -> None:
     orig_max_steps = app_settings.agent_max_steps
     app_settings.agent_max_steps = 3
     orchestrator.get_llm = lambda: StuckLLM()
-    task_b = agent_generation.start_agent_generation(db, book_b.id)
+    task_b = admission.start_existing_book(db, book_b, "agent")
     await book_generation._running[task_b.id]
     app_settings.agent_max_steps = orig_max_steps
     db.expire_all()

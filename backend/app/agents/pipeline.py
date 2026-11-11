@@ -169,7 +169,9 @@ async def gen_worldbuilding(
     )
     for item in items:
         try:
-            indexed = await memory.index_worldbuilding(db, item)
+            indexed = await memory_sync.process_source(
+                db, book_id, memory_sync.WORLD, item.id
+            )
         except Exception as exc:  # noqa: BLE001 - durable outbox retries indexing
             db.rollback()
             logger.warning(
@@ -654,7 +656,7 @@ async def gen_chapter_body(
 
     # 一致性回写:生成章摘要并写入记忆库
     yield ("log", "正在提取章摘要并回写记忆...")
-    if not await memory.process_chapter_memory(db, chapter):
+    if not await memory_sync.process_chapter_memory(db, chapter):
         yield ("log", "正文已保存，部分记忆待修复；可在书籍工作区重试。")
 
     yield ("done", "")

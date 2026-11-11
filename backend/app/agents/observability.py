@@ -22,6 +22,7 @@ def record_step(
     *,
     tool_name: str | None = None,
 ) -> None:
+    """Stage the trace and sequence increment in the caller's transaction."""
     # Updating the task row serializes writers for this task until commit.
     # A retried run can reuse step_index, so cursors use this persisted counter.
     db.flush()
@@ -42,7 +43,6 @@ def record_step(
             payload=payload,
         )
     )
-    db.commit()
 
 
 def list_trace(

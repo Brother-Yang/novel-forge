@@ -15,6 +15,7 @@ from app import database, models
 from app.api.books import delete_book
 from app.db_base import Base
 from app.memory import vector_store
+from app.tasks import admission
 from app.tasks import book_generation as runtime
 
 
@@ -49,7 +50,9 @@ def seed(db: Session, title: str) -> str:
         [
             models.Worldbuilding(book_id=book.id, title="设定"),
             models.PlotThread(book_id=book.id, name="线程"),
-            models.AgentTraceEntry(task_id=task.id, sequence=1, kind="log", payload="轨迹"),
+            models.AgentTraceEntry(
+                task_id=task.id, sequence=1, kind="log", payload="轨迹"
+            ),
             models.MemorySyncJob(
                 book_id=book.id, source_type="chapter_summary", source_id=chapter.id
             ),
@@ -168,12 +171,14 @@ async def test_cleanup_failure_keeps_manuscript_and_pauses_recoverable_tasks(
 
 def test_deletion_blocks_start_resume_and_duplicate_delete(db: Session) -> None:
     book_id = seed(db, "互斥")
+    book = db.get(models.Book, book_id)
+    assert book is not None
     task = db.scalars(select(models.GenerationTask)).one()
     task.status = "paused"
     db.commit()
     with runtime.book_deletion(book_id):
         with pytest.raises(runtime.BookBusyError):
-            runtime.start_book_generation(db, book_id)
+            admission.start_existing_book(db, book, "book")
         with pytest.raises(runtime.BookBusyError):
             runtime.resume_task(db, task.id)
         with pytest.raises(runtime.BookBusyError), runtime.book_deletion(book_id):

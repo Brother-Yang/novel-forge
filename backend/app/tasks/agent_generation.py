@@ -26,36 +26,11 @@ from ..agents.completion import (
     require_book_complete,
 )
 from ..agents.errors import GenerationError, redact_secrets
-from ..llm import supports_tool_calling
 from . import book_generation as runtime
 
 logger = logging.getLogger(__name__)
 
 MAX_DECISION_LOG = 30
-
-
-class UnsupportedBackend(Exception):
-    """当前 LLM 后端不支持 function calling,不能使用自主决策模式。"""
-
-
-def start_agent_generation(db: Session, book_id: str) -> models.GenerationTask:
-    runtime.ensure_book_idle(db, book_id)
-    if not supports_tool_calling():
-        raise UnsupportedBackend(
-            "当前 LLM 后端不支持自主决策(function calling),请改用「一句话出书」固定流程"
-        )
-    task = models.GenerationTask(
-        book_id=book_id,
-        type="agent",
-        status="running",
-        progress=0,
-        checkpoint_json="{}",
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    runtime.launch(task.id)
-    return task
 
 
 def _append_decision(task: models.GenerationTask, entry: str) -> None:
@@ -100,11 +75,11 @@ async def run_agent_task(db: Session, task: models.GenerationTask) -> None:
             if ev in _TRACED_EVENTS:
                 step_index += 1
                 tool_name = _tool_name_from_decision(data) if ev == "decision" else None
+                _append_decision(task, f"[{ev}] {data}")
+                _update_progress(db, task)
                 observability.record_step(
                     db, task.id, step_index, ev, data, tool_name=tool_name
                 )
-                _append_decision(task, f"[{ev}] {data}")
-                _update_progress(db, task)
                 db.commit()
             if ev == "done":
                 require_book_complete(db, task.book_id)

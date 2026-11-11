@@ -25,7 +25,9 @@ class FakeStreamLLM:
         self._reply = reply
         self.last_prompt: str | None = None
 
-    async def chat_stream(self, prompt: str, system: str = "", temperature: float = 0.8):
+    async def chat_stream(
+        self, prompt: str, system: str = "", temperature: float = 0.8
+    ):
         self.last_prompt = prompt
         yield self._reply
 
@@ -44,13 +46,15 @@ async def test_worldbuilding_prompt_includes_user_brief(db, monkeypatch):
     db.commit()
     db.refresh(book)
 
-    fake = FakeStreamLLM("## 职场规则\n大模型外包横行。\n## 环境\n旧机房\n## 组织\n维护小组\n## 矛盾\n系统停摆")
+    fake = FakeStreamLLM(
+        "## 职场规则\n大模型外包横行。\n## 环境\n旧机房\n## 组织\n维护小组\n## 矛盾\n系统停摆"
+    )
     monkeypatch.setattr(pipeline, "get_llm", lambda: fake)
 
     async def _skip_index(*_args: object, **_kwargs: object) -> bool:
         return True
 
-    monkeypatch.setattr(pipeline.memory, "index_worldbuilding", _skip_index)
+    monkeypatch.setattr(pipeline.memory_sync, "process_source", _skip_index)
 
     events = [ev async for ev in pipeline.gen_worldbuilding(db, book.id)]
     assert events[-1] == ("done", "")

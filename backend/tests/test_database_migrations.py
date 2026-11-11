@@ -144,7 +144,9 @@ def test_legacy_orphans_are_repaired_and_delete_actions_are_enforced(
         engine.dispose()
 
 
-def test_legacy_cross_book_volume_is_detached_without_losing_body(tmp_path: Path) -> None:
+def test_legacy_cross_book_volume_is_detached_without_losing_body(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "cross-book.db"
     migrate(path, "20260904_book_key_elements")
     engine = create_engine(f"sqlite:///{path}")
@@ -159,8 +161,15 @@ def test_legacy_cross_book_volume_is_detached_without_losing_body(tmp_path: Path
                 connection.execute(text(statement))
         migrate(path)
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT book_id,volume_id FROM chapters")).one() == ("a", None)
-            assert connection.execute(text("SELECT body FROM chapter_content")).scalar_one() == "保留原稿"
+            assert connection.execute(
+                text("SELECT book_id,volume_id FROM chapters")
+            ).one() == ("a", None)
+            assert (
+                connection.execute(
+                    text("SELECT body FROM chapter_content")
+                ).scalar_one()
+                == "保留原稿"
+            )
             assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
     finally:
         engine.dispose()
@@ -422,6 +431,7 @@ def test_trace_sequence_backfills_same_timestamp_and_repeated_step(
         migrate(path)
         with Session(engine) as db:
             observability.record_step(db, "task", 1, "log", "迁移后新增")
+            db.commit()
             task_entries = observability.list_trace(db, "task")
             assert [(row.sequence, row.payload) for row in task_entries] == [
                 (1, "初次生成"),

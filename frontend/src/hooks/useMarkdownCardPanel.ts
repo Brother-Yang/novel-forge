@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { App } from "antd";
-import { sseFetch } from "../api/client";
+import { useGenerationStream } from "./useGenerationStream";
 
 interface MarkdownCard {
   id: string;
@@ -31,11 +31,10 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
   const [items, setItems] = useState<T[]>([]);
   const [current, setCurrent] = useState<T | null>(null);
   const [md, setMd] = useState("");
-  const [generating, setGenerating] = useState(false);
   const scope = useRef(0);
   const listRequest = useRef(0);
   const pending = useRef(new Set<string>());
-  const generation = useRef<AbortController | null>(null);
+  const stream = useGenerationStream(bookId);
   const selectionVersion = useRef(0);
   const { message } = App.useApp();
 
@@ -44,7 +43,6 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
     setItems([]);
     setCurrent(null);
     setMd("");
-    setGenerating(false);
   }
 
   useEffect(() => {
@@ -52,8 +50,6 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
     pending.current.clear();
     return () => {
       scope.current += 1;
-      generation.current?.abort();
-      generation.current = null;
     };
   }, [bookId]);
 
@@ -84,7 +80,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
   };
 
   const add = async () => {
-    if (pending.current.has("create") || generation.current) return;
+    if (pending.current.has("create") || stream.isRunning()) return;
     const owner = scope.current;
     const selection = selectionVersion.current;
     pending.current.add("create");
@@ -103,7 +99,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
 
   const persist = async (patch: Partial<T>, announce: boolean) => {
     if (!current) return;
-    if (generation.current || pending.current.has(current.id)) {
+    if (stream.isRunning() || pending.current.has(current.id)) {
       message.info("请等待当前操作完成后重试保存");
       return;
     }
@@ -127,7 +123,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
   const saveMetadata = (patch: Partial<T>) => persist(patch, false);
 
   const removeItem = async (id: string) => {
-    if (pending.current.has(id) || generation.current) {
+    if (pending.current.has(id) || stream.isRunning()) {
       message.info("请等待当前操作完成");
       return;
     }
@@ -150,41 +146,15 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
   };
 
   const generate = () => {
-    if (generation.current || pending.current.size > 0) {
+    if (stream.isRunning() || pending.current.size > 0) {
       message.info("请等待当前操作完成");
       return;
     }
-    const owner = scope.current;
-    const ctrl = new AbortController();
-    generation.current = ctrl;
-    setGenerating(true);
-    const active = () => scope.current === owner && generation.current === ctrl;
-    const finish = () => {
-      generation.current = null;
-      setGenerating(false);
-    };
-    void sseFetch(generateEndpoint, generateBody(bookId), {
-      signal: ctrl.signal,
-      onEvent: (event, data) => {
-        if (!active()) return;
-        if (event === "done") {
-          finish();
-          void load();
-        } else if (event === "error") {
-          message.error(data || "生成失败");
-          finish();
-        }
+    stream.start(generateEndpoint, generateBody(bookId), {
+      onDone: () => {
+        void load();
       },
-      onError: (err) => {
-        if (!active()) return;
-        message.error(err instanceof Error ? err.message : "生成失败");
-        finish();
-      },
-    }).then(() => {
-      if (active()) {
-        message.error("生成连接已结束，请刷新列表确认结果");
-        finish();
-      }
+      onError: (err) => message.error(err instanceof Error ? err.message : "生成失败"),
     });
   };
 
@@ -194,7 +164,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
     setCurrent,
     md,
     setMd,
-    generating,
+    generating: stream.running,
     load,
     select,
     add,

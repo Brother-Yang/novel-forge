@@ -9,6 +9,7 @@ import type {
   Character,
   GenerationTask,
   MemoryStatus,
+  MemoryProgress,
   NovelGenerationResult,
   PlotThread,
   Volume,
@@ -24,7 +25,10 @@ export const api = {
   deleteBook: (id: string) => http.del(`/books/${id}`),
   getTree: (id: string, signal?: AbortSignal) => http.get<BookTree>(`/books/${id}/tree`, signal),
   listPlotThreads: (id: string) => http.get<PlotThread[]>(`/books/${id}/plot_threads`),
-  getMemoryStatus: (bookId: string) => http.get<MemoryStatus>(`/books/${bookId}/memory/status`),
+  getMemoryStatus: (bookId: string, signal?: AbortSignal) =>
+    http.get<MemoryStatus>(`/books/${bookId}/memory/status`, signal),
+  getMemoryProgress: (bookId: string, signal?: AbortSignal) =>
+    http.get<MemoryProgress>(`/books/${bookId}/memory/progress`, signal),
   repairMemory: (bookId: string) => http.post<MemoryStatus>(`/books/${bookId}/memory/repair`),
 
   // volumes

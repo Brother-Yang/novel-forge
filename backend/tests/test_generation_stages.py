@@ -59,7 +59,9 @@ def seed(db: Session) -> tuple[models.Book, models.GenerationTask]:
     return book, task
 
 
-async def skip_index(_db: Session, _item: models.Worldbuilding) -> bool:
+async def skip_index(
+    _db: Session, _book_id: str, _source_type: str, _source_id: str
+) -> bool:
     return True
 
 
@@ -105,7 +107,7 @@ async def test_stage_sql_and_checkpoint_roll_back_together(
     volume_id = volume.id if stage == "chapter_outlines" else ""
     llm = FakeStream({system: [reply, reply]})
     monkeypatch.setattr(pipeline, "get_llm", lambda: llm)
-    monkeypatch.setattr(pipeline.memory, "index_worldbuilding", skip_index)
+    monkeypatch.setattr(pipeline.memory_sync, "process_source", skip_index)
     # 故障发生在整批内容与 outbox 已 flush 后的检查点更新，模拟提交前中断。
     db.execute(
         text("""
@@ -283,7 +285,7 @@ async def test_resume_fills_legacy_stages_without_overwriting_saved_work(
         }
     )
     monkeypatch.setattr(pipeline, "get_llm", lambda: llm)
-    monkeypatch.setattr(pipeline.memory, "index_worldbuilding", skip_index)
+    monkeypatch.setattr(pipeline.memory_sync, "process_source", skip_index)
 
     async def context(_db: Session, _chapter: models.Chapter) -> str:
         return ""
@@ -292,7 +294,7 @@ async def test_resume_fills_legacy_stages_without_overwriting_saved_work(
         return True
 
     monkeypatch.setattr(pipeline.memory, "build_chapter_context", context)
-    monkeypatch.setattr(pipeline.memory, "process_chapter_memory", chapter_memory)
+    monkeypatch.setattr(pipeline.memory_sync, "process_chapter_memory", chapter_memory)
     await novel_generation.run_novel_task(db, task)
 
     assert (task.status, task.progress, task.error) == ("done", 100, "")

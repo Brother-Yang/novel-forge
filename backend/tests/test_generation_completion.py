@@ -75,7 +75,7 @@ def isolated_generation(monkeypatch: pytest.MonkeyPatch) -> None:
         return True
 
     monkeypatch.setattr(pipeline.memory, "build_chapter_context", context)
-    monkeypatch.setattr(pipeline.memory, "process_chapter_memory", skip_memory)
+    monkeypatch.setattr(pipeline.memory_sync, "process_chapter_memory", skip_memory)
 
 
 def seed(
@@ -306,14 +306,20 @@ async def test_batch_resume_regenerates_empty_done_and_preserves_completed_chapt
     chapter.outline = "第1章细纲"
     completed.volume = volume
     completed.outline = "第2章细纲"
-    db.add_all([
-        models.Worldbuilding(book_id=book.id, title=f"设定{i}", md_content="已有设定")
-        for i in range(4)
-    ])
-    db.add_all([
-        models.Character(book_id=book.id, name=f"人物{i}", md_content="已有人物卡")
-        for i in range(3)
-    ])
+    db.add_all(
+        [
+            models.Worldbuilding(
+                book_id=book.id, title=f"设定{i}", md_content="已有设定"
+            )
+            for i in range(4)
+        ]
+    )
+    db.add_all(
+        [
+            models.Character(book_id=book.id, name=f"人物{i}", md_content="已有人物卡")
+            for i in range(3)
+        ]
+    )
     db.add(models.PlotThread(book_id=book.id, name="旧伏笔", description="已有描述"))
     db.commit()
     task = task_for(db, book, type_)

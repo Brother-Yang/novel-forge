@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, List, Space, Spin, Tag, Typography } from "antd";
 import { api } from "../api";
-import type { MemoryStatus } from "../api/types";
+import type { MemoryProgress, MemoryStatus } from "../api/types";
 
 interface MemoryPanelProps {
   bookId: string;
@@ -17,6 +17,7 @@ const statusLabels = { pending: "等待同步", running: "正在同步", error: 
 
 function BookMemoryPanel({ bookId }: MemoryPanelProps) {
   const [status, setStatus] = useState<MemoryStatus | null>(null);
+  const [progress, setProgress] = useState<MemoryProgress | null>(null);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [repairing, setRepairing] = useState(false);
@@ -25,26 +26,44 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
 
   useEffect(() => {
     let cancelled = false;
+    const request = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const load = () => {
+    const fail = (version: number, err: unknown) => {
+      if (cancelled || version !== requestVersion.current) return;
+      setError(err instanceof Error ? err.message : "记忆状态加载失败");
+    };
+    const loadProgress = () => {
       if (repairingRef.current) return;
       const version = ++requestVersion.current;
-      api.getMemoryStatus(bookId).then(
+      api.getMemoryProgress(bookId, request.signal).then(
+        (data) => {
+          if (cancelled || version !== requestVersion.current) return;
+          setProgress(data);
+          setError("");
+          if (data.pending + data.running > 0) timer = setTimeout(loadProgress, 2500);
+          else loadStatus();
+        },
+        (err: unknown) => fail(version, err)
+      );
+    };
+    const loadStatus = () => {
+      if (repairingRef.current) return;
+      const version = ++requestVersion.current;
+      api.getMemoryStatus(bookId, request.signal).then(
         (data) => {
           if (cancelled || version !== requestVersion.current) return;
           setStatus(data);
+          setProgress(null);
           setError("");
-          if (data.pending + data.running > 0) timer = setTimeout(load, 2500);
+          if (data.pending + data.running > 0) timer = setTimeout(loadProgress, 2500);
         },
-        (err: unknown) => {
-          if (cancelled || version !== requestVersion.current) return;
-          setError(err instanceof Error ? err.message : "记忆状态加载失败");
-        }
+        (err: unknown) => fail(version, err)
       );
     };
-    if (!repairingRef.current) load();
+    if (!repairingRef.current) loadStatus();
     return () => {
       cancelled = true;
+      request.abort();
       clearTimeout(timer);
       requestVersion.current += 1;
     };
@@ -61,6 +80,7 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
       const result = await api.repairMemory(bookId);
       if (version !== requestVersion.current) return;
       setStatus(result);
+      setProgress(null);
       setError("");
       submitted = true;
     } catch (err) {
@@ -75,6 +95,8 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
       }
     }
   };
+
+  const activity = progress ?? status;
 
   return (
     <Card title="创作记忆" style={{ marginBottom: 16 }}>
@@ -95,19 +117,19 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
         />
       )}
       {!status && !error && <Spin aria-label="加载记忆状态" />}
-      {status && (
+      {status && activity && (
         <>
           <Space wrap>
             <Tag color="green">
               可用 {status.ready} / {status.total}
             </Tag>
-            <Tag>等待 {status.pending}</Tag>
-            <Tag color="processing">处理中 {status.running}</Tag>
-            <Tag color={status.failed ? "error" : "default"}>失败 {status.failed}</Tag>
+            <Tag>等待 {activity.pending}</Tag>
+            <Tag color="processing">处理中 {activity.running}</Tag>
+            <Tag color={activity.failed ? "error" : "default"}>失败 {activity.failed}</Tag>
             <Tag color={status.missing ? "warning" : "default"}>缺失 {status.missing}</Tag>
             <Button
               loading={repairing}
-              disabled={status.failed + status.missing === 0 || repairing}
+              disabled={activity.failed + status.missing === 0 || repairing}
               onClick={() => void repair()}
             >
               修复缺失或失败的记忆
@@ -116,10 +138,15 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
               刷新状态
             </Button>
           </Space>
-          {status.items.length > 0 && (
+          {activity.pending + activity.running > 0 && (
+            <Typography.Paragraph type="secondary">
+              正在同步，完成后会重新校验可用数量。
+            </Typography.Paragraph>
+          )}
+          {activity.items.length > 0 && (
             <List
               size="small"
-              dataSource={status.items}
+              dataSource={activity.items}
               rowKey="id"
               renderItem={(item) => (
                 <List.Item>
