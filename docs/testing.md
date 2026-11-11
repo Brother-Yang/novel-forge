@@ -58,6 +58,8 @@ python tests/e2e_offline.py
 
 后端单元测试和离线 E2E 使用假模型及临时数据库,不得通过测试连接真实书稿数据库或消耗模型额度。新增网络逻辑使用 HTTP mock / ASGI transport,数据库行为使用临时 SQLite;迁移测试应构造真实历史表结构,不能用最新模型冒充旧库。
 
+供应商协议回归覆盖 [Ollama `/api/embed`](https://docs.ollama.com/api/embed) 的 `input` / `embeddings` 契约，以及 [OpenAI 完成原因](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events) 的正常结束、长度截断、过滤和错误。模拟断流、取消及超大嵌入数值时，必须保留原正文并释放 HTTP 资源，不连接真实服务。
+
 ## 浏览器回归
 
 完成前后端依赖安装后，在 `frontend/` 运行以下命令。

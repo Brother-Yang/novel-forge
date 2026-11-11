@@ -11,6 +11,7 @@ from .request_options import (
     provider_timeout,
     validate_output_limit,
 )
+from .responses import validate_embedding, validate_finish_reason
 
 
 def _reject_json_constant(_value: str) -> Never:
@@ -60,6 +61,10 @@ class OpenAIClient:
         self.max_output_tokens = validate_output_limit(max_output_tokens)
         self.extra_body: dict[str, object] = {}
 
+    @property
+    def embedding_endpoint(self) -> str:
+        return f"{self.base_url}/embeddings"
+
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"}
 
@@ -104,15 +109,22 @@ class OpenAIClient:
                     continue
                 data = line[len("data:") :].strip()
                 if data == "[DONE]":
-                    break
+                    return
                 obj = json.loads(data)
+                if "error" in obj:
+                    raise ModelResponseError("模型流返回错误，本次内容未完成，请重试")
                 choices = obj.get("choices") or []
                 if not choices:
                     continue
+                reason = choices[0].get("finish_reason")
+                validate_finish_reason(reason)
                 delta = choices[0].get("delta") or {}
                 content = delta.get("content") or ""
                 if content:
                     yield content
+                if reason == "stop":
+                    return
+            raise ModelResponseError("模型流在完成前中断，本次内容未保存，请重试")
 
     async def chat(
         self, prompt: str, system: str = "", temperature: float = 0.8
@@ -126,9 +138,13 @@ class OpenAIClient:
                 headers=self._headers(),
             )
             resp.raise_for_status()
-            choices = resp.json().get("choices") or []
+            data = resp.json()
+            if not isinstance(data, dict) or "error" in data:
+                raise ModelResponseError("模型未完成本次输出，请重试")
+            choices = data.get("choices") or []
             if not choices:
                 return ""
+            validate_finish_reason(choices[0].get("finish_reason"))
             return choices[0].get("message", {}).get("content") or ""
 
     async def embed(self, text: str) -> list[float]:
@@ -136,10 +152,20 @@ class OpenAIClient:
         payload = {"model": self.embedding_model, "input": text}
         async with provider_client(self.timeout) as client:
             resp = await client.post(
-                f"{self.base_url}/embeddings", json=payload, headers=self._headers()
+                self.embedding_endpoint, json=payload, headers=self._headers()
             )
             resp.raise_for_status()
-            return resp.json()["data"][0]["embedding"]
+            try:
+                data: object = resp.json()
+            except ValueError:
+                raise ModelResponseError("模型未返回有效嵌入向量，请重试") from None
+            rows = data.get("data") if isinstance(data, dict) else None
+            if not isinstance(rows, list) or len(rows) != 1:
+                raise ModelResponseError("模型未返回单条有效嵌入向量，请重试")
+            row: object = rows[0]
+            return validate_embedding(
+                row.get("embedding") if isinstance(row, dict) else None
+            )
 
     async def chat_with_tools(
         self,
@@ -164,9 +190,13 @@ class OpenAIClient:
                 headers=self._headers(),
             )
             resp.raise_for_status()
-            choices = resp.json().get("choices") or []
+            data = resp.json()
+            if not isinstance(data, dict) or "error" in data:
+                raise ModelResponseError("模型未完成本次输出，请重试")
+            choices = data.get("choices") or []
             if not choices:
                 return ToolChatResult(content="")
+            validate_finish_reason(choices[0].get("finish_reason"), allow_tools=True)
             message = choices[0].get("message") or {}
             content = message.get("content") or ""
             raw_calls: object = message.get("tool_calls")

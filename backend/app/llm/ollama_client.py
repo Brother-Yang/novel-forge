@@ -2,7 +2,7 @@ import json
 from collections.abc import AsyncIterator
 
 from ..config import settings
-from .base import ToolChatResult
+from .base import ModelResponseError, ToolChatResult
 from .budget import require_model_budget
 from .request_options import (
     provider_client,
@@ -10,6 +10,7 @@ from .request_options import (
     provider_timeout,
     validate_output_limit,
 )
+from .responses import validate_embedding, validate_finish_reason
 
 
 class OllamaClient:
@@ -20,6 +21,10 @@ class OllamaClient:
         self.embedding_model = settings.embedding_model
         self.timeout = provider_timeout(settings)
         self.max_output_tokens = validate_output_limit(max_output_tokens)
+
+    @property
+    def embedding_endpoint(self) -> str:
+        return f"{self.base_url}/api/embed"
 
     def _messages(self, prompt: str, system: str) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []
@@ -54,11 +59,17 @@ class OllamaClient:
                 if not line.strip():
                     continue
                 data = json.loads(line)
+                if "error" in data:
+                    raise ModelResponseError("模型流返回错误，本次内容未完成，请重试")
+                finished = data.get("done") is True
+                if finished:
+                    validate_finish_reason(data.get("done_reason"))
                 chunk = data.get("message", {}).get("content", "")
                 if chunk:
                     yield chunk
-                if data.get("done"):
-                    break
+                if finished:
+                    return
+            raise ModelResponseError("模型流在完成前中断，本次内容未保存，请重试")
 
     async def chat(
         self, prompt: str, system: str = "", temperature: float = 0.8
@@ -68,15 +79,26 @@ class OllamaClient:
         async with provider_client(self.timeout) as client:
             resp = await client.post(f"{self.base_url}/api/chat", json=payload)
             resp.raise_for_status()
-            return resp.json().get("message", {}).get("content", "")
+            data = resp.json()
+            if data.get("done") is False or "error" in data:
+                raise ModelResponseError("模型未完成本次输出，请重试")
+            validate_finish_reason(data.get("done_reason"))
+            return data.get("message", {}).get("content", "")
 
     async def embed(self, text: str) -> list[float]:
         require_model_budget()
-        payload = {"model": self.embedding_model, "prompt": text}
+        payload = {"model": self.embedding_model, "input": text}
         async with provider_client(self.timeout) as client:
-            resp = await client.post(f"{self.base_url}/api/embeddings", json=payload)
+            resp = await client.post(self.embedding_endpoint, json=payload)
             resp.raise_for_status()
-            return resp.json().get("embedding", [])
+            try:
+                data: object = resp.json()
+            except ValueError:
+                raise ModelResponseError("模型未返回有效嵌入向量，请重试") from None
+            vectors = data.get("embeddings") if isinstance(data, dict) else None
+            if not isinstance(vectors, list) or len(vectors) != 1:
+                raise ModelResponseError("模型未返回单条有效嵌入向量，请重试")
+            return validate_embedding(vectors[0])
 
     async def chat_with_tools(
         self,

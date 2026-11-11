@@ -21,8 +21,8 @@ def provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
 
     def receive(request: httpx.Request) -> httpx.Response:
         seen.append(request.url.path)
-        if request.url.path.endswith("embeddings"):
-            return httpx.Response(200, json={"embedding": [0.1]})
+        if request.url.path.endswith("embed"):
+            return httpx.Response(200, json={"embeddings": [[0.1]]})
         return httpx.Response(503)
 
     real_client = httpx.AsyncClient
@@ -72,4 +72,4 @@ async def test_providers_share_budget_across_embedding_stream_and_tools(
         await openai.chat_with_tools([], [])
     with pytest.raises(budget.ModelBudgetExceeded):
         await bailian.embed("另一提供方")
-    assert provider == ["/api/embeddings", "/api/embeddings"]
+    assert provider == ["/api/embed", "/api/embed"]

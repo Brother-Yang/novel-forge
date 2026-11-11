@@ -46,8 +46,8 @@ class LLMClient(Protocol):
     ) -> ToolChatResult:
         """支持 function calling 的后端才需实现(智能体自主决策的前提)。
 
-        本地 Ollama 等不支持的后端可不实现此方法;调用方应通过
-        ``hasattr(llm, "chat_with_tools")`` 探测能力后降级到固定流水线,
+        当前 Ollama 适配器未实现此方法;调用方应通过
+        ``llm.supports_tool_calling()`` 探测适配器能力后降级到固定流水线,
         而不是直接调用后崩溃。
         """
         ...

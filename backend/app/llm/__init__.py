@@ -1,4 +1,8 @@
+import hashlib
+import json
 from functools import lru_cache
+
+import httpx
 
 from ..config import settings
 from .bailian_client import BailianClient
@@ -18,6 +22,26 @@ def get_llm(*, max_output_tokens: int | None = None) -> LLMClient:
     if settings.llm_provider == "openai":
         return OpenAIClient(max_output_tokens=max_output_tokens)
     return OllamaClient(max_output_tokens=max_output_tokens)
+
+
+def get_embedding_profile() -> str:
+    """Fingerprint the effective embedding service without persisting its URL."""
+    client = get_llm()
+    if isinstance(client, BailianClient):
+        provider = "bailian"
+    elif isinstance(client, OpenAIClient):
+        provider = "openai"
+    elif isinstance(client, OllamaClient):
+        provider = "ollama"
+    else:
+        raise TypeError("unknown embedding provider")
+    endpoint = httpx.URL(client.embedding_endpoint).copy_with(
+        userinfo=None, fragment=None
+    )
+    profile = json.dumps(
+        (provider, str(endpoint), client.embedding_model), ensure_ascii=False
+    )
+    return hashlib.sha256(profile.encode()).hexdigest()
 
 
 def supports_tool_calling() -> bool:

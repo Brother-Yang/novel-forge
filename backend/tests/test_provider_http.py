@@ -7,6 +7,7 @@ import json
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import cast
+from unittest.mock import AsyncMock
 
 import anyio
 import httpx
@@ -86,12 +87,20 @@ async def test_all_provider_requests_use_configured_timeouts_and_generation_caps
         assert request.extensions["timeout"] == TIMEOUTS
         payload = cast(dict[str, object], json.loads(request.content))
         bodies.append(payload)
+        if request.url.path == "/api/embed":
+            assert payload == {
+                "model": provider_settings.embedding_model,
+                "input": "three",
+            }
+            return httpx.Response(200, json={"embeddings": [[0.1]]})
         if request.url.path.endswith("embeddings"):
-            if provider == "ollama":
-                return httpx.Response(200, json={"embedding": [0.1]})
             return httpx.Response(200, json={"data": [{"embedding": [0.1]}]})
         if payload.get("stream") is True:
-            stream = OLLAMA_CHUNK if provider == "ollama" else OPENAI_CHUNK
+            stream = (
+                OLLAMA_CHUNK + b'{"done":true,"done_reason":"stop"}\n'
+                if provider == "ollama"
+                else OPENAI_CHUNK + b"data: [DONE]\n\n"
+            )
             return httpx.Response(200, content=stream)
         if provider == "ollama":
             return httpx.Response(200, json={"message": {"content": "text"}})
@@ -135,6 +144,53 @@ async def test_all_provider_requests_use_configured_timeouts_and_generation_caps
                 assert payload["enable_thinking"] is False
     assert "max_tokens" not in bodies[-1] and "options" not in bodies[-1]
     assert clients and all(client.is_closed for client in clients)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        {},
+        {"embeddings": []},
+        {"embeddings": [[], []]},
+        {"embeddings": [[]]},
+        {"embeddings": [[True]]},
+        {"embeddings": [["0.1"]]},
+        {"embeddings": [[None]]},
+    ],
+)
+async def test_ollama_rejects_invalid_embedding_responses(
+    response: object,
+    wire: MockProvider,
+) -> None:
+    clients = wire(lambda _request: httpx.Response(200, json=response))
+    with pytest.raises(ModelResponseError, match="嵌入向量"):
+        await ollama_client.OllamaClient().embed("离线测试")
+    assert clients[0].is_closed
+
+
+@pytest.mark.parametrize("provider", ["ollama", "openai", "bailian"])
+@pytest.mark.parametrize(
+    "value", ["NaN", "Infinity", "-Infinity", "9" * 400, "3.5e38", "-3.5e38"]
+)
+async def test_provider_rejects_values_that_cannot_be_stored_as_finite_float32(
+    provider: str,
+    value: str,
+    wire: MockProvider,
+) -> None:
+    content = (
+        '{"embeddings":[[' + value + "]] }"
+        if provider == "ollama"
+        else '{"data":[{"embedding":[' + value + "]}]}"
+    )
+    wire(lambda _request: httpx.Response(200, content=content))
+    factory = {
+        "ollama": ollama_client.OllamaClient,
+        "openai": openai_client.OpenAIClient,
+        "bailian": bailian_client.BailianClient,
+    }[provider]
+    with pytest.raises(ModelResponseError, match="无效数值"):
+        await factory().embed("离线测试")
 
 
 @pytest.mark.parametrize(
@@ -265,3 +321,187 @@ async def test_closing_pipeline_after_first_token_also_closes_provider_stream(
             assert db.scalars(select(models.Worldbuilding)).all() == []
     finally:
         engine.dispose()
+
+
+def completion_stream(provider: str, ending: str) -> bytes:
+    if provider == "ollama":
+        first = OLLAMA_CHUNK
+        terminal: dict[str, object] = {"done": True, "done_reason": ending}
+        if ending == "error":
+            terminal = {"error": "synthetic private upstream detail"}
+        return (
+            first
+            if ending == "missing"
+            else first + json.dumps(terminal).encode() + b"\n"
+        )
+    if ending == "missing":
+        return OPENAI_CHUNK
+    if ending == "marker_only":
+        return OPENAI_CHUNK + b"data: [DONE]\n\n"
+    terminal = {"choices": [{"delta": {}, "finish_reason": ending}]}
+    if ending == "error":
+        terminal = {"error": {"message": "synthetic private upstream detail"}}
+    return OPENAI_CHUNK + b"data: " + json.dumps(terminal).encode() + b"\n\n"
+
+
+@pytest.mark.parametrize("provider", ["ollama", "openai", "bailian"])
+@pytest.mark.parametrize(
+    "ending", ["stop", "missing", "length", "content_filter", "error"]
+)
+async def test_provider_requires_completed_stream_without_truncation(
+    provider: str,
+    ending: str,
+    wire: MockProvider,
+) -> None:
+    clients = wire(
+        lambda _request: httpx.Response(
+            200, content=completion_stream(provider, ending)
+        )
+    )
+    factory = {
+        "ollama": ollama_client.OllamaClient,
+        "openai": openai_client.OpenAIClient,
+        "bailian": bailian_client.BailianClient,
+    }[provider]
+    stream = factory().chat_stream("合成正文")
+    assert await anext(stream) == "first"
+    if ending == "stop":
+        assert [token async for token in stream] == []
+    else:
+        with pytest.raises(ModelResponseError) as error:
+            _ = [token async for token in stream]
+        assert "synthetic private upstream" not in public_failure(error.value)
+    assert clients[0].is_closed
+
+
+async def test_openai_compatible_done_marker_is_a_valid_terminal_signal(
+    wire: MockProvider,
+) -> None:
+    wire(
+        lambda _request: httpx.Response(
+            200, content=completion_stream("openai", "marker_only")
+        )
+    )
+    assert [
+        token async for token in openai_client.OpenAIClient().chat_stream("合成正文")
+    ] == ["first"]
+
+
+async def test_completed_stream_closes_without_waiting_for_more_socket_bytes(
+    wire: MockProvider,
+) -> None:
+    body = PausedResponse(completion_stream("openai", "stop"))
+    clients = wire(lambda _request: httpx.Response(200, stream=body))
+
+    async def consume() -> list[str]:
+        return [
+            token
+            async for token in openai_client.OpenAIClient().chat_stream("合成正文")
+        ]
+
+    assert await asyncio.wait_for(consume(), 1) == ["first"]
+    assert body.closed.is_set() and clients[0].is_closed
+
+
+@pytest.mark.parametrize("provider", ["ollama", "openai"])
+@pytest.mark.parametrize("ending", ["missing", "length"])
+async def test_incomplete_provider_output_does_not_replace_saved_chapter(
+    provider: str,
+    ending: str,
+    wire: MockProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wire(
+        lambda _request: httpx.Response(
+            200, content=completion_stream(provider, ending)
+        )
+    )
+    factory = (
+        ollama_client.OllamaClient
+        if provider == "ollama"
+        else openai_client.OpenAIClient
+    )
+    monkeypatch.setattr(pipeline, "get_llm", factory)
+    monkeypatch.setattr(
+        pipeline.memory, "build_chapter_context", AsyncMock(return_value="")
+    )
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as db:
+            chapter = models.Chapter(
+                book=models.Book(title="合成书"),
+                title="原章",
+                outline="章纲",
+                status="done",
+                content=models.ChapterContent(body="作者已保存的完整正文"),
+            )
+            db.add(chapter)
+            db.commit()
+            events: list[tuple[str, str]] = []
+            with pytest.raises(ModelResponseError):
+                async for event in pipeline.gen_chapter_body(db, chapter.id):
+                    events.append(event)
+            db.expire_all()
+            assert chapter.content and chapter.content.body == "作者已保存的完整正文"
+            assert chapter.status == "done"
+            assert not any(kind == "done" for kind, _ in events)
+            assert db.scalars(select(models.MemorySyncJob)).all() == []
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("provider", ["ollama", "openai", "bailian"])
+async def test_nonstreamed_truncation_is_rejected_before_use(
+    provider: str,
+    wire: MockProvider,
+) -> None:
+    response = (
+        {"message": {"content": "部分内容"}, "done": True, "done_reason": "length"}
+        if provider == "ollama"
+        else {
+            "choices": [
+                {
+                    "message": {"content": "部分内容", "tool_calls": []},
+                    "finish_reason": "length",
+                }
+            ]
+        }
+    )
+    wire(lambda _request: httpx.Response(200, json=response))
+    factory = {
+        "ollama": ollama_client.OllamaClient,
+        "openai": openai_client.OpenAIClient,
+        "bailian": bailian_client.BailianClient,
+    }[provider]
+    model = factory()
+    with pytest.raises(ModelResponseError, match="长度上限"):
+        await model.chat("合成提示")
+    if provider != "ollama":
+        with pytest.raises(ModelResponseError, match="长度上限"):
+            await model.chat_with_tools([], [])
+
+
+@pytest.mark.parametrize("provider", ["ollama", "openai", "bailian"])
+async def test_nonstreamed_provider_error_is_not_an_empty_success(
+    provider: str,
+    wire: MockProvider,
+) -> None:
+    clients = wire(
+        lambda _request: httpx.Response(
+            200, json={"error": {"message": "synthetic private upstream detail"}}
+        )
+    )
+    factory = {
+        "ollama": ollama_client.OllamaClient,
+        "openai": openai_client.OpenAIClient,
+        "bailian": bailian_client.BailianClient,
+    }[provider]
+    model = factory()
+    with pytest.raises(ModelResponseError) as error:
+        await model.chat("合成提示")
+    assert "synthetic private upstream" not in public_failure(error.value)
+    if provider != "ollama":
+        with pytest.raises(ModelResponseError):
+            await model.chat_with_tools([], [])
+    assert all(client.is_closed for client in clients)

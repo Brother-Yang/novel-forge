@@ -223,8 +223,9 @@ def test_vector_cleanup_removes_only_the_selected_book(
         vector_store.upsert(
             book_id, "summary", [0.1, 0.2], "记忆", {"source_type": "chapter_summary"}
         )
+    deleted_collection = vector_store._collection("deleted-book").name
     vector_store.delete_book("deleted-book")
     vector_store.delete_book("deleted-book")  # Repeated cleanup is safe.
     with pytest.raises(NotFoundError):
-        client.get_collection("book_deleted-book")
-    assert client.get_collection("book_retained-book").count() == 1
+        client.get_collection(deleted_collection)
+    assert vector_store.existing_ids("retained-book") == {"summary"}

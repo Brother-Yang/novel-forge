@@ -368,9 +368,9 @@ async def test_manual_sse_blocks_other_generators_and_drains_before_delete(
     cleanup: list[str] = []
 
     async def waiting_model(
-        db: Session, cid: str, _words: int
+        db: Session, cid: str, _words: int, *, expected_version: str | None = None
     ) -> AsyncIterator[tuple[str, str]]:
-        assert cid == chapter_id
+        assert cid == chapter_id and expected_version is None
         try:
             entered.set()
             await asyncio.Event().wait()
@@ -446,8 +446,9 @@ async def test_background_pause_disconnect_and_retry_release_same_book(
             db.commit()
 
     async def waiting_model(
-        _db: Session, _cid: str, _words: int
+        _db: Session, _cid: str, _words: int, *, expected_version: str | None = None
     ) -> AsyncIterator[tuple[str, str]]:
+        assert expected_version is None
         try:
             stream_started.set()
             await asyncio.Event().wait()
@@ -504,8 +505,9 @@ async def test_sse_error_logs_context_without_provider_exception_text(
     provider_error = "provider included a fragment of authorization material"
 
     async def broken_model(
-        _db: Session, _cid: str, _words: int
+        _db: Session, _cid: str, _words: int, *, expected_version: str | None = None
     ) -> AsyncIterator[tuple[str, str]]:
+        assert expected_version is None
         yield ("token", "部分正文")
         raise RuntimeError(provider_error)
 
