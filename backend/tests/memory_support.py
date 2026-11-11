@@ -1,7 +1,7 @@
 """Temporary database, fake model and vector fixtures for memory tests."""
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,7 +25,9 @@ class FakeVectors:
     docs: dict[tuple[str, str], tuple[str, dict[str, object]]] = field(
         default_factory=dict
     )
-    queries: list[dict[str, object] | None] = field(default_factory=list)
+    queries: list[tuple[str | None, tuple[str, ...] | None]] = field(
+        default_factory=list
+    )
     fail_delete: bool = False
 
     def upsert(
@@ -54,20 +56,22 @@ class FakeVectors:
         book_id: str,
         _embedding: list[float],
         top_k: int = 5,
-        where: dict[str, object] | None = None,
-    ) -> list[dict[str, object]]:
-        self.queries.append(where)
+        *,
+        source_type: str | None = None,
+        source_ids: Sequence[str] | None = None,
+    ) -> list[vector_store.VectorHit]:
+        self.queries.append(
+            (source_type, tuple(source_ids) if source_ids is not None else None)
+        )
         # Deliberately ignores the time predicate; SQL must reject older
         # metadata and future chapters even if the vector store returns them.
-        filters = (where or {}).get("$and")
-        source_type = where.get("source_type") if where else None
-        if isinstance(filters, list) and filters:
-            source_type = filters[0].get("source_type")
-        return [
+        hits: list[vector_store.VectorHit] = [
             {"document": text, "metadata": meta}
             for (owner, _doc_id), (text, meta) in self.docs.items()
-            if owner == book_id and meta.get("source_type") == source_type
-        ][:top_k]
+            if owner == book_id
+            and (source_type is None or meta.get("source_type") == source_type)
+        ]
+        return hits[:top_k]
 
     def existing_ids(self, book_id: str) -> set[str]:
         return {doc_id for owner, doc_id in self.docs if owner == book_id}

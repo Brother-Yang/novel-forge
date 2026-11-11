@@ -2,8 +2,9 @@ import json
 import os
 import re
 import sqlite3
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
-from typing import Any
+from typing import TypedDict
 
 import chromadb
 from chromadb.api import ClientAPI
@@ -20,6 +21,11 @@ _PROFILE_SUFFIX = "__emb_"
 _PROFILE_PATTERN = re.compile(r"[0-9a-f]{64}")
 _PROFILE_FIELD = "embedding_profile"
 _COLLECTION_PAGE_SIZE = 100
+
+
+class VectorHit(TypedDict):
+    document: str
+    metadata: Mapping[str, object]
 
 
 def _repair_collection_config(path: str) -> None:
@@ -78,7 +84,7 @@ def upsert(
     doc_id: str,
     embedding: list[float],
     document: str,
-    metadata: dict[str, Any],
+    metadata: Mapping[str, str],
 ) -> None:
     if not embedding:
         return
@@ -95,9 +101,11 @@ def query(
     book_id: str,
     embedding: list[float],
     top_k: int = 5,
-    where: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    if not embedding:
+    *,
+    source_type: str | None = None,
+    source_ids: Sequence[str] | None = None,
+) -> list[VectorHit]:
+    if not embedding or (source_ids is not None and not source_ids):
         return []
     profile = get_embedding_profile()
     try:
@@ -107,15 +115,23 @@ def query(
     count = coll.count()
     if count == 0:
         return []
-    profile_filter: Where = {_PROFILE_FIELD: profile}
+    filters: list[Where] = [{_PROFILE_FIELD: profile}]
+    if source_type is not None:
+        filters.append({"source_type": source_type})
+    if source_ids is not None:
+        filters.append({"source_id": {"$in": list(source_ids)}})
     res = coll.query(
         query_embeddings=[embedding],
         n_results=min(top_k, count),
-        where={"$and": [where, profile_filter]} if where else profile_filter,
+        where={"$and": filters} if len(filters) > 1 else filters[0],
     )
     docs = (res.get("documents") or [[]])[0]
     metas = (res.get("metadatas") or [[]])[0]
-    return [{"document": d, "metadata": m} for d, m in zip(docs, metas)]
+    return [
+        {"document": document, "metadata": metadata}
+        for document, metadata in zip(docs, metas)
+        if document is not None and metadata is not None
+    ]
 
 
 def delete_source(book_id: str, source_type: str, source_id: str) -> None:

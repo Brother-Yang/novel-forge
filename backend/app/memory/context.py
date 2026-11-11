@@ -5,7 +5,6 @@ token 以中文字符数粗略近似,足以做预算控制。
 
 import json
 import logging
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -106,11 +105,14 @@ def _volume_summary(db: Session, chapter: models.Chapter) -> str:
 
 
 def _valid_hits(
-    db: Session, chapter: models.Chapter, hits: list[dict[str, Any]], source_type: str
+    db: Session,
+    chapter: models.Chapter,
+    hits: list[vector_store.VectorHit],
+    source_type: str,
 ) -> list[str]:
     documents: list[str] = []
     for hit in hits:
-        meta = hit.get("metadata") or {}
+        meta = hit["metadata"]
         source_id = meta.get("source_id")
         if not isinstance(source_id, str) or meta.get("source_type") != source_type:
             continue
@@ -141,9 +143,7 @@ def _valid_hits(
             != job.source_hash
         ):
             continue
-        document = hit.get("document")
-        if isinstance(document, str):
-            documents.append(document)
+        documents.append(hit["document"])
     return documents
 
 
@@ -220,7 +220,7 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
                 chapter.book_id,
                 query_emb,
                 top_k=12,
-                where={"source_type": sources.WORLD},
+                source_type=sources.WORLD,
             )
             world_documents = _valid_hits(db, chapter, wb_hits, sources.WORLD)[:4]
             if world_documents:
@@ -232,12 +232,8 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
                     chapter.book_id,
                     query_emb,
                     top_k=12,
-                    where={
-                        "$and": [
-                            {"source_type": sources.CHAPTER},
-                            {"source_id": {"$in": history_ids}},
-                        ]
-                    },
+                    source_type=sources.CHAPTER,
+                    source_ids=history_ids,
                 )
                 history_documents = _valid_hits(db, chapter, sum_hits, sources.CHAPTER)[
                     :4

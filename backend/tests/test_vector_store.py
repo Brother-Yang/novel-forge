@@ -148,14 +148,13 @@ def test_switching_profiles_preserves_legacy_and_accepts_a_different_dimension(
         for hit in vector_store.query(
             book_id,
             [0.1, 0.2, 0.3],
-            where={
-                "$and": [{"source_type": "chapter_summary"}, {"source_id": "source"}]
-            },
+            source_type="chapter_summary",
+            source_ids=["source"],
         )
     ] == ["当前版本"]
-    assert not vector_store.query(
-        book_id, [0.1, 0.2, 0.3], where={"source_type": "world"}
-    )
+    assert not vector_store.query(book_id, [0.1, 0.2, 0.3], source_type="world")
+    assert not vector_store.query(book_id, [0.1, 0.2, 0.3], source_ids=["other"])
+    assert not vector_store.query(book_id, [0.1, 0.2, 0.3], source_ids=[])
     vector_store.delete_source(book_id, "chapter_summary", "source")
     assert not vector_store.existing_ids(book_id)
     assert legacy.count() == 1

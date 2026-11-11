@@ -300,6 +300,71 @@ async def test_new_character_makes_completed_fact_job_repairable_without_a_body_
         assert not facts.replay(db, book_id).characters
 
 
+@pytest.mark.parametrize("malformed_json", [False, True])
+async def test_stored_fact_with_valid_hashes_and_bad_payload_is_missing_and_repairable(
+    malformed_json: bool,
+    storage: sessionmaker[Session],
+    client: httpx.AsyncClient,
+    fakes: tuple[FakeLLM, FakeVectors],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    llm, _ = fakes
+    with storage() as db:
+        book_id, _, chapter_id, _ = seed(db)
+        character_id, thread_id = seed_cast(db, book_id)
+    body = "阿青在北门拾到半截暗号。"
+    llm.fact_replies[body] = reply(
+        character_id, thread_id, evidence=body, location="北门", status="active"
+    )
+    content_url = f"/chapters/{chapter_id}/content"
+    status_url = f"/books/{book_id}/memory/status"
+    assert (await client.put(content_url, json={"body": body})).status_code == 200
+    await drain(storage, book_id)
+    assert (await client.get(status_url)).json()["missing"] == 0
+    original_chats, original_embeddings = list(llm.chats), list(llm.embeddings)
+
+    bad_evidence = "未出现在正文的私有片段"
+    with storage() as db:
+        saved = db.get(models.ChapterFacts, chapter_id)
+        assert saved is not None
+        original_hashes = (saved.source_hash, saved.roster_hash)
+        saved.payload = (
+            "{" + bad_evidence
+            if malformed_json
+            else reply(
+                character_id,
+                thread_id,
+                evidence=bad_evidence,
+                location="伪造地点",
+                status="closed",
+            )
+        )
+        db.commit()
+        replayed = facts.replay(db, book_id)
+        assert not replayed.characters and not replayed.threads
+    assert bad_evidence not in caplog.text
+    assert (await client.get(status_url)).json()["missing"] == 1
+    assert llm.chats == original_chats
+
+    submitted = await client.post(f"/books/{book_id}/memory/repair")
+    assert submitted.json()["pending"] == 1
+    assert submitted.json()["items"][0]["source_type"] == sync.FACTS
+    await drain(storage, book_id)
+    assert (await client.get(status_url)).json()["missing"] == 0
+    assert (await client.get(content_url)).json()["body"] == body
+    assert llm.chats == [*original_chats, facts.FACTS_SYSTEM]
+    assert llm.embeddings == original_embeddings
+    with storage() as db:
+        saved = db.get(models.ChapterFacts, chapter_id)
+        assert (
+            saved is not None
+            and (saved.source_hash, saved.roster_hash) == original_hashes
+        )
+        replayed = facts.replay(db, book_id)
+        assert replayed.characters == {character_id: {"location": "北门"}}
+        assert replayed.threads == {thread_id: "active"}
+
+
 async def test_roster_change_during_extraction_requeues_and_discards_old_reply(
     storage: sessionmaker[Session],
     client: httpx.AsyncClient,

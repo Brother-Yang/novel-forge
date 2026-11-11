@@ -48,7 +48,7 @@ ThreadStatus = Literal["active", "closed"]
 
 
 class InvalidChapterFacts(Exception):
-    """Provider output cannot be applied to the current chapter and roster."""
+    """A fact payload cannot be applied to the current chapter and roster."""
 
 
 class _StrictModel(BaseModel):
@@ -196,17 +196,27 @@ def validate(batch: FactBatch, body: str, roster: Roster) -> None:
         raise InvalidChapterFacts("evidence must be a literal excerpt of this chapter")
 
 
-async def extract(llm: LLMClient, body: str, roster: Roster) -> FactBatch:
-    raw = (await llm.chat(roster.prompt(body), system=FACTS_SYSTEM)).strip()
-    fence = re.fullmatch(r"```(?:json)?\s*\n(.+?)\n\s*```", raw, flags=re.DOTALL)
-    if fence:
-        raw = fence.group(1)
+def _parse_batch(payload: str, body: str, roster: Roster) -> FactBatch:
     try:
-        batch = FactBatch.model_validate_json(raw)
+        batch = FactBatch.model_validate_json(payload)
     except ValidationError:
         raise InvalidChapterFacts("invalid fact structure") from None
     validate(batch, body, roster)
     return batch
+
+
+def read_stored_batch(payload: str, body: str, roster: Roster) -> FactBatch | None:
+    """Apply the extraction rules to an existing fact artifact."""
+    try:
+        return _parse_batch(payload, body, roster)
+    except InvalidChapterFacts:
+        return None
+
+
+async def extract(llm: LLMClient, body: str, roster: Roster) -> FactBatch:
+    raw = (await llm.chat(roster.prompt(body), system=FACTS_SYSTEM)).strip()
+    fence = re.fullmatch(r"```(?:json)?\s*\n(.+?)\n\s*```", raw, flags=re.DOTALL)
+    return _parse_batch(fence.group(1) if fence else raw, body, roster)
 
 
 def replay(db: Session, book_id: str, *, before_order: int | None = None) -> FactState:
@@ -250,9 +260,8 @@ def replay(db: Session, book_id: str, *, before_order: int | None = None) -> Fac
             row.source_hash, roster_hash
         ):
             continue
-        try:
-            batch = FactBatch.model_validate_json(row.payload)
-        except ValidationError:
+        batch = read_stored_batch(row.payload, body, roster)
+        if batch is None:
             logger.warning(
                 "stored chapter facts invalid book_id=%s chapter_id=%s",
                 book_id,
@@ -260,14 +269,10 @@ def replay(db: Session, book_id: str, *, before_order: int | None = None) -> Fac
             )
             continue
         for item in batch.characters:
-            if item.character_id in roster.characters:
-                result.characters.setdefault(item.character_id, {}).update(
-                    item.state.values()
-                )
+            result.characters.setdefault(item.character_id, {}).update(
+                item.state.values()
+            )
         for item in batch.threads:
-            if (
-                item.thread_id in roster.threads
-                and result.threads.get(item.thread_id) != "closed"
-            ):
+            if result.threads.get(item.thread_id) != "closed":
                 result.threads[item.thread_id] = item.status
     return result

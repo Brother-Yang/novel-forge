@@ -13,7 +13,6 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TypedDict
 
-from pydantic import ValidationError
 from sqlalchemy import and_, delete, func, select, true, update
 from sqlalchemy.dialects.sqlite import Insert, insert
 from sqlalchemy.orm import Session, selectinload
@@ -264,11 +263,7 @@ async def _write_chapter_facts(
     saved = db.get(models.ChapterFacts, chapter_id)
     batch: facts.FactBatch | None = None
     if saved and saved.source_hash == body_hash and saved.roster_hash == roster_hash:
-        try:
-            batch = facts.FactBatch.model_validate_json(saved.payload)
-            facts.validate(batch, body, roster)
-        except (ValidationError, facts.InvalidChapterFacts):
-            batch = None
+        batch = facts.read_stored_batch(saved.payload, body, roster)
     if batch is None:
         db.rollback()
         if roster.characters or roster.threads:
@@ -586,15 +581,12 @@ def _book_memory(
     }
     expected: dict[MemoryKey, str] = {}
     missing_artifacts: set[MemoryKey] = set()
-    roster_hash = facts.roster_for_book(db, book_id).fingerprint()
-    fact_hashes = {
-        chapter_id: (body_hash, saved_roster)
-        for chapter_id, body_hash, saved_roster in db.execute(
-            select(
-                models.ChapterFacts.chapter_id,
-                models.ChapterFacts.source_hash,
-                models.ChapterFacts.roster_hash,
-            )
+    roster = facts.roster_for_book(db, book_id)
+    roster_hash = roster.fingerprint()
+    stored_facts = {
+        saved.chapter_id: saved
+        for saved in db.scalars(
+            select(models.ChapterFacts)
             .join(models.Chapter)
             .where(models.Chapter.book_id == book_id)
         )
@@ -631,7 +623,17 @@ def _book_memory(
             if (
                 (job := jobs.get(facts_key))
                 and job.status == "done"
-                and fact_hashes.get(chapter.id) != (fact_body_hash, roster_hash)
+                and (
+                    (saved := stored_facts.get(chapter.id)) is None
+                    or saved.source_hash != fact_body_hash
+                    or saved.roster_hash != roster_hash
+                    or facts.read_stored_batch(
+                        saved.payload,
+                        chapter.content.body if chapter.content else "",
+                        roster,
+                    )
+                    is None
+                )
             ):
                 missing_artifacts.add(facts_key)
     for volume in db.scalars(

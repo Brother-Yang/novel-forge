@@ -418,9 +418,7 @@ async def test_rewriting_early_chapter_excludes_same_and_later_facts_and_volume_
         db.commit()
     await drain(storage, book_id)
     assert "先前事实" in await chapter_context(storage, target_id)
-    assert {
-        "$and": [{"source_type": sync.CHAPTER}, {"source_id": {"$in": [history_id]}}]
-    } in vectors.queries
+    assert (sync.CHAPTER, (history_id,)) in vectors.queries
     monkeypatch.setattr(settings, "context_token_budget", 72)
     retrieved = await chapter_context(storage, target_id)
     assert "本章旧事实" not in retrieved and "后续真相" not in retrieved
