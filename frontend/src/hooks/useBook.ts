@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { api } from "../api";
 import type { Book } from "../api/types";
+import { AuthSessionRevisionContext } from "../components/authContext";
 
 export function useBook(bookId: string | undefined, polling: boolean, initialBook?: Book) {
+  const sessionRevision = useContext(AuthSessionRevisionContext);
   const [book, setBook] = useState(initialBook);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -37,7 +39,7 @@ export function useBook(bookId: string | undefined, polling: boolean, initialBoo
       request.abort();
       clearTimeout(timer);
     };
-  }, [bookId, polling, retryCount]);
+  }, [bookId, polling, retryCount, sessionRevision]);
 
   return { book, error, loading, retry: () => setRetryCount((count) => count + 1) };
 }

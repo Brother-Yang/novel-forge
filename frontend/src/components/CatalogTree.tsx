@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Dropdown, Space, Tree, Typography } from "antd";
 import type { TreeDataNode, TreeProps } from "antd";
 import { PlusOutlined, FileAddOutlined, MoreOutlined } from "@ant-design/icons";
@@ -7,6 +7,7 @@ import type { BookTree } from "../api/types";
 import { useAppStore } from "../store";
 import { CHAPTER_STATUS_COLOR } from "../constants/chapterStatus";
 import { reorderCatalog, type ChapterDropTarget } from "../utils/catalogReorder";
+import { AuthSessionRevisionContext } from "./authContext";
 
 interface Props {
   bookId: string;
@@ -20,12 +21,14 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   const tree = snapshot?.bookId === bookId ? snapshot.tree : null;
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
+  const directoryUnavailable = !tree || Boolean(loadError);
   const [collapsedKeys, setCollapsedKeys] = useState<string[]>([]);
   const pending = useRef(false);
   const scope = useRef(0);
   const requestVersion = useRef(0);
   const { message, modal } = App.useApp();
   const treeVersion = useAppStore((s) => s.treeVersion);
+  const sessionRevision = useContext(AuthSessionRevisionContext);
 
   useEffect(() => {
     scope.current += 1;
@@ -53,7 +56,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   }, [bookId]);
   useEffect(() => {
     void load();
-  }, [load, treeVersion]);
+  }, [load, treeVersion, sessionRevision]);
 
   const mutate = async (action: () => Promise<unknown>): Promise<boolean> => {
     if (pending.current) return false;
@@ -80,21 +83,21 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   };
 
   const addVolume = async () => {
-    const order = tree ? tree.volumes.length : 0;
+    if (!tree || loadError) return;
+    const order =
+      tree.volumes.reduce((highest, volume) => Math.max(highest, volume.order_index), -1) + 1;
     await mutate(() =>
       api.createVolume({ book_id: bookId, title: `第 ${order + 1} 卷`, order_index: order })
     );
   };
 
   const addChapter = async (volumeId: string | null) => {
+    if (!tree || loadError) return;
     const count =
       volumeId == null
-        ? (tree?.loose_chapters.length ?? 0)
-        : (tree?.volumes.find((v) => v.id === volumeId)?.chapters.length ?? 0);
-    const chapters = [
-      ...(tree?.volumes.flatMap((volume) => volume.chapters) ?? []),
-      ...(tree?.loose_chapters ?? []),
-    ];
+        ? tree.loose_chapters.length
+        : (tree.volumes.find((v) => v.id === volumeId)?.chapters.length ?? 0);
+    const chapters = [...tree.volumes.flatMap((volume) => volume.chapters), ...tree.loose_chapters];
     const nextOrder = Math.max(-1, ...chapters.map((chapter) => chapter.order_index)) + 1;
     await mutate(() =>
       api.createChapter({
@@ -155,9 +158,11 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
 
   const nodeMenu = (kind: "volume" | "chapter", id: string, title: string) => ({
     items: [
-      { key: "rename", label: "重命名", disabled: busy },
-      ...(kind === "volume" ? [{ key: "addChapter", label: "新增章节", disabled: busy }] : []),
-      { key: "delete", label: "删除", danger: true, disabled: busy },
+      { key: "rename", label: "重命名", disabled: busy || directoryUnavailable },
+      ...(kind === "volume"
+        ? [{ key: "addChapter", label: "新增章节", disabled: busy || directoryUnavailable }]
+        : []),
+      { key: "delete", label: "删除", danger: true, disabled: busy || directoryUnavailable },
     ],
     onClick: ({ key, domEvent }: { key: string; domEvent: React.SyntheticEvent }) => {
       domEvent.stopPropagation();
@@ -168,7 +173,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   });
 
   const onDrop: TreeProps["onDrop"] = async (info) => {
-    if (!tree || pending.current) return;
+    if (!tree || loadError || pending.current) return;
     const sourceKey = String(info.dragNode.key);
     const targetKey = String(info.node.key);
     if (!sourceKey.startsWith("c-")) return;
@@ -249,7 +254,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
           <Button
             size="small"
             aria-label="新增卷"
-            disabled={busy}
+            disabled={busy || directoryUnavailable}
             icon={<PlusOutlined />}
             onClick={addVolume}
           >
@@ -258,7 +263,7 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
           <Button
             size="small"
             aria-label="新增章节"
-            disabled={busy}
+            disabled={busy || directoryUnavailable}
             icon={<FileAddOutlined />}
             onClick={() => addChapter(null)}
           >
@@ -283,7 +288,10 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
         showLine={false}
         expandedKeys={groupKeys.filter((key) => !collapsedKeys.includes(key))}
         onExpand={(keys) => setCollapsedKeys(groupKeys.filter((key) => !keys.includes(key)))}
-        draggable={!busy && { nodeDraggable: (node) => String(node.key).startsWith("c-") }}
+        draggable={
+          !busy &&
+          !directoryUnavailable && { nodeDraggable: (node) => String(node.key).startsWith("c-") }
+        }
         allowDrop={({ dropNode, dropPosition }) =>
           String(dropNode.key).startsWith("c-") ? dropPosition !== 0 : dropPosition === 0
         }

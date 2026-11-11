@@ -40,20 +40,23 @@ it("慢请求期间不会叠加轮询，操作后的刷新排队并丢弃旧结�
     await vi.advanceTimersByTimeAsync(10000);
   });
   expect(api.listTasks).toHaveBeenCalledTimes(1);
+  const refreshed = vi.fn();
   act(() => {
-    view.result.current.refreshTasks();
-    view.result.current.refreshTasks();
+    void view.result.current.refreshTasks().then(refreshed);
+    void view.result.current.refreshTasks();
   });
   await act(async () => {
     old.resolve([{ ...task, status: "paused" }]);
   });
   expect(api.listTasks).toHaveBeenCalledTimes(2);
   expect(view.result.current.tasks).toEqual([]);
+  expect(refreshed).not.toHaveBeenCalled();
   await act(async () => {
     fresh.resolve([task]);
   });
   expect(view.result.current.tasks).toEqual([task]);
   expect(view.result.current.tasksLoaded).toBe(true);
+  expect(refreshed).toHaveBeenCalledTimes(1);
 });
 
 it("失败保留已加载状态并可立即重试，卸载后停止轮询", async () => {
@@ -99,4 +102,22 @@ it("空闲和任务结束后不轮询，重新聚焦可发现其它窗口启动�
   });
   expect(api.listTasks).toHaveBeenCalledTimes(3);
   expect(view.result.current.tasks[0].status).toBe("done");
+});
+
+it("生成完成后刷新卷目录，卷选择可以读取新规划出的卷", async () => {
+  vi.mocked(api.listTasks)
+    .mockResolvedValueOnce([task])
+    .mockResolvedValueOnce([{ ...task, status: "done" }]);
+  vi.mocked(api.getTree)
+    .mockResolvedValueOnce({ volumes: [], loose_chapters: [] })
+    .mockResolvedValueOnce({
+      volumes: [{ id: "new-volume", title: "新规划卷", order_index: 0, chapters: [] }],
+      loose_chapters: [],
+    });
+  const view = renderHook(() => useTaskPanelData("book"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2500);
+  });
+  expect(view.result.current.tree?.volumes[0]?.id).toBe("new-volume");
+  expect(api.getTree).toHaveBeenCalledTimes(2);
 });

@@ -26,7 +26,12 @@ const loadWorldbuilding = () => import("../components/WorldbuildingPanel");
 const loadTasks = () => import("../components/TaskPanel");
 const loadPlotThreads = () => import("../components/PlotThreadPanel");
 
-type View = "chapters" | "characters" | "world" | "threads" | "tasks";
+const views = ["chapters", "characters", "world", "threads", "tasks"] as const;
+type View = (typeof views)[number];
+
+function isView(value: string | null): value is View {
+  return views.some((view) => view === value);
+}
 
 export default function BookWorkspace() {
   const { bookId } = useParams();
@@ -40,12 +45,11 @@ interface WorkspaceProps {
 
 function Workspace({ bookId }: WorkspaceProps) {
   const { message } = App.useApp();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const fromTask = searchParams.get("fromTask");
-  const [view, setView] = useState<View>(
-    searchParams.get("view") === "tasks" ? "tasks" : "chapters"
-  );
+  const requestedView = searchParams.get("view");
+  const view = isView(requestedView) ? requestedView : "chapters";
   const [selectedChapter, setSelectedChapter] = useState<string | null>(null);
   const [taskActive, setTaskActive] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -133,7 +137,13 @@ function Workspace({ bookId }: WorkspaceProps) {
           <Menu
             mode="inline"
             selectedKeys={[view]}
-            onClick={(e) => setView(e.key as View)}
+            onClick={({ key }) => {
+              if (!isView(key) || key === view) return;
+              const next = new URLSearchParams(searchParams);
+              if (key === "chapters") next.delete("view");
+              else next.set("view", key);
+              setSearchParams(next, { replace: true });
+            }}
             inlineCollapsed
             items={[
               { key: "chapters", icon: <BookOutlined />, label: "章节" },

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App as AntdApp, ConfigProvider } from "antd";
-import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Book } from "../api/types";
 import BookWorkspace from "./BookWorkspace";
@@ -57,12 +57,25 @@ function SwitchBook() {
   return <button onClick={() => navigate("/books/next-book")}>切换书籍</button>;
 }
 
-function renderWorkspace(initialEntry: string) {
+function HistoryProbe() {
+  const { search } = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <output aria-label="工作区查询参数">{search}</output>
+      <button onClick={() => navigate(-1)}>后退</button>
+    </>
+  );
+}
+
+function renderWorkspace(initialEntry: string, previousEntry?: string) {
+  const entries = previousEntry ? [previousEntry, initialEntry] : [initialEntry];
   return render(
     <ConfigProvider>
       <AntdApp>
-        <MemoryRouter initialEntries={[initialEntry]}>
+        <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
           <SwitchBook />
+          <HistoryProbe />
           <Routes>
             <Route path="/books/:bookId" element={<BookWorkspace />} />
             <Route path="/agent" element={<div>AI 自主创作对话</div>} />
@@ -82,6 +95,25 @@ describe("BookWorkspace", () => {
     expect(screen.queryByText("剧情面板已加载")).not.toBeInTheDocument();
     await user.click(await screen.findByRole("menuitem", { name: /剧情/ }));
     expect(await screen.findByText("剧情面板已加载")).toBeInTheDocument();
+    expect(screen.getByLabelText("工作区查询参数")).toHaveTextContent("view=threads");
+  });
+
+  it("同一本书回退时由 URL 恢复面板，并保留返回任务所需的参数", async () => {
+    vi.mocked(api.getBook).mockResolvedValue(makeBook(bookId, "同书回退"));
+    const user = userEvent.setup();
+    renderWorkspace(
+      `/books/${bookId}?fromTask=origin`,
+      `/books/${bookId}?view=tasks&fromTask=origin`
+    );
+    expect(await screen.findByText("编辑器")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "后退" }));
+    expect(await screen.findByText("任务面板")).toBeVisible();
+    expect(screen.queryByText("编辑器")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: /剧情/ }));
+    expect(await screen.findByText("剧情面板已加载")).toBeVisible();
+    const query = screen.getByLabelText("工作区查询参数");
+    expect(query).toHaveTextContent("fromTask=origin");
+    expect(query).toHaveTextContent("view=threads");
   });
 
   it("导出服务失败时在工作区显示提示", async () => {

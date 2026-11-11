@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { App as AntdApp } from "antd";
+import { App as AntdApp, ConfigProvider } from "antd";
 import { afterEach, expect, it, vi } from "vitest";
 import { http } from "../api/client";
+import { useBook } from "../hooks/useBook";
 import AuthGate from "./AuthGate";
 import AuthSignOut from "./AuthSignOut";
 
@@ -107,4 +108,84 @@ it("本地免登录工作台在会话检查失败后可重试", async () => {
   await userEvent.setup().click(screen.getByRole("button", { name: /^重\s*试$/ }));
   expect(await screen.findByText("工作台")).toBeVisible();
   expect(screen.queryByRole("button", { name: "退出登录" })).not.toBeInTheDocument();
+});
+
+it("首次读取书籍遇到会话过期，重新登录后自动重读书籍", async () => {
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(json({ enabled: true, authenticated: true }))
+    .mockResolvedValueOnce(json({ detail: "临时会话过期" }, 401))
+    .mockResolvedValueOnce(json({ ok: true }))
+    .mockResolvedValueOnce(json({ enabled: true, authenticated: true }))
+    .mockResolvedValueOnce(json({ id: "test-book", title: "恢复读取的合成书" }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  function BookProbe() {
+    const { book, error } = useBook("test-book", false);
+    return <p>{book?.title ?? error ?? "读取中"}</p>;
+  }
+
+  const user = userEvent.setup();
+  render(
+    <AuthGate>
+      <BookProbe />
+    </AuthGate>
+  );
+  await screen.findByText(/登录已失效/);
+  await user.type(screen.getByLabelText("访问密码"), "synthetic");
+  await user.click(screen.getByRole("button", { name: /登\s*录$/ }));
+  expect(await screen.findByText("恢复读取的合成书")).toBeVisible();
+  expect(fetchMock.mock.calls.filter(([url]) => url === "/api/books/test-book")).toHaveLength(2);
+});
+
+it("会话失效关闭工作区的确认弹窗，重新登录不重放旧删除", async () => {
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(json({ enabled: true, authenticated: true }))
+    .mockResolvedValueOnce(json({ detail: "临时会话过期" }, 401))
+    .mockResolvedValueOnce(json({ ok: true }))
+    .mockResolvedValueOnce(json({ enabled: true, authenticated: true }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  function DeleteProbe() {
+    const { modal } = AntdApp.useApp();
+    return (
+      <>
+        <textarea aria-label="合成草稿" defaultValue="继续保留的草稿" />
+        <button
+          onClick={async () => {
+            await modal.confirm({
+              title: "删除合成私密卷名",
+              okText: "删除卷",
+              onOk: () => http.del("/volumes/synthetic"),
+            });
+          }}
+        >
+          打开删除确认
+        </button>
+      </>
+    );
+  }
+
+  const user = userEvent.setup();
+  render(
+    <ConfigProvider theme={{ token: { motion: false } }}>
+      <AntdApp>
+        <AuthGate>
+          <DeleteProbe />
+        </AuthGate>
+      </AntdApp>
+    </ConfigProvider>
+  );
+  await user.click(await screen.findByRole("button", { name: "打开删除确认" }));
+  const confirmation = await screen.findByRole("dialog");
+  expect(confirmation).toHaveTextContent("合成私密卷名");
+  await user.click(within(confirmation).getByRole("button", { name: "删除卷" }));
+  await screen.findByText(/登录已失效/);
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  await user.type(screen.getByLabelText("访问密码"), "synthetic");
+  await user.click(screen.getByRole("button", { name: /登\s*录$/ }));
+  expect(await screen.findByLabelText("合成草稿")).toHaveValue("继续保留的草稿");
+  expect(screen.queryByText("删除合成私密卷名")).not.toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([url]) => url === "/api/volumes/synthetic")).toHaveLength(1);
 });

@@ -41,12 +41,39 @@ const options = {
 const wrapper = ({ children }: PropsWithChildren) => <App>{children}</App>;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   list.mockResolvedValue([a, b]);
   update.mockImplementation(async (id, patch) => ({ ...(id === "a" ? a : b), ...patch }));
 });
 
 describe("useMarkdownCardPanel 编辑安全", () => {
+  it("同字段保存仍防重入，写入中不能删除；请求结束后可删除", async () => {
+    const pending = deferred<Card>();
+    update.mockReturnValueOnce(pending.promise);
+    remove.mockResolvedValueOnce({ ok: true });
+    const { result } = renderHook(() => useMarkdownCardPanel(options), { wrapper });
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+    act(() => result.current.select(a));
+    let saving!: Promise<void>;
+    act(() => {
+      saving = result.current.save();
+    });
+    await act(async () => {
+      await result.current.save();
+      await result.current.remove("a");
+      result.current.generate();
+    });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
+    expect(sseFetch).not.toHaveBeenCalled();
+    await act(async () => {
+      pending.resolve(a);
+      await saving;
+    });
+    await act(async () => result.current.remove("a"));
+    expect(remove).toHaveBeenCalledWith("a");
+  });
+
   it("切换卡片后忽略前一卡片保存响应，下一次保存仍提交当前卡片", async () => {
     const pending = deferred<Card>();
     update.mockReturnValueOnce(pending.promise);

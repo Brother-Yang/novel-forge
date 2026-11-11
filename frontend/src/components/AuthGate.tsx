@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Alert, Button, Spin } from "antd";
+import { Alert, Button, Modal, Spin } from "antd";
 import { authApi } from "../api/auth";
 import { onUnauthorized } from "../api/client";
 import AsyncContent from "./AsyncContent";
-import { AuthContext } from "./authContext";
+import { AuthContext, AuthSessionRevisionContext } from "./authContext";
 
 const loadLoginForm = () => import("./AuthLoginForm");
 
@@ -21,6 +21,7 @@ export default function AuthGate({ children }: AuthGateProps) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [sessionRevision, setSessionRevision] = useState(0);
 
   useEffect(() => {
     let current = true;
@@ -41,6 +42,8 @@ export default function AuthGate({ children }: AuthGateProps) {
       }
     );
     const unsubscribe = onUnauthorized(() => {
+      // Confirmation dialogs render through portals outside the hidden workspace.
+      Modal.destroyAll();
       setState((previous) =>
         previous.kind === "ready"
           ? { kind: "login", error: "登录已失效，请重新输入访问密码。", keepWorkspace: true }
@@ -61,6 +64,7 @@ export default function AuthGate({ children }: AuthGateProps) {
       if (!session.authenticated) {
         throw new Error("浏览器未保存会话，请通过工作台地址访问并允许 Cookie。");
       }
+      setSessionRevision((revision) => revision + 1);
       setState({ kind: "ready", protected: session.enabled });
     } catch (error) {
       setState((previous) => ({
@@ -75,6 +79,7 @@ export default function AuthGate({ children }: AuthGateProps) {
 
   const logout = useCallback(async () => {
     await authApi.logout();
+    Modal.destroyAll();
     setState({ kind: "login" });
   }, []);
 
@@ -84,9 +89,11 @@ export default function AuthGate({ children }: AuthGateProps) {
   return (
     <AuthContext.Provider value={ready && state.protected ? logout : null}>
       {keepWorkspace && (
-        <div hidden={!ready} style={{ display: ready ? "contents" : "none" }}>
-          {children}
-        </div>
+        <AuthSessionRevisionContext.Provider value={sessionRevision}>
+          <div hidden={!ready} style={{ display: ready ? "contents" : "none" }}>
+            {children}
+          </div>
+        </AuthSessionRevisionContext.Provider>
       )}
       {!ready && (
         <main className="nf-boot">

@@ -4,6 +4,7 @@ import { App as AntdApp, ConfigProvider } from "antd";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TaskPanel from "./TaskPanel";
+import type { GenerationTask } from "../api/types";
 
 vi.mock("../api", () => ({
   api: {
@@ -80,6 +81,44 @@ describe("TaskPanel", () => {
     });
     expect(await screen.findByText("任务启动失败")).toBeInTheDocument();
     expect(button).toBeEnabled();
+  });
+
+  it("启动成功后等待任务列表刷新，失败只禁用依赖任务状态的启动入口", async () => {
+    const task: GenerationTask = {
+      id: "task",
+      book_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      type: "novel",
+      target_id: null,
+      status: "running",
+      progress: 0,
+      error: "",
+      checkpoint_json: "{}",
+      created_at: "2026-01-01T00:00:00Z",
+    };
+    let reject!: (error: Error) => void;
+    const list = new Promise<GenerationTask[]>((_, no) => {
+      reject = no;
+    });
+    vi.mocked(api.startNovelFromBook).mockResolvedValue(task);
+    vi.mocked(api.listTasks)
+      .mockResolvedValueOnce([])
+      .mockReturnValueOnce(list)
+      .mockResolvedValueOnce([{ ...task, status: "done" }]);
+    renderPanel();
+    const start = screen.getByRole("button", { name: "一键全自动生成" });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+    await waitFor(() => expect(api.listTasks).toHaveBeenCalledTimes(2));
+    expect(start).toBeDisabled();
+    fireEvent.click(start);
+    expect(api.startNovelFromBook).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      reject(new Error("启动后暂时读不到任务列表"));
+    });
+    expect(screen.getByText("启动后暂时读不到任务列表")).toBeVisible();
+    expect(start).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "重试任务列表" }));
+    await waitFor(() => expect(start).toBeEnabled());
   });
 
   it("手工生成互斥且限制日志长度，离开面板时中止 SSE", async () => {

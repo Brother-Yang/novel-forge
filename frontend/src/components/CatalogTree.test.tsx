@@ -118,9 +118,31 @@ describe("CatalogTree 删除保护", () => {
     render(<Harness />);
     const user = userEvent.setup();
     expect(await screen.findByText("目录暂时不可用")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新增卷" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "新增章节" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /重试|重 试/ }));
     expect(await screen.findByText("第一章")).toBeInTheDocument();
     expect(screen.queryByText("目录暂时不可用")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新增卷" })).toBeEnabled();
+  });
+
+  it("删除中间卷后新增卷使用现有最大排序索引加一", async () => {
+    vi.mocked(api.getTree).mockResolvedValue({
+      ...tree,
+      volumes: [
+        ...tree.volumes,
+        { id: "volume-3", title: "第 3 卷", order_index: 2, chapters: [] },
+      ],
+    });
+    render(<Harness />);
+    const user = userEvent.setup();
+    await screen.findByText("第 3 卷");
+    await user.click(screen.getByRole("button", { name: "新增卷" }));
+    expect(api.createVolume).toHaveBeenCalledWith({
+      book_id: "book-1",
+      title: "第 4 卷",
+      order_index: 3,
+    });
   });
 
   it("删除前的旧加载响应不能把已删除卷重新显示", async () => {

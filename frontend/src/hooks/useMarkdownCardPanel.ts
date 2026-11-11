@@ -34,6 +34,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
   const scope = useRef(0);
   const listRequest = useRef(0);
   const pending = useRef(new Set<string>());
+  const savingFields = useRef(new Map<string, Set<keyof T>>());
   const stream = useGenerationStream(bookId);
   const selectionVersion = useRef(0);
   const { message } = App.useApp();
@@ -48,6 +49,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
   useEffect(() => {
     scope.current += 1;
     pending.current.clear();
+    savingFields.current.clear();
     return () => {
       scope.current += 1;
     };
@@ -99,13 +101,22 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
 
   const persist = async (patch: Partial<T>, announce: boolean) => {
     if (!current) return;
-    if (stream.isRunning() || pending.current.has(current.id)) {
+    const fields = Object.keys(patch) as (keyof T)[];
+    const activeFields = savingFields.current.get(current.id) ?? new Set<keyof T>();
+    if (
+      stream.isRunning() ||
+      pending.current.has(current.id) ||
+      fields.some((field) => activeFields.has(field))
+    ) {
       message.info("请等待当前操作完成后重试保存");
       return;
     }
     const owner = scope.current;
     const id = current.id;
-    pending.current.add(id);
+    // 标题失焦后紧接着点击保存正文，是两个独立字段的 PATCH。
+    // 只互斥重叠字段，不能因为标题请求尚未返回就丢弃正文保存。
+    for (const field of fields) activeFields.add(field);
+    savingFields.current.set(id, activeFields);
     try {
       await update(id, patch);
       if (scope.current !== owner) return;
@@ -115,7 +126,10 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
     } catch (err: unknown) {
       if (scope.current === owner) message.error(err instanceof Error ? err.message : "保存失败");
     } finally {
-      if (scope.current === owner) pending.current.delete(id);
+      if (scope.current === owner) {
+        for (const field of fields) activeFields.delete(field);
+        if (activeFields.size === 0) savingFields.current.delete(id);
+      }
     }
   };
 
@@ -123,7 +137,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
   const saveMetadata = (patch: Partial<T>) => persist(patch, false);
 
   const removeItem = async (id: string) => {
-    if (pending.current.has(id) || stream.isRunning()) {
+    if (pending.current.has(id) || savingFields.current.has(id) || stream.isRunning()) {
       message.info("请等待当前操作完成");
       return;
     }
@@ -146,7 +160,7 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
   };
 
   const generate = () => {
-    if (stream.isRunning() || pending.current.size > 0) {
+    if (stream.isRunning() || pending.current.size > 0 || savingFields.current.size > 0) {
       message.info("请等待当前操作完成");
       return;
     }

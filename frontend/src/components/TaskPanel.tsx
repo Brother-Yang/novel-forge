@@ -87,6 +87,7 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
 
   const busy =
     !tasksLoaded ||
+    Boolean(tasksError) ||
     submitting ||
     stage !== null ||
     taskActive ||
@@ -105,13 +106,13 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
       },
       onDone: () => {
         appendLog(`\n【${name}】完成。\n`);
-        loadTasks();
+        void loadTasks();
         refreshTree();
         loadTree();
       },
       onError: (err) => {
         appendLog(`\n错误:${errMessage(err)}\n`);
-        loadTasks();
+        void loadTasks();
       },
     });
   };
@@ -136,7 +137,7 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
     await api.startNovelFromBook(bookId);
     if (!active.current) return;
     message.success("已启动全书自动生成");
-    loadTasks();
+    await loadTasks();
   };
 
   const startAgent = async () => {
@@ -150,7 +151,6 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
     } else {
       message.success("已启动 AI 自主创作");
     }
-    loadTasks();
     navigate(paths.agentChatFor(bookId, task.id));
   };
 
@@ -158,7 +158,7 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
     await api.startBookGeneration(bookId);
     if (!active.current) return;
     message.success("已启动全书批量生成正文");
-    loadTasks();
+    await loadTasks();
   };
 
   return (
@@ -298,7 +298,7 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
                       onClick={() =>
                         void submit(async () => {
                           await api.pauseTask(t.id);
-                          if (active.current) loadTasks();
+                          if (active.current) await loadTasks();
                         }, true)
                       }
                     >
@@ -313,7 +313,7 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
                       onClick={() =>
                         void submit(async () => {
                           await api.resumeTask(t.id);
-                          if (active.current) loadTasks();
+                          if (active.current) await loadTasks();
                         }, true)
                       }
                     >
@@ -328,7 +328,7 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
                       onClick={() =>
                         void submit(async () => {
                           await api.retryTask(t.id);
-                          if (active.current) loadTasks();
+                          if (active.current) await loadTasks();
                         }, true)
                       }
                     >
