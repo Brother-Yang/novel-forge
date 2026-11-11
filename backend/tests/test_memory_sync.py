@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from threading import Event
 
 import httpx
 import pytest
@@ -108,6 +109,87 @@ async def test_progress_reads_only_queue_and_keeps_full_audit_separate(
         "error",
     }
     assert (await client.get("/books/missing/memory/progress")).status_code == 404
+
+
+@pytest.mark.parametrize("already_indexed", [False, True])
+async def test_overlapping_repairs_share_running_job_and_each_audits_once(
+    already_indexed: bool,
+    storage: sessionmaker[Session],
+    client: httpx.AsyncClient,
+    fakes: tuple[FakeLLM, FakeVectors],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm, vectors = fakes
+    with storage() as db:
+        book_id, _, _, _ = seed(db)
+        world = models.Worldbuilding(
+            book_id=book_id, title="地名", md_content="并发修复"
+        )
+        db.add(world)
+        db.flush()
+        source_id = world.id
+        if already_indexed:
+            sync.enqueue(db, book_id, sync.WORLD, source_id)
+        db.commit()
+    if already_indexed:
+        await drain(storage, book_id)
+        assert vectors.existing_ids(book_id)
+        vectors.docs.clear()
+    embed_calls = len(llm.embeddings)
+
+    audit_entered, audit_release = Event(), Event()
+    audit_calls: list[str] = []
+    original_audit = sync._book_memory
+
+    def pause_first_audit(
+        db: Session, owner_id: str
+    ) -> tuple[
+        dict[sync.MemoryKey, models.MemorySyncJob],
+        dict[sync.MemoryKey, str],
+        set[sync.MemoryKey],
+    ]:
+        result = original_audit(db, owner_id)
+        audit_calls.append(owner_id)
+        if not audit_entered.is_set():
+            audit_entered.set()
+            assert audit_release.wait(5)
+        return result
+
+    monkeypatch.setattr(sync, "_book_memory", pause_first_audit)
+    repair_url = f"/books/{book_id}/memory/repair"
+    delayed = asyncio.create_task(client.post(repair_url))
+    try:
+        assert await asyncio.to_thread(audit_entered.wait, 5)
+        result = await client.post(repair_url)
+        assert result.status_code == 200
+        assert result.json()["pending"] == 1 and "missing" not in result.json()
+
+        llm.block_embed_for = "并发修复"
+        async with asyncio.TaskGroup() as work:
+            work.create_task(drain(storage, book_id))
+            await asyncio.wait_for(llm.entered.wait(), timeout=5)
+            try:
+                with storage() as db:
+                    running = sync.find_job(db, book_id, sync.WORLD, source_id)
+                    assert running is not None and running.status == "running"
+                    revision = running.revision
+                audit_release.set()
+                result = await asyncio.wait_for(delayed, timeout=5)
+                assert result.status_code == 200
+                assert result.json()["running"] == 1 and result.json()["pending"] == 0
+                assert audit_calls == [book_id, book_id]
+                with storage() as db:
+                    same = sync.find_job(db, book_id, sync.WORLD, source_id)
+                    assert same is not None and same.revision == revision
+            finally:
+                llm.release.set()
+    finally:
+        audit_release.set()
+        await delayed
+
+    assert len(llm.embeddings) == embed_calls + 1
+    status = await client.get(f"/books/{book_id}/memory/status")
+    assert status.json()["ready"] == 1 and status.json()["missing"] == 0
 
 
 async def test_world_crud_hides_stale_vectors_even_when_storage_delete_fails(

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
-import type { MemoryStatus } from "../api/types";
+import type { MemoryProgress, MemoryStatus } from "../api/types";
 import MemoryPanel from "./MemoryPanel";
 
 vi.mock("../api", () => ({
@@ -29,6 +29,14 @@ const failed: MemoryStatus = {
 };
 const pending: MemoryStatus = { ...failed, pending: 2, failed: 0, missing: 0, items: [] };
 const ready: MemoryStatus = { ...pending, pending: 0, ready: 4 };
+const queued: MemoryProgress = {
+  pending: 2,
+  running: 0,
+  failed: 0,
+  ready: 2,
+  total: 4,
+  items: [],
+};
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -42,8 +50,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.useFakeTimers();
   vi.mocked(api.getMemoryStatus).mockResolvedValue(failed);
-  vi.mocked(api.getMemoryProgress).mockResolvedValue(pending);
-  vi.mocked(api.repairMemory).mockResolvedValue(pending);
+  vi.mocked(api.getMemoryProgress).mockResolvedValue(queued);
+  vi.mocked(api.repairMemory).mockResolvedValue(queued);
 });
 afterEach(() => vi.useRealTimers());
 
@@ -84,7 +92,14 @@ describe("创作记忆状态与修复", () => {
     });
     expect(screen.getByText("修复提交失败")).toBeInTheDocument();
     expect(repairButton).toBeEnabled();
-    vi.mocked(api.getMemoryStatus).mockResolvedValue(pending);
+    vi.mocked(api.getMemoryStatus).mockResolvedValue(ready);
+    vi.mocked(api.getMemoryProgress)
+      .mockResolvedValueOnce(queued)
+      .mockResolvedValueOnce({
+        ...queued,
+        pending: 0,
+        ready: 4,
+      });
     await act(async () => {
       fireEvent.click(repairButton);
     });
@@ -93,6 +108,18 @@ describe("创作记忆状态与修复", () => {
     expect(screen.getByText("等待 2")).toBeInTheDocument();
     expect(screen.queryByText("修复提交失败")).not.toBeInTheDocument();
     expect(repairButton).toBeDisabled();
+    expect(api.getMemoryStatus).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(api.getMemoryProgress).toHaveBeenCalledTimes(1);
+    expect(api.getMemoryStatus).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(api.getMemoryProgress).toHaveBeenCalledTimes(2);
+    expect(api.getMemoryStatus).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("可用 4 / 4")).toBeInTheDocument();
   });
 
   it("后台处理时串行轮询，完成后停止；查询失败不会无限刷请求", async () => {
@@ -132,7 +159,7 @@ describe("创作记忆状态与修复", () => {
 
   it("修复期间阻止重复提交，旧查询响应不会覆盖修复状态", async () => {
     const oldQuery = deferred<MemoryStatus>();
-    const repair = deferred<MemoryStatus>();
+    const repair = deferred<MemoryProgress>();
     vi.mocked(api.repairMemory).mockReturnValue(repair.promise);
     await act(async () => {
       render(<MemoryPanel bookId="book-a" />);
@@ -147,7 +174,7 @@ describe("创作记忆状态与修复", () => {
     expect(api.repairMemory).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("可用 4 / 4")).not.toBeInTheDocument();
     await act(async () => {
-      repair.resolve(pending);
+      repair.resolve(queued);
     });
     expect(screen.getByText("等待 2")).toBeInTheDocument();
   });

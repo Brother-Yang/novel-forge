@@ -11,12 +11,13 @@ import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from pydantic import ValidationError
-from sqlalchemy import delete, false, func, or_, select, true, update
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy import and_, delete, func, select, true, update
+from sqlalchemy.dialects.sqlite import Insert, insert
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from .. import models
 from ..llm import get_llm
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 _worker: asyncio.Task[None] | None = None
 _active: dict[tuple[str, str], _ActiveJob] = {}
 _suspended: set[str] = set()
+_JOB_KEY_COLUMNS = ["book_id", "source_type", "source_id"]
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,23 @@ class MemoryStatus(MemoryProgress):
     missing: int
 
 
+def _pending_values(fingerprint: str) -> dict[str, str]:
+    return {
+        "source_hash": fingerprint,
+        "revision": models.new_id(),
+        "status": "pending",
+        "error": "",
+    }
+
+
+def _insert_job(
+    book_id: str, source_type: str, source_id: str, values: dict[str, str]
+) -> Insert:
+    return insert(models.MemorySyncJob).values(
+        book_id=book_id, source_type=source_type, source_id=source_id, **values
+    )
+
+
 def enqueue(
     db: Session,
     book_id: str,
@@ -84,36 +103,17 @@ def enqueue(
     source_id: str,
     *,
     removed: bool = False,
-    retry: bool = False,
     force: bool = False,
 ) -> models.MemorySyncJob:
     """Do not commit: the caller atomically commits this with its source mutation."""
     db.flush()
     fingerprint = "" if removed else source_hash(db, book_id, source_type, source_id)
+    values = _pending_values(fingerprint)
     db.execute(
-        insert(models.MemorySyncJob)
-        .values(
-            book_id=book_id,
-            source_type=source_type,
-            source_id=source_id,
-            source_hash=fingerprint,
-            revision=models.new_id(),
-            status="pending",
-        )
-        .on_conflict_do_update(
-            index_elements=["book_id", "source_type", "source_id"],
-            set_={
-                "source_hash": fingerprint,
-                "revision": models.new_id(),
-                "status": "pending",
-                "error": "",
-                "updated_at": func.now(),
-            },
-            where=or_(
-                models.MemorySyncJob.source_hash != fingerprint,
-                models.MemorySyncJob.status == "error" if retry else false(),
-                true() if force else false(),
-            ),
+        _insert_job(book_id, source_type, source_id, values).on_conflict_do_update(
+            index_elements=_JOB_KEY_COLUMNS,
+            set_={**values, "updated_at": func.now()},
+            where=true() if force else models.MemorySyncJob.source_hash != fingerprint,
         )
     )
     job = find_job(db, book_id, source_type, source_id)
@@ -218,12 +218,20 @@ def _safe_error(exc: Exception, operation: str) -> str:
     return f"{labels.get(operation, '同步记忆')}失败（{type(exc).__name__}），可重试"
 
 
+def _embedding_ref_for(
+    book_id: str, source_type: str, source_id: str
+) -> ColumnElement[bool]:
+    return and_(
+        models.EmbeddingRef.book_id == book_id,
+        models.EmbeddingRef.source_type == source_type,
+        models.EmbeddingRef.source_id == source_id,
+    )
+
+
 def _replace_ref(db: Session, job: models.MemorySyncJob, doc_id: str) -> None:
     db.execute(
         delete(models.EmbeddingRef).where(
-            models.EmbeddingRef.book_id == job.book_id,
-            models.EmbeddingRef.source_type == job.source_type,
-            models.EmbeddingRef.source_id == job.source_id,
+            _embedding_ref_for(job.book_id, job.source_type, job.source_id)
         )
     )
     db.add(
@@ -374,9 +382,7 @@ async def _process_job(
                 vector_store.delete_source(book_id, source_type, source_id)
             db.execute(
                 delete(models.EmbeddingRef).where(
-                    models.EmbeddingRef.book_id == book_id,
-                    models.EmbeddingRef.source_type == source_type,
-                    models.EmbeddingRef.source_id == source_id,
+                    _embedding_ref_for(book_id, source_type, source_id)
                 )
             )
             # Tombstones are required only until physical cleanup succeeds.
@@ -485,7 +491,7 @@ async def _process_job(
         if job is None:
             return False
         doc_id = _document_id(job)
-        metadata: dict[str, Any] = {
+        metadata = {
             "source_type": source_type,
             "source_id": source_id,
             "revision": revision,
@@ -683,22 +689,52 @@ def _book_memory(
     return jobs, expected, missing
 
 
-def repair_book(db: Session, book_id: str) -> None:
+def repair_book(db: Session, book_id: str) -> MemoryProgress:
     """Discover legacy/missing indexes and retry failed jobs without body generation."""
     jobs, expected, missing = _book_memory(db, book_id)
-    for key in missing | {key for key, job in jobs.items() if job.status == "error"}:
-        source_type, source_id = key
-        job = jobs.get(key)
-        enqueue(
-            db,
-            book_id,
-            source_type,
-            source_id,
-            removed=key not in expected,
-            retry=True,
-            force=key in missing and job is not None and job.status == "done",
-        )
-    db.commit()
+    # Keep the observations as values. Rolling back the read expires ORM rows,
+    # and a newer repair may already be running by the time we write.
+    targets = {
+        key: (job.id, job.revision, job.status) if job else None
+        for key in missing | {key for key, job in jobs.items() if job.status == "error"}
+        if (job := jobs.get(key)) is None or job.status in ("done", "error")
+    }
+    db.rollback()
+    if targets:
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        if db.get(models.Book, book_id) is not None:
+            for (source_type, source_id), observed in targets.items():
+                # The worker revalidates the audited source before using a model.
+                # Recheck empty fingerprints here to avoid a stale tombstone.
+                fingerprint = expected.get((source_type, source_id)) or source_hash(
+                    db, book_id, source_type, source_id
+                )
+                values = _pending_values(fingerprint)
+                if observed is None:
+                    if not fingerprint and not db.scalar(
+                        select(models.EmbeddingRef.id)
+                        .where(_embedding_ref_for(book_id, source_type, source_id))
+                        .limit(1)
+                    ):
+                        continue
+                    db.execute(
+                        _insert_job(
+                            book_id, source_type, source_id, values
+                        ).on_conflict_do_nothing(index_elements=_JOB_KEY_COLUMNS)
+                    )
+                else:
+                    job_id, revision, status = observed
+                    db.execute(
+                        update(models.MemorySyncJob)
+                        .where(
+                            models.MemorySyncJob.id == job_id,
+                            models.MemorySyncJob.revision == revision,
+                            models.MemorySyncJob.status == status,
+                        )
+                        .values(**values, updated_at=func.now())
+                    )
+        db.commit()
+    return memory_progress(db, book_id)
 
 
 def memory_status(db: Session, book_id: str) -> MemoryStatus:

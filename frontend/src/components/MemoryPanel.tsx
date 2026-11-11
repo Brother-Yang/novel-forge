@@ -19,7 +19,7 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [progress, setProgress] = useState<MemoryProgress | null>(null);
   const [error, setError] = useState("");
-  const [refresh, setRefresh] = useState(0);
+  const [refresh, setRefresh] = useState({ pollAfterRepair: false });
   const [repairing, setRepairing] = useState(false);
   const repairingRef = useRef(false);
   const requestVersion = useRef(0);
@@ -60,7 +60,10 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
         (err: unknown) => fail(version, err)
       );
     };
-    if (!repairingRef.current) loadStatus();
+    if (!repairingRef.current) {
+      if (refresh.pollAfterRepair) timer = setTimeout(loadProgress, 2500);
+      else loadStatus();
+    }
     return () => {
       cancelled = true;
       request.abort();
@@ -75,14 +78,13 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
     setRepairing(true);
     // 使修复前已发出的查询失效,避免旧结果把新状态覆盖。
     const version = ++requestVersion.current;
-    let submitted = false;
+    let submitted: MemoryProgress | undefined;
     try {
       const result = await api.repairMemory(bookId);
       if (version !== requestVersion.current) return;
-      setStatus(result);
-      setProgress(null);
+      setProgress(result);
       setError("");
-      submitted = true;
+      submitted = result;
     } catch (err) {
       if (version === requestVersion.current) {
         setError(err instanceof Error ? err.message : "提交记忆修复失败");
@@ -91,12 +93,15 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
       if (version === requestVersion.current) {
         repairingRef.current = false;
         setRepairing(false);
-        if (submitted) setRefresh((value) => value + 1);
+        if (submitted) {
+          setRefresh({ pollAfterRepair: submitted.pending + submitted.running > 0 });
+        }
       }
     }
   };
 
   const activity = progress ?? status;
+  const missingKnown = progress === null || !refresh.pollAfterRepair;
 
   return (
     <Card title="创作记忆" style={{ marginBottom: 16 }}>
@@ -109,7 +114,7 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
           showIcon
           message={error}
           action={
-            <Button disabled={repairing} onClick={() => setRefresh((v) => v + 1)}>
+            <Button disabled={repairing} onClick={() => setRefresh({ pollAfterRepair: false })}>
               重试查询
             </Button>
           }
@@ -129,12 +134,12 @@ function BookMemoryPanel({ bookId }: MemoryPanelProps) {
             <Tag color={status.missing ? "warning" : "default"}>缺失 {status.missing}</Tag>
             <Button
               loading={repairing}
-              disabled={activity.failed + status.missing === 0 || repairing}
+              disabled={repairing || (activity.failed === 0 && (!missingKnown || !status.missing))}
               onClick={() => void repair()}
             >
               修复缺失或失败的记忆
             </Button>
-            <Button disabled={repairing} onClick={() => setRefresh((v) => v + 1)}>
+            <Button disabled={repairing} onClick={() => setRefresh({ pollAfterRepair: false })}>
               刷新状态
             </Button>
           </Space>

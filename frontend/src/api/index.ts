@@ -29,7 +29,7 @@ export const api = {
     http.get<MemoryStatus>(`/books/${bookId}/memory/status`, signal),
   getMemoryProgress: (bookId: string, signal?: AbortSignal) =>
     http.get<MemoryProgress>(`/books/${bookId}/memory/progress`, signal),
-  repairMemory: (bookId: string) => http.post<MemoryStatus>(`/books/${bookId}/memory/repair`),
+  repairMemory: (bookId: string) => http.post<MemoryProgress>(`/books/${bookId}/memory/repair`),
 
   // volumes
   createVolume: (v: Partial<Volume>) => http.post<Volume>("/volumes", v),

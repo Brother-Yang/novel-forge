@@ -29,7 +29,6 @@ def memory_progress(book_id: str, db: DbSession) -> sync.MemoryProgress:
 
 
 @router.post("/books/{book_id}/memory/repair")
-def repair_memory(book_id: str, db: DbSession) -> sync.MemoryStatus:
+def repair_memory(book_id: str, db: DbSession) -> sync.MemoryProgress:
     _require_book(db, book_id)
-    sync.repair_book(db, book_id)
-    return sync.memory_status(db, book_id)
+    return sync.repair_book(db, book_id)
