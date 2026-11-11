@@ -10,24 +10,42 @@ import asyncio
 import importlib
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from threading import RLock
 from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..agents import pipeline
+from ..agents import observability, pipeline
 from ..agents.completion import (
     book_chapters,
     chapter_is_complete,
     require_book_complete,
 )
+from ..agents.errors import GenerationError, log_failure, public_failure
+from ..config import settings
 from ..database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
 _running: dict[str, asyncio.Task[None]] = {}
+_deleting_books: set[str] = set()
+_registry_lock = RLock()
+
+
+@dataclass
+class GenerationLease:
+    book_id: str
+    owner: str
+    handle: asyncio.Task[None] | None = None
+    cancelled: bool = False
+
+
+_active_books: dict[str, GenerationLease] = {}
 
 BLOCKING_STATUSES = ("pending", "running", "paused")
 BOOK_LEVEL_TYPES = ("book", "novel", "agent")
@@ -56,33 +74,86 @@ def _as_object_dict(value: object) -> dict[str, object] | None:
 class BookBusyError(Exception):
     """同一本书已有未完成的全书级生成任务。"""
 
+    status_code = 409
+
+
+class GenerationCapacityError(BookBusyError):
+    status_code = 429
+
 
 class Paused(Exception):
     """任务已被暂停,编排循环应退出且不改写为 error。"""
 
 
-def find_blocking_task(db: Session, book_id: str) -> models.GenerationTask | None:
-    return db.scalars(
-        select(models.GenerationTask)
-        .where(
-            models.GenerationTask.book_id == book_id,
-            models.GenerationTask.status.in_(BLOCKING_STATUSES),
-            models.GenerationTask.type.in_(BOOK_LEVEL_TYPES),
-        )
-        .order_by(models.GenerationTask.created_at.desc())
-    ).first()
+def find_blocking_task(
+    db: Session,
+    book_id: str,
+    *,
+    exclude_task_id: str | None = None,
+    include_paused: bool = True,
+) -> models.GenerationTask | None:
+    query = select(models.GenerationTask).where(
+        models.GenerationTask.book_id == book_id,
+        models.GenerationTask.status.in_(
+            BLOCKING_STATUSES if include_paused else ("pending", "running")
+        ),
+        models.GenerationTask.type.in_(BOOK_LEVEL_TYPES),
+    )
+    if exclude_task_id is not None:
+        query = query.where(models.GenerationTask.id != exclude_task_id)
+    return db.scalars(query.order_by(models.GenerationTask.created_at.desc())).first()
 
 
-def ensure_book_idle(db: Session, book_id: str) -> None:
-    blocking = find_blocking_task(db, book_id)
+def ensure_book_idle(
+    db: Session,
+    book_id: str,
+    *,
+    exclude_task_id: str | None = None,
+    include_paused: bool = True,
+) -> None:
+    if book_id in _deleting_books:
+        raise BookBusyError("该书正在删除,不能启动生成任务")
+    if book_id in _active_books:
+        raise BookBusyError("该书正在生成，请等待当前操作结束")
+    blocking = find_blocking_task(
+        db, book_id, exclude_task_id=exclude_task_id, include_paused=include_paused
+    )
     if blocking:
         raise BookBusyError("该书已有未完成的生成任务,请先继续/重试或等待结束后再启动")
+    ensure_generation_capacity()
+
+
+def ensure_generation_capacity() -> None:
+    if len(_active_books) >= settings.generation_max_concurrent:
+        raise GenerationCapacityError("同时生成的任务已达到上限，请稍后重试")
+
+
+def claim_manual_generation(db: Session, book_id: str, owner: str) -> GenerationLease:
+    with _registry_lock:
+        ensure_book_idle(db, book_id, include_paused=False)
+        lease = GenerationLease(book_id, owner)
+        _active_books[book_id] = lease
+        return lease
+
+
+def release_generation(lease: GenerationLease) -> None:
+    with _registry_lock:
+        if _active_books.get(lease.book_id) is lease:
+            del _active_books[lease.book_id]
 
 
 def ensure_running(db: Session, task: models.GenerationTask) -> None:
-    db.refresh(task)
-    if task.status != "running":
+    # A deleted task must stop cleanly rather than trying to refresh or update
+    # a row that has already been removed by the book's foreign-key cascade.
+    with db.no_autoflush:
+        status = db.scalar(
+            select(models.GenerationTask.status).where(
+                models.GenerationTask.id == task.id
+            )
+        )
+    if status != "running" or task.book_id in _deleting_books:
         raise Paused()
+    db.refresh(task)
 
 
 def _pending_chapters(db: Session, book_id: str) -> list[str]:
@@ -133,9 +204,44 @@ def load_checkpoint(task: models.GenerationTask) -> dict[str, object]:
 
 
 async def consume_stage(gen: AsyncIterator[tuple[str, str]]) -> None:
-    async for ev, data in gen:
-        if ev == "error":
-            raise RuntimeError(data)
+    try:
+        async for ev, data in gen:
+            if ev == "error":
+                raise GenerationError(data)
+    finally:
+        if isinstance(gen, AsyncGenerator):
+            await gen.aclose()
+
+
+def fail_task(
+    db: Session,
+    exc: Exception,
+    *,
+    task_id: str,
+    book_id: str,
+    operation: str,
+    chapter_id: str | None = None,
+    trace_step: int | None = None,
+) -> None:
+    """Rollback incomplete writes and persist only a safe error for retry."""
+    log_failure(
+        logger,
+        exc,
+        operation=operation,
+        book_id=book_id,
+        task_id=task_id,
+        chapter_id=chapter_id,
+    )
+    db.rollback()
+    current = db.get(models.GenerationTask, task_id, populate_existing=True)
+    if current is None or current.status != "running":
+        return
+    message = public_failure(exc)
+    current.status = "error"
+    current.error = f"章节 {chapter_id}: {message}" if chapter_id else message
+    if trace_step is not None:
+        observability.record_step(db, task_id, trace_step, "error", message)
+    db.commit()
 
 
 async def run_chapter_bodies(
@@ -147,6 +253,7 @@ async def run_chapter_bodies(
     progress_hi: int = 100,
     mark_done: bool = True,
 ) -> None:
+    task_id, book_id = task.id, task.book_id
     reset_empty_drafts(db, task.book_id)
     chapters = book_chapters(db, task.book_id)
     pending = [c.id for c in chapters if not chapter_is_complete(c)]
@@ -160,14 +267,18 @@ async def run_chapter_bodies(
             await consume_stage(pipeline.gen_chapter_body(db, chapter_id, words))
             chapter = db.get(models.Chapter, chapter_id)
             if chapter is None or not chapter_is_complete(chapter):
-                raise RuntimeError("章节正文未有效完成,请重试")
+                raise GenerationError("章节正文未有效完成,请重试")
         except Paused:
             raise
-        except Exception as exc:
-            task.status = "error"
-            task.error = f"章节 {chapter_id}: {exc}"
-            db.commit()
-            logger.exception("chapter %s generation failed", chapter_id)
+        except Exception as exc:  # noqa: BLE001 - persist and report chapter failure
+            fail_task(
+                db,
+                exc,
+                task_id=task_id,
+                book_id=book_id,
+                operation="chapter body",
+                chapter_id=chapter_id,
+            )
             return
 
         done_count += 1
@@ -190,11 +301,11 @@ async def run_chapter_bodies(
         db.commit()
 
 
-async def _run(task_id: str) -> None:
+async def _run(task_id: str, lease: GenerationLease) -> None:
     db = SessionLocal()
     try:
         task = db.get(models.GenerationTask, task_id)
-        if not task:
+        if not task or task.status != "running":
             return
         try:
             _ensure_task_runners()
@@ -207,16 +318,16 @@ async def _run(task_id: str) -> None:
             logger.info("generation task %s paused", task_id)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            logger.exception("generation task %s failed", task_id)
-            db.refresh(task)
-            if task.status == "running":
-                task.status = "error"
-                task.error = str(exc)
-                db.commit()
+        except Exception as exc:  # noqa: BLE001 - runtime task failure boundary
+            fail_task(
+                db, exc, task_id=task_id, book_id=lease.book_id, operation="task runner"
+            )
     finally:
-        db.close()
-        _ = _running.pop(task_id, None)
+        try:
+            db.close()
+        finally:
+            _ = _running.pop(task_id, None)
+            release_generation(lease)
 
 
 def launch(task_id: str) -> None:
@@ -228,7 +339,28 @@ def launch(task_id: str) -> None:
         raise RuntimeError(
             "全书生成必须在 FastAPI 的 asyncio 事件循环中启动(接口需为 async)"
         ) from exc
-    _running[task_id] = loop.create_task(_run(task_id))
+    with _registry_lock:
+        with SessionLocal() as db:
+            task = db.get(models.GenerationTask, task_id)
+            if task is None or task.status != "running":
+                return
+            book_id = task.book_id
+        if book_id in _deleting_books or book_id in _active_books:
+            raise BookBusyError("该书正在生成或删除，不能重复执行任务")
+        ensure_generation_capacity()
+        lease = GenerationLease(book_id, task_id)
+        _active_books[book_id] = lease
+        handle = loop.create_task(_run(task_id, lease))
+        lease.handle = handle
+        _running[task_id] = handle
+
+        def finished(completed: asyncio.Task[None]) -> None:
+            # Cancellation before the first coroutine instruction skips finally.
+            if _running.get(task_id) is completed:
+                _running.pop(task_id, None)
+            release_generation(lease)
+
+        handle.add_done_callback(finished)
 
 
 def start_book_generation(db: Session, book_id: str) -> models.GenerationTask:
@@ -248,11 +380,15 @@ def pause_task(db: Session, task_id: str) -> None:
     if task and task.status == "running":
         task.status = "paused"
         db.commit()
+        handle = _running.get(task_id)
+        if handle is not None:
+            handle.get_loop().call_soon_threadsafe(handle.cancel)
 
 
 def resume_task(db: Session, task_id: str) -> None:
     task = db.get(models.GenerationTask, task_id)
     if task and task.status in ("paused", "error"):
+        ensure_book_idle(db, task.book_id, exclude_task_id=task.id)
         task.status = "running"
         task.error = ""
         db.commit()
@@ -264,12 +400,105 @@ def recover_running_tasks() -> int:
     db = SessionLocal()
     try:
         rows = db.scalars(
-            select(models.GenerationTask).where(models.GenerationTask.status == "running")
+            select(models.GenerationTask)
+            .where(models.GenerationTask.status == "running")
+            .order_by(models.GenerationTask.created_at, models.GenerationTask.id)
         ).all()
         ids = [t.id for t in rows]
     finally:
         db.close()
+    recovered = 0
     for task_id in ids:
         logger.info("recover running generation task %s", task_id)
-        launch(task_id)
-    return len(ids)
+        try:
+            launch(task_id)
+            recovered += 1
+        except BookBusyError as exc:
+            # A legacy database may contain duplicate running tasks or more
+            # work than the configured capacity. Keep excess work recoverable.
+            with SessionLocal() as recovery_db:
+                task = recovery_db.get(models.GenerationTask, task_id)
+                if task is not None:
+                    task.status = "error"
+                    task.error = str(exc)
+                    recovery_db.commit()
+            logger.warning("did not recover task %s: %s", task_id, exc)
+    return recovered
+
+
+@contextmanager
+def book_deletion(book_id: str) -> Iterator[None]:
+    """Keep local start/resume requests out while deletion awaits cancellation."""
+    if book_id in _deleting_books:
+        raise BookBusyError("该书正在删除")
+    _deleting_books.add(book_id)
+    try:
+        yield
+    finally:
+        _deleting_books.discard(book_id)
+
+
+async def cancel_book_tasks(db: Session, book_id: str) -> None:
+    """Drain local writers, then pause persisted work before deleting its book.
+
+    Paused status also prevents restart recovery from resurrecting the work if
+    vector cleanup fails and the book must remain available for a delete retry.
+    """
+    ids = list(
+        db.scalars(
+            select(models.GenerationTask.id).where(
+                models.GenerationTask.book_id == book_id
+            )
+        )
+    )
+    running = [
+        handle for task_id in ids if (handle := _running.get(task_id)) is not None
+    ]
+    manual = _active_books.get(book_id)
+    if manual is not None:
+        manual.cancelled = True
+        if manual.handle is not None and manual.handle not in running:
+            running.append(manual.handle)
+        elif manual.handle is None:
+            release_generation(manual)
+    for handle in running:
+        handle.cancel()
+    if running:
+        await asyncio.gather(*running, return_exceptions=True)
+    # A task cancelled before its coroutine starts never reaches _run.finally.
+    for task_id in ids:
+        handle = _running.get(task_id)
+        if handle is not None and handle.done():
+            _running.pop(task_id, None)
+    db.expire_all()
+    tasks = db.scalars(
+        select(models.GenerationTask).where(models.GenerationTask.id.in_(ids))
+    ).all()
+    for task in tasks:
+        if task.status in ("pending", "running"):
+            task.status = "paused"
+    db.commit()
+    logger.info(
+        "stopped %s local generation tasks before deleting book %s",
+        len(running),
+        book_id,
+    )
+
+
+async def stop_all_generation() -> None:
+    """Drain writers before memory-worker shutdown and releasing the OS locks.
+
+    Running SQL statuses are intentionally retained for recovery on next start.
+    """
+    for lease in _active_books.values():
+        lease.cancelled = True
+    handles = {
+        lease.handle for lease in _active_books.values() if lease.handle is not None
+    }
+    handles.update(_running.values())
+    for handle in handles:
+        handle.cancel()
+    if handles:
+        await asyncio.gather(*handles, return_exceptions=True)
+    _running.clear()
+    _active_books.clear()

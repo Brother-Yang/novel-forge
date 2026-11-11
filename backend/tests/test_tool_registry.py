@@ -26,7 +26,13 @@ def test_registry_has_all_nine_tools():
 
 def test_tools_compat_list_matches_registry_schemas():
     assert tools.TOOLS == tools.registry.schemas()
-    schema_names = {s["function"]["name"] for s in tools.TOOLS}
+    schema_names: set[str] = set()
+    for schema in tools.TOOLS:
+        function = schema["function"]
+        assert isinstance(function, dict)
+        name = function["name"]
+        assert isinstance(name, str)
+        schema_names.add(name)
     assert schema_names == _EXPECTED_TOOL_NAMES
 
 

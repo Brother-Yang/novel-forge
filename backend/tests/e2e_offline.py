@@ -18,6 +18,7 @@ import sys
 import tempfile
 import uuid
 import zipfile
+from collections.abc import AsyncIterator
 
 # 保证可从 backend 根目录导入 app,并使用独立的临时数据目录
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,15 +27,24 @@ _TMP = tempfile.mkdtemp(prefix="novel_e2e_")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/novel.db"
 os.environ["CHROMA_DIR"] = f"{_TMP}/chroma"
 
-from app import models  # noqa: E402
-from app.agents import orchestrator, pipeline, planner, prompts, tools  # noqa: E402
-from app.api import export  # noqa: E402
-from app.config import settings as app_settings  # noqa: E402
-from app.database import SessionLocal, init_db  # noqa: E402
-from app.llm.base import ToolCall, ToolChatResult  # noqa: E402
-from app.memory import context as memory  # noqa: E402
-from app.memory import vector_store  # noqa: E402
-from app.tasks import agent_generation, book_generation, novel_generation  # noqa: E402
+from sqlalchemy.orm import Session
+
+from app import models
+from app.agents import (
+    orchestrator,
+    pipeline,
+    planner,
+    prompts,
+    stages,
+    tools,
+)
+from app.api import export
+from app.config import settings as app_settings
+from app.database import SessionLocal, init_db
+from app.llm.base import LLMClient, ToolCall, ToolChatResult
+from app.memory import context as memory
+from app.memory import facts, vector_store
+from app.tasks import agent_generation, book_generation, novel_generation
 
 FAILURES: list[str] = []
 
@@ -45,20 +55,27 @@ def check(cond: bool, msg: str) -> None:
         FAILURES.append(msg)
 
 
-class FakeLLM:
+class FakeLLM(LLMClient):
     """按 system 提示词路由,产出符合各层解析格式的固定文本。"""
 
-    async def chat_stream(self, prompt, system="", temperature=0.8):
+    async def chat_stream(self, prompt: str, system: str = "", temperature: float = 0.8) -> AsyncIterator[str]:
         for ch in self._route(system):
             yield ch
 
-    async def chat(self, prompt, system="", temperature=0.8):
+    async def chat(self, prompt: str, system: str = "", temperature: float = 0.8) -> str:
         if system == prompts.PLANNER_SYSTEM:
             return self._route(system)
+        if system == facts.FACTS_SYSTEM:
+            return '{"characters":[],"threads":[]}'
         return "本章摘要:主角推进关键情节,埋下新的伏笔。"
 
-    async def embed(self, text):
+    async def embed(self, text: str) -> list[float]:
         return [0.11, 0.22, 0.33, 0.44, 0.55, 0.66, 0.77, 0.88]
+
+    async def chat_with_tools(
+        self, messages: list[dict[str, object]], tools: list[dict[str, object]], temperature: float = 0.7,
+    ) -> ToolChatResult:
+        raise AssertionError("此处应使用自主决策脚本")
 
     def _route(self, system: str) -> str:
         if system == prompts.PLANNER_SYSTEM:
@@ -80,13 +97,14 @@ class FakeLLM:
             return (
                 "## 世界规则\n灵气复苏,修炼分九阶。\n\n"
                 "## 主要地理\n东荒、南疆、西域三大板块。\n\n"
-                "## 核心冲突\n人族与妖族的千年之争。"
+                "## 核心冲突\n人族与妖族的千年之争。\n\n"
+                "## 宗门制度\n宗门依战功分配资源。"
             )
         if system == prompts.CHARACTERS_SYSTEM:
-            return (
-                "# 林逸\n- 身份:少年天才\n- 性格:坚毅\n- 目标:变强\n\n"
-                "# 苏婉\n- 身份:同门师姐\n- 性格:温柔\n\n"
-                "# 玄冥\n- 身份:妖族大将\n- 性格:狠辣"
+            fields = "- 性格:坚毅\n- 外貌:黑衣\n- 背景:随家人入宗\n- 目标与动机:查明故乡异变\n- 与其他人物关系:昔日同门"
+            return "\n\n".join(
+                f"# {name}\n- 身份:{role}\n{fields}"
+                for name, role in (("林逸", "少年天才"), ("苏婉", "同门师姐"), ("玄冥", "妖族大将"))
             )
         if system == prompts.OUTLINE_SYSTEM:
             return (
@@ -113,18 +131,21 @@ def _tc(name: str, **kwargs: object) -> ToolChatResult:
     return ToolChatResult(content="", tool_calls=[ToolCall(id="1", name=name, arguments=kwargs)])
 
 
-class FakeAgentLLM:
+class FakeAgentLLM(FakeLLM):
     """按当前书籍数据库状态确定性地返回下一步工具调用,模拟自主决策
     (离线、不依赖真实模型的决策脚本,但真实驱动 orchestrator + tools 的整套逻辑)。
     """
 
-    def __init__(self, db, book_id: str, *, volume_count: int = 2, chapter_count: int = 2) -> None:
+    def __init__(self, db: Session, book_id: str, *, volume_count: int = 2, chapter_count: int = 2) -> None:
+        super().__init__()
         self.db = db
         self.book_id = book_id
         self.volume_count = volume_count
         self.chapter_count = chapter_count
 
-    async def chat_with_tools(self, messages, tool_defs, temperature=0.7) -> ToolChatResult:
+    async def chat_with_tools(
+        self, messages: list[dict[str, object]], tools: list[dict[str, object]], temperature: float = 0.7,
+    ) -> ToolChatResult:
         db, book_id = self.db, self.book_id
         db.expire_all()
         if db.query(models.Worldbuilding).filter_by(book_id=book_id).count() == 0:
@@ -153,16 +174,19 @@ class FakeAgentLLM:
         return _tc("finish_book", reason="全部完成")
 
 
-class StuckLLM:
+class StuckLLM(FakeLLM):
     """永远重复已完成动作,验证步数耗尽后停止并保留可重试错误。"""
 
-    async def chat_with_tools(self, messages, tool_defs, temperature=0.7) -> ToolChatResult:
+    async def chat_with_tools(
+        self, messages: list[dict[str, object]], tools: list[dict[str, object]], temperature: float = 0.7,
+    ) -> ToolChatResult:
         return _tc("write_worldbuilding")
 
 
-async def consume(gen):
-    async for _ev, _data in gen:
-        pass
+async def consume(gen: AsyncIterator[tuple[str, str]]) -> None:
+    async for ev, data in gen:
+        if ev == "error":
+            raise AssertionError(data)
 
 
 async def main() -> None:
@@ -194,8 +218,8 @@ async def main() -> None:
     print("\n[1] 世界观")
     await consume(pipeline.gen_worldbuilding(db, book.id))
     wb = db.query(models.Worldbuilding).filter_by(book_id=book.id).all()
-    check(len(wb) == 3, f"世界观应为3条,实际{len(wb)}")
-    check(vector_store._collection(book.id).count() >= 3, "世界观已写入向量库")
+    check(len(wb) == 4, f"世界观应为4条,实际{len(wb)}")
+    check(vector_store._collection(book.id).count() >= 4, "世界观已写入向量库")
 
     print("\n[2] 人物")
     await consume(pipeline.gen_characters(db, book.id, count=3))
@@ -243,6 +267,7 @@ async def main() -> None:
     await book_generation._running[task.id]
     db.expire_all()
     task = db.get(models.GenerationTask, task.id)
+    assert task is not None
     chapters = db.query(models.Chapter).filter_by(book_id=book.id).all()
     summaries = (
         db.query(models.ChapterSummary)
@@ -256,7 +281,7 @@ async def main() -> None:
     )
     check(all(c.status == "done" and c.word_count > 0 for c in chapters), "所有章节已生成正文")
     check(len(summaries) == 6, f"每章有摘要,实际{len(summaries)}")
-    check(vector_store._collection(book.id).count() >= 9, "章摘要已写入向量库(世界观3+章6)")
+    check(vector_store._collection(book.id).count() >= 10, "章摘要已写入向量库(世界观4+章6)")
 
     print("\n[6] 断点续写(把1章回退,重启任务只补该章)")
     c0 = chapters[0]
@@ -271,7 +296,9 @@ async def main() -> None:
     await book_generation._running[task2.id]
     db.expire_all()
     c0 = db.get(models.Chapter, c0.id)
+    assert c0 is not None
     task2 = db.get(models.GenerationTask, task2.id)
+    assert task2 is not None
     check(c0.status == "done" and c0.word_count > 0, "回退章已被续写完成")
     check(task2.status == "done" and task2.progress == 100, "续写任务完成且进度100")
 
@@ -290,8 +317,8 @@ async def main() -> None:
     os.remove(epub_path)
 
     print("\n[8] 拖拽排序(移动到未归卷 / 移回卷)")
-    from app.api.chapters import reorder_chapters
     from app import schemas
+    from app.api.chapters import reorder_chapters
 
     ch = chapters[0]
     reorder_chapters(
@@ -301,7 +328,9 @@ async def main() -> None:
         db,
     )
     db.expire_all()
-    check(db.get(models.Chapter, ch.id).volume_id is None, "拖到未归卷区生效(volume_id=None)")
+    moved = db.get(models.Chapter, ch.id)
+    assert moved is not None
+    check(moved.volume_id is None, "拖到未归卷区生效(volume_id=None)")
     reorder_chapters(
         schemas.ReorderRequest(
             items=[schemas.ReorderItem(id=ch.id, order_index=0, volume_id=vols[0].id)]
@@ -309,7 +338,9 @@ async def main() -> None:
         db,
     )
     db.expire_all()
-    check(db.get(models.Chapter, ch.id).volume_id == vols[0].id, "拖回卷生效")
+    moved = db.get(models.Chapter, ch.id)
+    assert moved is not None
+    check(moved.volume_id == vols[0].id, "拖回卷生效")
 
     print("\n[9] 一句话出书编排器(brief → 全书) + 单任务锁")
     book_n = models.Book(
@@ -332,7 +363,9 @@ async def main() -> None:
     await book_generation._running[task_n.id]
     db.expire_all()
     task_n = db.get(models.GenerationTask, task_n.id)
+    assert task_n is not None
     book_n = db.get(models.Book, book_n.id)
+    assert book_n is not None
     wb_n = db.query(models.Worldbuilding).filter_by(book_id=book_n.id).all()
     chars_n = db.query(models.Character).filter_by(book_id=book_n.id).all()
     vols_n = (
@@ -354,7 +387,7 @@ async def main() -> None:
         json.loads(book_n.key_elements or "[]") == ["用户明确要求的开篇场景"],
         f"planner 提取的 key_elements 已写回书籍,实际{book_n.key_elements!r}",
     )
-    check(len(wb_n) == 3, f"编排器生成3条设定,实际{len(wb_n)}")
+    check(len(wb_n) == 4, f"编排器生成4条设定,实际{len(wb_n)}")
     check(len(chars_n) == 3, f"编排器生成3个人物,实际{len(chars_n)}")
     check(len(vols_n) == 2 and len(chs_n) == 6, f"编排器 2卷6章,实际卷{len(vols_n)}章{len(chs_n)}")
     check(all(c.status == "done" and c.word_count > 0 for c in chs_n), "编排器全部章节已有正文")
@@ -370,7 +403,10 @@ async def main() -> None:
     db.refresh(book_f)
     real_outlines = pipeline.gen_chapter_outlines
 
-    async def flaky_outlines(db_inner, volume_id, chapter_count=10):
+    async def flaky_outlines(
+        db_inner: Session, volume_id: str, chapter_count: int = 10,
+        *, recovery: stages.Recovery | None = None,
+    ) -> AsyncIterator[tuple[str, str]]:
         vol_rows = (
             db_inner.query(models.Volume)
             .filter_by(book_id=book_f.id)
@@ -380,7 +416,7 @@ async def main() -> None:
         if len(vol_rows) >= 2 and volume_id == vol_rows[1].id:
             yield ("error", "injected failure")
             return
-        async for item in real_outlines(db_inner, volume_id, chapter_count):
+        async for item in real_outlines(db_inner, volume_id, chapter_count, recovery=recovery):
             yield item
 
     pipeline.gen_chapter_outlines = flaky_outlines
@@ -388,6 +424,7 @@ async def main() -> None:
     await book_generation._running[task_f.id]
     db.expire_all()
     task_f = db.get(models.GenerationTask, task_f.id)
+    assert task_f is not None
     vols_f = (
         db.query(models.Volume)
         .filter_by(book_id=book_f.id)
@@ -407,6 +444,7 @@ async def main() -> None:
     await book_generation._running[task_f.id]
     db.expire_all()
     task_f = db.get(models.GenerationTask, task_f.id)
+    assert task_f is not None
     chs_f = db.query(models.Chapter).filter_by(book_id=book_f.id).all()
     vol1_after = len([c for c in chs_f if c.volume_id == vols_f[0].id])
     vol2_after = len([c for c in chs_f if c.volume_id == vols_f[1].id])
@@ -429,7 +467,7 @@ async def main() -> None:
     await consume(pipeline.gen_characters(db, book_s.id, count=3))
     wb_before = db.query(models.Worldbuilding).filter_by(book_id=book_s.id).count()
     char_before = db.query(models.Character).filter_by(book_id=book_s.id).count()
-    check(wb_before == 3 and char_before == 3, "预置设定/人物各3")
+    check(wb_before == 4 and char_before == 3, "预置4条设定和3个人物")
     task_s = novel_generation.start_novel_generation(db, book_s.id)
     await book_generation._running[task_s.id]
     db.expire_all()
@@ -437,6 +475,7 @@ async def main() -> None:
     char_after = db.query(models.Character).filter_by(book_id=book_s.id).count()
     chs_s = db.query(models.Chapter).filter_by(book_id=book_s.id).all()
     task_s = db.get(models.GenerationTask, task_s.id)
+    assert task_s is not None
     check(wb_after == wb_before, f"设定条数不变,实际{wb_after}")
     check(char_after == char_before, f"人物数不变,实际{char_after}")
     check(task_s.status == "done", "跳过后仍能完成全书")
@@ -488,6 +527,7 @@ async def main() -> None:
     await book_generation._running[task_r.id]
     db.expire_all()
     task_r = db.get(models.GenerationTask, task_r.id)
+    assert task_r is not None
     chs_r = db.query(models.Chapter).filter_by(book_id=book_r.id).all()
     check(task_r.status == "done", f"重启续跑完成,实际{task_r.status}")
     check(len(chs_r) == 6, f"补齐第二卷章纲后共6章,实际{len(chs_r)}")
@@ -509,11 +549,13 @@ async def main() -> None:
     # 注:FakeLLM 对各层是按 system 提示词路由到固定文本(忽略调用参数),
     # 所以无论这里传入的 volume_count/chapter_count 是多少,实际落库结果都是
     # 固定的 2 卷、每卷 3 章(与本文件其它章节的 FakeLLM 输出一致)。
-    orchestrator.get_llm = lambda: FakeAgentLLM(db, book_a.id, volume_count=2, chapter_count=3)
+    book_a_id = book_a.id
+    orchestrator.get_llm = lambda: FakeAgentLLM(db, book_a_id, volume_count=2, chapter_count=3)
     task_a = agent_generation.start_agent_generation(db, book_a.id)
     await book_generation._running[task_a.id]
     db.expire_all()
     task_a = db.get(models.GenerationTask, task_a.id)
+    assert task_a is not None
     wb_a = db.query(models.Worldbuilding).filter_by(book_id=book_a.id).all()
     chars_a = db.query(models.Character).filter_by(book_id=book_a.id).all()
     vols_a = (
@@ -526,9 +568,10 @@ async def main() -> None:
     check(task_a.status == "done", f"智能体任务完成,实际{task_a.status}")
     check(task_a.type == "agent", "任务 type=agent")
     book_a = db.get(models.Book, book_a.id)
+    assert book_a is not None
     check(book_a.title == "验证之书", f"智能体规划后写回书名,实际{book_a.title}")
     check(book_a.intro == "用于逻辑验证", "智能体简介来自规划,不是用户原话")
-    check(len(wb_a) == 3, f"智能体生成3条设定,实际{len(wb_a)}")
+    check(len(wb_a) == 4, f"智能体生成4条设定,实际{len(wb_a)}")
     check(len(chars_a) == 3, f"智能体生成3个人物,实际{len(chars_a)}")
     check(len(vols_a) == 2 and len(chs_a) == 6, f"智能体2卷6章,实际卷{len(vols_a)}章{len(chs_a)}")
     check(all(c.status == "done" and c.word_count > 0 for c in chs_a), "智能体已完成全部章节正文")

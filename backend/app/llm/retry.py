@@ -10,13 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
 
 import httpx
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
@@ -27,7 +24,7 @@ def _is_retryable(exc: Exception) -> bool:
     return isinstance(exc, httpx.TransportError)
 
 
-async def call_with_retry(
+async def call_with_retry[T](
     fn: Callable[[], Awaitable[T]],
     *,
     attempts: int = 3,
@@ -45,11 +42,14 @@ async def call_with_retry(
                 raise
             delay = base_delay * (2**attempt)
             logger.warning(
-                "LLM 调用失败,%.1fs 后重试(第 %d/%d 次):%s",
+                "LLM 调用失败,%.1fs 后重试(第 %d/%d 次): type=%s status=%s",
                 delay,
                 attempt + 1,
                 attempts,
-                exc,
+                type(exc).__name__,
+                exc.response.status_code
+                if isinstance(exc, httpx.HTTPStatusError)
+                else None,
             )
             await asyncio.sleep(delay)
     raise AssertionError("unreachable")  # pragma: no cover

@@ -7,7 +7,7 @@ GenerationTask.checkpoint_json 里的 decisions 字段只保留最近 30 条,给
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -22,9 +22,20 @@ def record_step(
     *,
     tool_name: str | None = None,
 ) -> None:
+    # Updating the task row serializes writers for this task until commit.
+    # A retried run can reuse step_index, so cursors use this persisted counter.
+    db.flush()
+    sequence = db.scalars(
+        update(models.GenerationTask)
+        .where(models.GenerationTask.id == task_id)
+        .values(trace_sequence=models.GenerationTask.trace_sequence + 1)
+        .returning(models.GenerationTask.trace_sequence)
+        .execution_options(synchronize_session=False)
+    ).one()
     db.add(
         models.AgentTraceEntry(
             task_id=task_id,
+            sequence=sequence,
             step_index=step_index,
             kind=kind,
             tool_name=tool_name,
@@ -37,13 +48,29 @@ def record_step(
 def list_trace(
     db: Session, task_id: str, limit: int = 500
 ) -> list[models.AgentTraceEntry]:
-    # 主键已改为 UUID 字符串,不再具备插入顺序语义;step_index 由调用方
-    # (agent_generation.py) 对同一任务严格单调递增,用它排序才能还原真实执行顺序。
-    return list(
-        db.scalars(
-            select(models.AgentTraceEntry)
-            .where(models.AgentTraceEntry.task_id == task_id)
-            .order_by(models.AgentTraceEntry.step_index)
-            .limit(limit)
-        ).all()
-    )
+    return list_trace_page(db, task_id, limit, after=0)[0]
+
+
+def list_trace_page(
+    db: Session,
+    task_id: str,
+    limit: int,
+    *,
+    before: int | None = None,
+    after: int | None = None,
+) -> tuple[list[models.AgentTraceEntry], bool]:
+    entry = models.AgentTraceEntry
+    query = select(entry).where(entry.task_id == task_id)
+    if after is not None:
+        query = query.where(entry.sequence > after).order_by(entry.sequence)
+    else:
+        if before is not None:
+            query = query.where(entry.sequence < before)
+        query = query.order_by(entry.sequence.desc())
+
+    entries = list(db.scalars(query.limit(limit + 1)))
+    has_more = len(entries) > limit
+    entries = entries[:limit]
+    if after is None:
+        entries.reverse()
+    return entries, has_more

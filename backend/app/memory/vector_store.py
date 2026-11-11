@@ -6,6 +6,7 @@ from typing import Any
 
 import chromadb
 from chromadb.api import ClientAPI
+from chromadb.errors import NotFoundError
 
 from ..config import settings
 
@@ -74,14 +75,57 @@ def query(
 ) -> list[dict[str, Any]]:
     if not embedding:
         return []
-    coll = _collection(book_id)
-    if coll.count() == 0:
+    try:
+        coll = _client().get_collection(name=f"book_{book_id}")
+    except NotFoundError:
+        return []
+    count = coll.count()
+    if count == 0:
         return []
     res = coll.query(
         query_embeddings=[embedding],
-        n_results=min(top_k, coll.count()),
+        n_results=min(top_k, count),
         where=where,
     )
     docs = (res.get("documents") or [[]])[0]
     metas = (res.get("metadatas") or [[]])[0]
     return [{"document": d, "metadata": m} for d, m in zip(docs, metas)]
+
+
+def delete_source(book_id: str, source_type: str, source_id: str) -> None:
+    try:
+        coll = _client().get_collection(name=f"book_{book_id}")
+    except NotFoundError:
+        return
+    coll.delete(
+        where={
+            "$and": [
+                {"source_type": source_type},
+                {"source_id": source_id},
+            ]
+        }
+    )
+
+
+def list_book_ids() -> list[str]:
+    return [
+        collection.name.removeprefix("book_")
+        for collection in _client().list_collections()
+        if collection.name.startswith("book_")
+    ]
+
+
+def existing_ids(book_id: str) -> set[str]:
+    try:
+        coll = _client().get_collection(name=f"book_{book_id}")
+    except NotFoundError:
+        return set()
+    return set(coll.get(include=[])["ids"])
+
+
+def delete_book(book_id: str) -> None:
+    """Delete all memory for a book; a missing collection is already clean."""
+    try:
+        _client().delete_collection(name=f"book_{book_id}")
+    except NotFoundError:
+        return

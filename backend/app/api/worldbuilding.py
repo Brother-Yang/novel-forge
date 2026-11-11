@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..memory import sync as memory_sync
 
 router = APIRouter()
 
@@ -25,6 +26,8 @@ def create_worldbuilding(
         raise HTTPException(404, "书籍不存在")
     item = models.Worldbuilding(**payload.model_dump())
     db.add(item)
+    db.flush()
+    memory_sync.enqueue(db, item.book_id, memory_sync.WORLD, item.id)
     db.commit()
     db.refresh(item)
     return item
@@ -39,6 +42,7 @@ def update_worldbuilding(
         raise HTTPException(404, "设定不存在")
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(item, k, v)
+    memory_sync.enqueue(db, item.book_id, memory_sync.WORLD, item.id)
     db.commit()
     db.refresh(item)
     return item
@@ -49,6 +53,7 @@ def delete_worldbuilding(item_id: str, db: Session = Depends(get_db)):
     item = db.get(models.Worldbuilding, item_id)
     if not item:
         raise HTTPException(404, "设定不存在")
+    memory_sync.enqueue(db, item.book_id, memory_sync.WORLD, item.id, removed=True)
     db.delete(item)
     db.commit()
     return {"ok": True}

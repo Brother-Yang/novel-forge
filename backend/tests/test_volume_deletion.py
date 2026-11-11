@@ -4,11 +4,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from app import models
-from app.db_base import Base
 from fastapi import HTTPException
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
+
+from app import models
+from app.db_base import Base
 
 
 @pytest.fixture(params=[False, True], ids=["foreign-keys-off", "foreign-keys-on"])
@@ -113,10 +114,15 @@ def test_delete_volume_preserves_chapters(
 
 
 @pytest.mark.parametrize("loaded", [False, True], ids=["unloaded", "loaded"])
-def test_delete_book_still_deletes_its_chapters(db: Session, loaded: bool) -> None:
+@pytest.mark.asyncio
+async def test_delete_book_still_deletes_its_chapters(
+    db: Session, loaded: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.api.books import delete_book
     from app.api.volumes import delete_volume
+    from app.memory import vector_store
 
+    monkeypatch.setattr(vector_store, "delete_book", lambda book_id: None)
     book = models.Book(title="待删除书籍")
     volume = models.Volume(book=book, title="卷")
     detached_volume = models.Volume(book=book, title="先删除的卷")
@@ -141,7 +147,7 @@ def test_delete_book_still_deletes_its_chapters(db: Session, loaded: bool) -> No
         assert len(saved_book.chapters) == 3
         assert len(saved_book.volumes) == 1
         assert len(saved_book.volumes[0].chapters) == 1
-    assert delete_book(book_id, db) == {"ok": True}
+    assert await delete_book(book_id, db) == {"ok": True}
     db.expunge_all()
 
     assert db.get(models.Book, book_id) is None

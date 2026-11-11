@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..memory import sync as memory_sync
 
 router = APIRouter()
 
@@ -64,8 +65,17 @@ def update_chapter(
         raise HTTPException(404, "章节不存在")
     if "volume_id" in payload.model_fields_set:
         _validate_volume(db, payload.volume_id, chapter.book_id)
+    previous = (chapter.title, chapter.volume_id, chapter.order_index, chapter.status)
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(chapter, k, v)
+    old_title, old_volume_id, _, old_status = previous
+    current = (chapter.title, chapter.volume_id, chapter.order_index, chapter.status)
+    if chapter.title != old_title and memory_sync.chapter_body_hash(chapter):
+        memory_sync.enqueue_chapter(db, chapter, old_volume_id=old_volume_id)
+    elif previous != current and "done" in (old_status, chapter.status):
+        for volume_id in {old_volume_id, chapter.volume_id}:
+            if volume_id:
+                memory_sync.enqueue(db, chapter.book_id, memory_sync.VOLUME, volume_id)
     db.commit()
     db.refresh(chapter)
     return chapter
@@ -76,7 +86,12 @@ def delete_chapter(chapter_id: str, db: Session = Depends(get_db)):
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
         raise HTTPException(404, "章节不存在")
+    book_id, volume_id = chapter.book_id, chapter.volume_id
+    memory_sync.enqueue(db, book_id, memory_sync.CHAPTER, chapter.id, removed=True)
+    memory_sync.clear_chapter_facts(db, chapter)
     db.delete(chapter)
+    if volume_id:
+        memory_sync.enqueue(db, book_id, memory_sync.VOLUME, volume_id)
     db.commit()
     return {"ok": True}
 
@@ -102,9 +117,24 @@ def reorder_chapters(payload: schemas.ReorderRequest, db: Session = Depends(get_
         book_id = chapter.book_id
         _validate_volume(db, item.volume_id, chapter.book_id)
         chapters.append(chapter)
+    affected_volumes: set[str] = set()
     for item, chapter in zip(payload.items, chapters, strict=True):
+        if (chapter.order_index, chapter.volume_id) == (
+            item.order_index,
+            item.volume_id,
+        ):
+            continue
+        if chapter.status == "done":
+            affected_volumes.update(
+                volume_id
+                for volume_id in (chapter.volume_id, item.volume_id)
+                if volume_id
+            )
         chapter.order_index = item.order_index
         chapter.volume_id = item.volume_id
+    if book_id is not None:
+        for volume_id in affected_volumes:
+            memory_sync.enqueue(db, book_id, memory_sync.VOLUME, volume_id)
     db.commit()
     return {"ok": True}
 
@@ -118,7 +148,9 @@ def get_chapter_content(chapter_id: str, db: Session = Depends(get_db)):
     return schemas.ChapterContentOut(chapter_id=chapter_id, body=body)
 
 
-@router.put("/chapters/{chapter_id}/content", response_model=schemas.ChapterContentOut)
+@router.put(
+    "/chapters/{chapter_id}/content", response_model=schemas.ChapterContentSaved
+)
 def update_chapter_content(
     chapter_id: str,
     payload: schemas.ChapterContentUpdate,
@@ -130,12 +162,18 @@ def update_chapter_content(
     if chapter.content:
         chapter.content.body = payload.body
     else:
-        db.add(models.ChapterContent(chapter_id=chapter_id, body=payload.body))
+        chapter.content = models.ChapterContent(body=payload.body)
     if payload.body.strip():
         chapter.word_count = len(payload.body)
         chapter.status = "done"
     else:
         chapter.word_count = 0
         chapter.status = "outline" if chapter.outline.strip() else "empty"
+    memory_sync.enqueue_chapter(db, chapter)
     db.commit()
-    return schemas.ChapterContentOut(chapter_id=chapter_id, body=payload.body)
+    return schemas.ChapterContentSaved(
+        chapter_id=chapter_id,
+        body=payload.body,
+        status=chapter.status,
+        word_count=chapter.word_count,
+    )

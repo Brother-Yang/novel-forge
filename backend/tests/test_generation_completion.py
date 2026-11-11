@@ -4,6 +4,9 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
 from app import models
 from app.agents import orchestrator, pipeline, planner, tools
 from app.agents.completion import chapter_counts, chapter_is_complete
@@ -11,8 +14,6 @@ from app.config import settings
 from app.db_base import Base
 from app.llm.base import ToolCall, ToolChatResult
 from app.tasks import agent_generation, book_generation, novel_generation
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 
 class ScriptedLLM:
@@ -70,15 +71,11 @@ def isolated_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     async def context(db: Session, chapter: models.Chapter) -> str:
         return "测试上下文"
 
-    async def index_summary(db: Session, chapter: models.Chapter, summary: str) -> None:
-        return None
-
-    async def refresh_summary(db: Session, volume_id: str) -> None:
-        return None
+    async def skip_memory(db: Session, chapter: models.Chapter) -> bool:
+        return True
 
     monkeypatch.setattr(pipeline.memory, "build_chapter_context", context)
-    monkeypatch.setattr(pipeline.memory, "index_chapter_summary", index_summary)
-    monkeypatch.setattr(pipeline.memory, "refresh_volume_summary", refresh_summary)
+    monkeypatch.setattr(pipeline.memory, "process_chapter_memory", skip_memory)
 
 
 def seed(
@@ -302,12 +299,22 @@ async def test_batch_resume_regenerates_empty_done_and_preserves_completed_chapt
     )
     completed.content = models.ChapterContent(body="原有有效正文")
     db.add(completed)
-    volume = models.Volume(book=book, title="第一卷")
+    volume = models.Volume(book=book, title="第一卷", summary="已有大纲")
     db.add(volume)
     db.flush()
     chapter.volume = volume
-    db.add(models.Worldbuilding(book_id=book.id, title="设定", md_content="已有设定"))
-    db.add(models.Character(book_id=book.id, name="人物"))
+    chapter.outline = "第1章细纲"
+    completed.volume = volume
+    completed.outline = "第2章细纲"
+    db.add_all([
+        models.Worldbuilding(book_id=book.id, title=f"设定{i}", md_content="已有设定")
+        for i in range(4)
+    ])
+    db.add_all([
+        models.Character(book_id=book.id, name=f"人物{i}", md_content="已有人物卡")
+        for i in range(3)
+    ])
+    db.add(models.PlotThread(book_id=book.id, name="旧伏笔", description="已有描述"))
     db.commit()
     task = task_for(db, book, type_)
     llm = ScriptedLLM(body=" \n")

@@ -28,17 +28,18 @@ PLANNER_USER = """根据下面的创作想法,规划一部长篇小说的书目�
 }}
 
 规模约束:
-- volume_count 为 1 到 12 的整数
-- chapters_per_volume 为 1 到 20 的整数
-- words_per_chapter 为 2000 到 4000 的整数
+- volume_count 为 1 到 {volume_max} 的整数
+- chapters_per_volume 为 1 到 {chapters_per_volume_max} 的整数
+- words_per_chapter 为 {words_per_chapter_min} 到 {words_per_chapter_max} 的整数
 - character_count 为 3 到 8 的整数
-- 卷数×每卷章数×每章字数应接近目标总字数
+- 卷数×每卷章数×每章字数不得低于目标总字数,并应尽量接近目标
+- 长篇优先增加卷数,单卷章数不得超限;字数是规划目标,不保证模型实际输出恰好达到目标
 
 提取规则(优先级高于下面的"自由创作"建议):
 - 仔细阅读用户想法,如果其中用引号/书名号明确给出了书名,title 必须原样使用该书名,不得另拟。
 - 如果用户想法里包含具体的场景设定、人物的具体行为、他人反应、结局走向等明确细节,把每一条
   原样(或稍加提炼但不改变含义)列入 key_elements,不要遗漏、不要替换成套路化的内容。
-- 用户没有具体说明的方面不要杜撰进 key_elements,留给后续创作自由发挥;key_elements 允许为空数组。
+- 用户没有具体说明的方面不要杜撰进 key_elements,留给后续创作自由发挥;key_elements 允许为空数组,最多 10 项。
 若用户没有给出明确书名/题材/基调(为「由你拟定」),用户想法只是故事方向而非书名或简介,
 请自行另拟书名、另写简介,不要照抄用户原话。"""
 
@@ -55,7 +56,8 @@ WORLDBUILDING_USER = """为下面的小说构建世界观设定。
 用户已明确给出的要素(必须在设定中体现,不能替换或省略;若下方为空表示均由你自由创作):
 {key_elements}
 
-请输出 4-6 个设定条目,每个条目严格以“## 标题”开头,例如:
+{existing}
+请输出 {count} 个设定条目,每个条目严格以“## 标题”开头,例如:
 ## 世界规则
 （正文……)
 ## 主要地理
@@ -79,6 +81,7 @@ CHARACTERS_USER = """基于以下作品与世界观,设计 {count} 个主要人�
 用户已明确给出的要素(必须在人物设计中体现,不能替换或省略;若下方为空表示均由你自由创作):
 {key_elements}
 
+{existing}
 每个人物严格以“# 姓名”开头,包含以下小节:
 # 姓名
 - 身份:
@@ -94,7 +97,7 @@ CHARACTERS_USER = """基于以下作品与世界观,设计 {count} 个主要人�
 
 OUTLINE_SYSTEM = "你是小说大纲策划。规划分卷主线与伏笔线程。"
 
-OUTLINE_USER = """为《{title}》规划 {volume_count} 卷的分卷大纲。
+OUTLINE_USER = """为《{title}》规划分卷大纲与剧情线程，全书共 {volume_count} 卷。
 
 题材:{genre} 基调:{tone} 目标总字数:{target_words}
 用户创作想法:{brief}
@@ -106,19 +109,10 @@ OUTLINE_USER = """为《{title}》规划 {volume_count} 卷的分卷大纲。
 用户已明确给出的要素(必须在大纲中体现,不能替换或省略;若下方为空表示均由你自由创作):
 {key_elements}
 
-输出格式严格如下:
-## 第X卷 卷名
-本卷梗概(150-300字,交代本卷主线、关键转折)。
-
-在所有卷之后,单独输出一段伏笔线程,以“# 剧情线程”开头,其下每行一个:
-# 剧情线程
-- 线程名 | 简要描述
-- 线程名 | 简要描述
-
-大纲必须展开用户创作想法,不要写成与想法无关的套路剧情。
-最后一卷的梗概必须清楚指向全书结局:主线冲突要在该卷内走向收束,
-不能让故事停在中途或规划成开放式结尾。
-不要输出其它无关内容。"""
+{existing}
+请严格按以下要求补齐规划:
+{instructions}
+大纲必须展开用户创作想法，梗概要交代本卷主线和关键转折，不要输出无关内容。"""
 
 
 CHAPTER_OUTLINE_SYSTEM = "你是小说章节规划师,把卷梗概拆解为逐章细纲。"
@@ -128,19 +122,22 @@ CHAPTER_OUTLINE_ENDING_HINT = (
     "主要人物的命运/目标要有明确交代,不能留下开放式悬念。\n"
 )
 
-CHAPTER_OUTLINE_USER = """将下面这一卷拆解为 {chapter_count} 章的章节大纲。
+CHAPTER_OUTLINE_USER = """为下面这一卷编写 {chapter_count} 章的细纲，严格按顺序输出章号：{chapter_numbers}。
 
 作品:《{title}》 题材:{genre}
 用户创作想法:{brief}
 本卷:{volume_title}
 本卷梗概:{volume_summary}
 
+{existing}
 每章严格以“## 第N章 章节标题”开头,其下写 150-300 字梗概,
 并在梗概中点明:涉及人物、地点、推进的剧情线程。
 逐章之间要连贯递进,且始终服务用户创作想法。{ending_hint}不要输出其它无关内容。"""
 
 
-CHAPTER_REPLAN_SYSTEM = "你是长篇小说的分卷细纲规划助手,擅长在剧情已发生变化后重新梳理后续章节走向。"
+CHAPTER_REPLAN_SYSTEM = (
+    "你是长篇小说的分卷细纲规划助手,擅长在剧情已发生变化后重新梳理后续章节走向。"
+)
 
 CHAPTER_REPLAN_USER = """《{title}》第「{volume_title}」卷,原定该卷大纲:
 {volume_summary}
@@ -208,7 +205,9 @@ AGENT_SYSTEM = (
     "3. 写某一章正文前,确保该章所属卷已有分卷大纲、该章已有细纲。所有 id 参数"
     "(volume_id/chapter_id/target_id)必须原样取自 get_book_state 返回结果里的 "
     "volumes[].chapters[].id 等字段,禁止自行编造或猜测。\n"
-    "4. 字数以 get_book_state 里的 target_words 为基准去规划篇幅,但结局的完整性优先于"
+    "4. 字数以 get_book_state 里的 target_words 为基准去规划篇幅。全书最多40卷、每卷最多20章、"
+    "每章规划2000到4000字,长篇优先增加卷数,不得把百万字目标静默缩成短篇;"
+    "字数是规划目标,模型实际产出仍需检查。但结局的完整性优先于"
     "凑字数:当 total_word_count 接近或超过 target_words 时,不能因为字数够了就草草收尾。"
     "写全书最后一章正文时,调用 write_chapter 并把 is_ending 设为 true,确保写出明确、完整"
     "的结局——主线冲突收束、主要人物命运有交代、open_plot_threads 里的主线不留开放式悬念,"

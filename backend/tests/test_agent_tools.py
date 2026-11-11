@@ -33,56 +33,62 @@ def _book(db: Session, **kwargs: object) -> models.Book:
     return book
 
 
+def _forbid_llm() -> None:
+    raise AssertionError("完整阶段不应调用模型")
+
+
 async def _must_not_be_called(*args: object, **kwargs: object):
     raise AssertionError("已存在数据时不应再次调用生成流程")
     yield  # pragma: no cover  # 保持异步生成器签名,不会被执行到
 
 
-# ---------- 幂等保护:已存在则跳过,不重复生成 ----------
-async def test_write_worldbuilding_skips_if_exists(db, monkeypatch):
+# ---------- 只有完整结构才幂等跳过 ----------
+async def test_write_worldbuilding_skips_if_complete(db, monkeypatch):
     book = _book(db)
-    db.add(models.Worldbuilding(book_id=book.id, title="已有设定", md_content="x"))
+    db.add_all([
+        models.Worldbuilding(book_id=book.id, title=f"已有设定{i}", md_content="设定正文")
+        for i in range(4)
+    ])
     db.commit()
-    monkeypatch.setattr(pipeline, "gen_worldbuilding", _must_not_be_called)
-
+    monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
     result = await tools.tool_write_worldbuilding(db, book.id, {})
     assert result["skipped"] is True
-    assert "已存在 1 条设定" in result["message"]
+    assert result["message"] == "已保存 4 条完整设定"
 
 
-async def test_create_characters_skips_if_exists(db, monkeypatch):
+async def test_create_characters_skips_if_complete(db, monkeypatch):
     book = _book(db)
-    db.add(models.Character(book_id=book.id, name="已有人物"))
+    db.add_all([
+        models.Character(book_id=book.id, name=f"已有人物{i}", md_content="旧人物卡")
+        for i in range(3)
+    ])
     db.commit()
-    monkeypatch.setattr(pipeline, "gen_characters", _must_not_be_called)
-
-    result = await tools.tool_create_characters(db, book.id, {"count": 5})
+    monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
+    result = await tools.tool_create_characters(db, book.id, {"count": 3})
     assert result["skipped"] is True
-    assert "已存在 1 个人物" in result["message"]
+    assert result["message"] == "已保存 3 个完整人物"
 
 
-async def test_create_outline_skips_if_exists(db, monkeypatch):
+async def test_create_outline_skips_only_after_both_parts_complete(db, monkeypatch):
     book = _book(db)
-    db.add(models.Volume(book_id=book.id, title="已有卷"))
+    db.add(models.Volume(book_id=book.id, title="已有卷", summary="梗概"))
+    db.add(models.PlotThread(book_id=book.id, name="已有伏笔", description="伏笔描述"))
     db.commit()
-    monkeypatch.setattr(pipeline, "gen_outline", _must_not_be_called)
-
-    result = await tools.tool_create_outline(db, book.id, {"volume_count": 3})
+    monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
+    result = await tools.tool_create_outline(db, book.id, {"volume_count": 1})
     assert result["skipped"] is True
 
 
-async def test_create_chapter_outlines_skips_if_volume_already_has_chapters(db, monkeypatch):
+async def test_create_chapter_outlines_skips_if_volume_is_complete(db, monkeypatch):
     book = _book(db)
     volume = models.Volume(book_id=book.id, title="第一卷")
     db.add(volume)
     db.commit()
-    db.refresh(volume)
-    db.add(models.Chapter(book_id=book.id, volume_id=volume.id, title="第1章"))
+    db.add(models.Chapter(book_id=book.id, volume_id=volume.id, title="第1章", outline="旧细纲"))
     db.commit()
-    monkeypatch.setattr(pipeline, "gen_chapter_outlines", _must_not_be_called)
-
+    monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
     result = await tools.tool_create_chapter_outlines(
-        db, book.id, {"volume_id": volume.id, "chapter_count": 5}
+        db, book.id, {"volume_id": volume.id, "chapter_count": 1}
     )
     assert result["skipped"] is True
 
@@ -241,6 +247,7 @@ async def test_review_content_unknown_target_type_raises(db):
 
 class _FakeReviewLLM:
     def __init__(self, reply: str) -> None:
+        super().__init__()
         self._reply = reply
 
     async def chat(self, prompt: str, system: str = "", temperature: float = 0.8) -> str:

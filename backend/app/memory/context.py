@@ -3,85 +3,42 @@
 token 以中文字符数粗略近似,足以做预算控制。
 """
 
+import json
+import logging
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..agents import prompts
 from ..config import settings
 from ..llm import get_llm
-from . import vector_store
+from . import facts, sync, vector_store
+
+logger = logging.getLogger(__name__)
+MEMORY_DEGRADED_NOTE = (
+    "部分记忆检索暂不可用，本次正文生成将继续。可在书籍工作区查看记忆状态。"
+)
+MEMORY_DEGRADED_BLOCK = "\n\n# 记忆状态\n" + MEMORY_DEGRADED_NOTE
 
 
 def estimate_tokens(text: str) -> int:
     return len(text)
 
 
-async def index_worldbuilding(db: Session, item: models.Worldbuilding) -> None:
-    llm = get_llm()
-    text = f"{item.title}\n{item.md_content}"
-    emb = await llm.embed(text)
-    doc_id = f"wb-{item.id}"
-    vector_store.upsert(
-        item.book_id,
-        doc_id,
-        emb,
-        text,
-        {"source_type": "worldbuilding", "source_id": item.id, "title": item.title},
-    )
-    _record_ref(db, item.book_id, "worldbuilding", item.id, doc_id)
-
-
-async def index_chapter_summary(
-    db: Session, chapter: models.Chapter, summary: str
-) -> None:
-    """保存章摘要到 SQLite 并写入向量库,供后续 RAG 召回。"""
-    existing = db.get(models.ChapterSummary, chapter.id)
-    if existing:
-        existing.summary = summary
-    else:
-        db.add(models.ChapterSummary(chapter_id=chapter.id, summary=summary))
+async def index_worldbuilding(db: Session, item: models.Worldbuilding) -> bool:
+    job = sync.enqueue(db, item.book_id, sync.WORLD, item.id)
     db.commit()
-
-    llm = get_llm()
-    emb = await llm.embed(summary)
-    doc_id = f"chsum-{chapter.id}"
-    vector_store.upsert(
-        chapter.book_id,
-        doc_id,
-        emb,
-        summary,
-        {
-            "source_type": "chapter_summary",
-            "source_id": chapter.id,
-            "order_index": chapter.order_index,
-        },
-    )
-    _record_ref(db, chapter.book_id, "chapter_summary", chapter.id, doc_id)
+    return await sync.process_job(db, job.id)
 
 
-def _record_ref(
-    db: Session, book_id: str, source_type: str, source_id: str, chroma_id: str
-) -> None:
-    exists = db.scalar(
-        select(models.EmbeddingRef).where(
-            models.EmbeddingRef.source_type == source_type,
-            models.EmbeddingRef.source_id == source_id,
-        )
-    )
-    if not exists:
-        db.add(
-            models.EmbeddingRef(
-                book_id=book_id,
-                source_type=source_type,
-                source_id=source_id,
-                chroma_id=chroma_id,
-            )
-        )
-        db.commit()
+async def process_chapter_memory(db: Session, chapter: models.Chapter) -> bool:
+    return await sync.process_chapter_memory(db, chapter)
 
 
-def _relevant_characters(db: Session, book_id: str, outline: str) -> list[models.Character]:
+def _relevant_characters(
+    db: Session, book_id: str, outline: str
+) -> list[models.Character]:
     chars = list(
         db.scalars(
             select(models.Character)
@@ -97,63 +54,117 @@ def _relevant_characters(db: Session, book_id: str, outline: str) -> list[models
 def _previous_summaries(db: Session, chapter: models.Chapter) -> list[str]:
     rows = db.scalars(
         select(models.Chapter)
+        .join(models.ChapterSummary)
         .where(
             models.Chapter.book_id == chapter.book_id,
             models.Chapter.order_index < chapter.order_index,
+            models.Chapter.status == "done",
+            models.ChapterSummary.source_hash != "",
         )
         .order_by(models.Chapter.order_index.desc())
         .limit(settings.previous_summary_count)
     ).all()
     summaries: list[str] = []
     for ch in reversed(rows):
-        s = db.get(models.ChapterSummary, ch.id)
-        if s and s.summary:
-            summaries.append(f"[{ch.title}] {s.summary}")
+        summary = sync.valid_summary(ch)
+        if summary:
+            summaries.append(f"[{ch.title}] {summary}")
     return summaries
+
+
+def _history_source_ids(db: Session, chapter: models.Chapter) -> list[str]:
+    indexed = select(models.MemorySyncJob.source_id).where(
+        models.MemorySyncJob.book_id == chapter.book_id,
+        models.MemorySyncJob.source_type == sync.CHAPTER,
+        models.MemorySyncJob.status == "done",
+        models.MemorySyncJob.source_hash != "",
+    )
+    return list(
+        db.scalars(
+            select(models.Chapter.id).where(
+                models.Chapter.book_id == chapter.book_id,
+                models.Chapter.order_index < chapter.order_index,
+                models.Chapter.status == "done",
+                models.Chapter.id.in_(indexed),
+            )
+        )
+    )
 
 
 def _volume_summary(db: Session, chapter: models.Chapter) -> str:
     if not chapter.volume_id:
         return ""
-    vol = db.get(models.Volume, chapter.volume_id)
-    return vol.summary if vol else ""
+    volume = db.get(models.Volume, chapter.volume_id)
+    job = sync.find_job(db, chapter.book_id, sync.VOLUME, chapter.volume_id)
+    if not volume or not job or job.status != "done":
+        return ""
+    if job.source_hash != sync.source_hash(db, chapter.book_id, sync.VOLUME, volume.id):
+        return ""
+    completed = db.scalars(
+        select(models.Chapter).where(
+            models.Chapter.volume_id == volume.id,
+            models.Chapter.status == "done",
+            models.Chapter.book_id == chapter.book_id,
+        )
+    ).all()
+    # A rolling volume summary can include later events. Never use it to rewrite
+    # an earlier chapter, or use the initial outline as if it were history.
+    if not completed or any(ch.order_index >= chapter.order_index for ch in completed):
+        return ""
+    if not any(sync.valid_summary(ch) for ch in completed):
+        return ""
+    return volume.memory_summary
 
 
 async def refresh_volume_summary(db: Session, volume_id: str) -> None:
-    """基于该卷已完成章节的 ChapterSummary 重新提炼卷摘要,写回 Volume.summary。
-
-    Volume.summary 目前只在生成分卷大纲时写一次;调用方(pipeline.py 里章节
-    正文生成完成后)应在每章完成后调用本函数,让卷摘要随情节推进持续精炼,
-    而不是永远停留在大纲阶段的初始设想。
-    """
     volume = db.get(models.Volume, volume_id)
     if not volume:
         return
-    done_chapters = db.scalars(
-        select(models.Chapter)
-        .where(
-            models.Chapter.volume_id == volume_id,
-            models.Chapter.status == "done",
-        )
-        .order_by(models.Chapter.order_index)
-    ).all()
-    summaries = []
-    for ch in done_chapters:
-        s = db.get(models.ChapterSummary, ch.id)
-        if s and s.summary:
-            summaries.append(f"[{ch.title}] {s.summary}")
-    if not summaries:
-        return
-
-    llm = get_llm()
-    refreshed = await llm.chat(
-        prompts.VOLUME_SUMMARY_USER.format(
-            volume_title=volume.title, chapter_summaries="\n".join(summaries)
-        ),
-        system=prompts.VOLUME_SUMMARY_SYSTEM,
-    )
-    volume.summary = refreshed.strip()
+    job = sync.enqueue(db, volume.book_id, sync.VOLUME, volume.id)
     db.commit()
+    await sync.process_job(db, job.id)
+
+
+def _valid_hits(
+    db: Session, chapter: models.Chapter, hits: list[dict[str, Any]], source_type: str
+) -> list[str]:
+    documents: list[str] = []
+    for hit in hits:
+        meta = hit.get("metadata") or {}
+        source_id = meta.get("source_id")
+        if not isinstance(source_id, str) or meta.get("source_type") != source_type:
+            continue
+        job = sync.find_job(db, chapter.book_id, source_type, source_id)
+        if not job or job.status != "done" or not job.source_hash:
+            continue
+        if (
+            meta.get("revision") != job.revision
+            or meta.get("source_hash") != job.source_hash
+        ):
+            continue
+        if source_type == sync.CHAPTER:
+            source = db.get(models.Chapter, source_id)
+            if (
+                not source
+                or source.book_id != chapter.book_id
+                or source.status != "done"
+                or source.order_index >= chapter.order_index
+                or not sync.valid_summary(source)
+            ):
+                continue
+        else:
+            source = db.get(models.Worldbuilding, source_id)
+            if not source or source.book_id != chapter.book_id:
+                continue
+        if (
+            sync.source_hash(db, chapter.book_id, source_type, source_id)
+            != job.source_hash
+        ):
+            continue
+        document = hit.get("document")
+        if isinstance(document, str):
+            documents.append(document)
+    return documents
 
 
 async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
@@ -174,54 +185,94 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
     parts.append(f"# 本章大纲\n{chapter.outline or '(无,请根据前文自然推进)'}")
 
     # 相关人物卡
+    earlier_facts = facts.replay(db, chapter.book_id, before_order=chapter.order_index)
     chars = _relevant_characters(db, chapter.book_id, chapter.outline or "")
     if chars:
         blocks: list[str] = []
         for c in chars:
-            blocks.append(f"## {c.name}\n{c.md_content}\n当前状态:{c.state_json}")
+            state = earlier_facts.characters.get(c.id)
+            block = f"## {c.name}\n{c.md_content}"
+            if state:
+                block += "\n前章确立的人物状态:" + json.dumps(state, ensure_ascii=False)
+            blocks.append(block)
         parts.append("# 相关人物\n" + "\n\n".join(blocks))
 
     # 相关剧情线程
     threads = db.scalars(
         select(models.PlotThread).where(
             models.PlotThread.book_id == chapter.book_id,
-            models.PlotThread.status != "closed",
         )
     ).all()
-    if threads:
+    active_threads = [
+        (t, earlier_facts.threads.get(t.id, "open"))
+        for t in threads
+        if earlier_facts.threads.get(t.id) != "closed"
+    ]
+    if active_threads:
         parts.append(
             "# 待推进/呼应的剧情线程\n"
-            + "\n".join(f"- ({t.status}) {t.name}: {t.description}" for t in threads)
+            + "\n".join(
+                f"- ({status}) {t.name}: {t.description}"
+                for t, status in active_threads
+            )
         )
 
     # 向量召回:世界观 + 历史相关片段。检索失败不阻断正文生成。
+    degraded = False
+    operation = "embed"
+    book_id, chapter_id = chapter.book_id, chapter.id
+    query_text = chapter.outline or chapter.title
+    db.rollback()
     try:
         llm = get_llm()
-        query_emb = await llm.embed(chapter.outline or chapter.title)
+        query_emb = await llm.embed(query_text)
+        if not query_emb:
+            raise ValueError("empty query embedding")
+        # An edit can commit while the embedding request is awaiting the model.
+        db.expire_all()
+        operation = "worldbuilding_query"
         wb_hits = vector_store.query(
-            chapter.book_id, query_emb, top_k=4, where={"source_type": "worldbuilding"}
+            chapter.book_id, query_emb, top_k=12, where={"source_type": sync.WORLD}
         )
-        if wb_hits:
-            parts.append(
-                "# 相关设定(检索)\n" + "\n".join(h["document"] for h in wb_hits)
+        world_documents = _valid_hits(db, chapter, wb_hits, sync.WORLD)[:4]
+        if world_documents:
+            parts.append("# 相关设定(检索)\n" + "\n".join(world_documents))
+        operation = "chapter_query"
+        # Current SQL order determines eligibility before ranking. Reordering
+        # chapters changes the very next recall without a model re-embedding.
+        if history_ids := _history_source_ids(db, chapter):
+            sum_hits = vector_store.query(
+                chapter.book_id,
+                query_emb,
+                top_k=12,
+                where={
+                    "$and": [
+                        {"source_type": sync.CHAPTER},
+                        {"source_id": {"$in": history_ids}},
+                    ]
+                },
             )
-        sum_hits = vector_store.query(
-            chapter.book_id, query_emb, top_k=4, where={"source_type": "chapter_summary"}
+            history_documents = _valid_hits(db, chapter, sum_hits, sync.CHAPTER)[:4]
+            if history_documents:
+                parts.append("# 相关历史情节(检索)\n" + "\n".join(history_documents))
+    except Exception as exc:  # noqa: BLE001 - provider/Chroma errors allow SQL fallback
+        logger.warning(
+            "RAG degraded book_id=%s chapter_id=%s operation=%s error_type=%s",
+            book_id,
+            chapter_id,
+            operation,
+            type(exc).__name__,
         )
-        if sum_hits:
-            parts.append(
-                "# 相关历史情节(检索)\n" + "\n".join(h["document"] for h in sum_hits)
-            )
-    except Exception:
-        pass
+        degraded = True
 
     # 前情摘要;超预算则降级为卷摘要
+    db.expire_all()
     prev = _previous_summaries(db, chapter)
     current = "\n\n".join(parts)
     prev_block = "# 前情提要\n" + "\n".join(prev) if prev else ""
     if prev and estimate_tokens(current + prev_block) > budget:
         vol_sum = _volume_summary(db, chapter)
-        prev_block = f"# 前情提要(卷级摘要)\n{vol_sum}" if vol_sum else ""
+        prev_block = f"# 前情提要(卷级摘要)\n{vol_sum}" if vol_sum else prev_block
     if prev_block:
         parts.append(prev_block)
 
@@ -229,4 +280,6 @@ async def build_chapter_context(db: Session, chapter: models.Chapter) -> str:
     # 最终兜底裁剪
     if estimate_tokens(context) > budget * 1.5:
         context = context[: int(budget * 1.5)]
+    if degraded:
+        context += MEMORY_DEGRADED_BLOCK
     return context

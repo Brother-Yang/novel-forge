@@ -8,6 +8,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -37,7 +38,9 @@ class Book(Base):
     genre: Mapped[str] = mapped_column(String(128), default="")
     tone: Mapped[str] = mapped_column(String(128), default="")
     target_words: Mapped[int] = mapped_column(Integer, default=100000)
-    key_elements: Mapped[str] = mapped_column(Text, default="[]")  # 从 brief 提取的用户明确要素(JSON 数组)
+    key_elements: Mapped[str] = mapped_column(
+        Text, default="[]"
+    )  # 从 brief 提取的用户明确要素(JSON 数组)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     volumes: Mapped[list["Volume"]] = relationship(
@@ -54,20 +57,21 @@ class Book(Base):
 class Volume(Base):
     __tablename__ = "volumes"
 
-    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_id
+    )
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
     title: Mapped[str] = mapped_column(String(255))
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     summary: Mapped[str] = mapped_column(Text, default="")
+    memory_summary: Mapped[str] = mapped_column(Text, default="")
 
     book: Mapped["Book"] = relationship(back_populates="volumes")
     # 卷只负责归类;删除卷时由 ORM 将 volume_id 置空,章节仍由 Book 拥有。
-    # 保留默认 passive_deletes=False,兼容未启用外键约束的 SQLite 连接。
-    chapters: Mapped[list["Chapter"]] = relationship(
-        back_populates="volume"
-    )
+    # 保留 ORM 置空行为,已加载的章节对象也能立即反映归卷变化。
+    chapters: Mapped[list["Chapter"]] = relationship(back_populates="volume")
 
 
 class Chapter(Base):
@@ -75,17 +79,23 @@ class Chapter(Base):
 
     __tablename__ = "chapters"
 
-    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_id
+    )
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
     volume_id: Mapped[str | None] = mapped_column(
-        String(BOOK_ID_LEN), ForeignKey("volumes.id", ondelete="SET NULL"), nullable=True
+        String(BOOK_ID_LEN),
+        ForeignKey("volumes.id", ondelete="SET NULL"),
+        nullable=True,
     )
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     title: Mapped[str] = mapped_column(String(255))
     outline: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(32), default="empty")  # empty/outline/drafting/done
+    status: Mapped[str] = mapped_column(
+        String(32), default="empty"
+    )  # empty/outline/drafting/done
     word_count: Mapped[int] = mapped_column(Integer, default=0)
     # 智能体安全护栏用:章节已 done 后默认不允许覆盖重写(高风险操作,会丢弃
     # 已有正文);仅当 review_content 对该章给出 needs_revision=true 时置为
@@ -106,7 +116,9 @@ class ChapterContent(Base):
     __tablename__ = "chapter_content"
 
     chapter_id: Mapped[str] = mapped_column(
-        String(BOOK_ID_LEN), ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True
+        String(BOOK_ID_LEN),
+        ForeignKey("chapters.id", ondelete="CASCADE"),
+        primary_key=True,
     )
     body: Mapped[str] = mapped_column(Text, default="")
 
@@ -117,9 +129,12 @@ class ChapterSummary(Base):
     __tablename__ = "chapter_summaries"
 
     chapter_id: Mapped[str] = mapped_column(
-        String(BOOK_ID_LEN), ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True
+        String(BOOK_ID_LEN),
+        ForeignKey("chapters.id", ondelete="CASCADE"),
+        primary_key=True,
     )
     summary: Mapped[str] = mapped_column(Text, default="")
+    source_hash: Mapped[str] = mapped_column(String(64), default="")
 
     chapter: Mapped["Chapter"] = relationship(back_populates="summary")
 
@@ -127,7 +142,9 @@ class ChapterSummary(Base):
 class Character(Base):
     __tablename__ = "characters"
 
-    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_id
+    )
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
@@ -142,7 +159,9 @@ class Character(Base):
 class Worldbuilding(Base):
     __tablename__ = "worldbuilding"
 
-    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_id
+    )
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
@@ -154,19 +173,25 @@ class Worldbuilding(Base):
 class PlotThread(Base):
     __tablename__ = "plot_threads"
 
-    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_id
+    )
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
     name: Mapped[str] = mapped_column(String(255))
-    status: Mapped[str] = mapped_column(String(32), default="open")  # open/active/closed
+    status: Mapped[str] = mapped_column(
+        String(32), default="open"
+    )  # open/active/closed
     description: Mapped[str] = mapped_column(Text, default="")
 
 
 class GenerationTask(Base):
     __tablename__ = "generation_tasks"
 
-    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_id
+    )
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
@@ -177,6 +202,7 @@ class GenerationTask(Base):
     progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
     error: Mapped[str] = mapped_column(Text, default="")
     checkpoint_json: Mapped[str] = mapped_column(Text, default="{}")
+    trace_sequence: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -189,13 +215,21 @@ class AgentTraceEntry(Base):
     """
 
     __tablename__ = "agent_trace_entries"
+    __table_args__ = (
+        UniqueConstraint("task_id", "sequence", name="uq_agent_trace_sequence"),
+    )
 
-    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_id
+    )
     task_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("generation_tasks.id", ondelete="CASCADE")
     )
+    sequence: Mapped[int] = mapped_column(Integer)
     step_index: Mapped[int] = mapped_column(Integer, default=0)
-    kind: Mapped[str] = mapped_column(String(32))  # thought/decision/observation/log/error
+    kind: Mapped[str] = mapped_column(
+        String(32)
+    )  # thought/decision/observation/log/error
     tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     payload: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -206,10 +240,54 @@ class EmbeddingRef(Base):
 
     __tablename__ = "embeddings"
 
-    id: Mapped[str] = mapped_column(String(BOOK_ID_LEN), primary_key=True, default=new_id)
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_id
+    )
     book_id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE")
     )
-    source_type: Mapped[str] = mapped_column(String(32))  # chapter_summary/worldbuilding
+    source_type: Mapped[str] = mapped_column(
+        String(32)
+    )  # chapter_summary/worldbuilding
     source_id: Mapped[str] = mapped_column(String(BOOK_ID_LEN))
     chroma_id: Mapped[str] = mapped_column(String(128))
+
+
+class MemorySyncJob(Base):
+    """Durable, versioned outbox for derived memory; SQL content stays authoritative."""
+
+    __tablename__ = "memory_sync_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "book_id", "source_type", "source_id", name="uq_memory_source"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), primary_key=True, default=new_id
+    )
+    book_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("books.id", ondelete="CASCADE"), index=True
+    )
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[str] = mapped_column(String(BOOK_ID_LEN))
+    source_hash: Mapped[str] = mapped_column(String(64), default="")
+    revision: Mapped[str] = mapped_column(String(BOOK_ID_LEN), default=new_id)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ChapterFacts(Base):
+    """Facts extracted from one chapter body, replayed in current chapter order."""
+
+    __tablename__ = "chapter_facts"
+
+    chapter_id: Mapped[str] = mapped_column(
+        String(BOOK_ID_LEN), ForeignKey("chapters.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_hash: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[str] = mapped_column(Text)

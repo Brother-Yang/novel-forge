@@ -84,12 +84,8 @@ def test_alembic_keeps_existing_integer_ids_as_strings(tmp_path, monkeypatch) ->
             )
         )
 
-    # 与 database.py::init_db() 的真实顺序一致:先 create_all 补齐缺失的表
-    # (已存在的 books/volumes 不受影响),再跑 Alembic 增量补丁,避免后续新表
-    # (如 agent_trace_entries)里指向 generation_tasks 的外键在合成的"纯旧库"
-    # 场景下悬空引用一张从未创建过的表。
-    Base.metadata.create_all(engine)
-
+    # A legacy partial schema must upgrade directly; application create_all
+    # must not conceal missing baseline tables.
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{db_path}")
     cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")

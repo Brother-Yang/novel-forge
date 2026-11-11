@@ -1,6 +1,17 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+# 分卷细纲每次最多 20 章；长篇通过增加卷数扩展，字数是规划目标而非模型产出保证。
+NOVEL_VOLUME_MAX = 40
+NOVEL_CHAPTERS_PER_VOLUME_MAX = 20
+NOVEL_WORDS_PER_CHAPTER_MIN = 2000
+NOVEL_WORDS_PER_CHAPTER_MAX = 4000
+NOVEL_TARGET_WORDS_MAX = (
+    NOVEL_VOLUME_MAX * NOVEL_CHAPTERS_PER_VOLUME_MAX * NOVEL_WORDS_PER_CHAPTER_MAX
+)
+_TARGET_WORDS_DESCRIPTION = "规划目标字数，非实际生成字数保证；当前上限 320 万字"
 
 
 class ORMModel(BaseModel):
@@ -14,7 +25,12 @@ class BookCreate(BaseModel):
     brief: str = ""
     genre: str = ""
     tone: str = ""
-    target_words: int = 100000
+    target_words: int = Field(
+        default=100000,
+        ge=1,
+        le=NOVEL_TARGET_WORDS_MAX,
+        description=_TARGET_WORDS_DESCRIPTION,
+    )
 
 
 class BookUpdate(BaseModel):
@@ -23,7 +39,12 @@ class BookUpdate(BaseModel):
     brief: str | None = None
     genre: str | None = None
     tone: str | None = None
-    target_words: int | None = None
+    target_words: int | None = Field(
+        default=None,
+        ge=1,
+        le=NOVEL_TARGET_WORDS_MAX,
+        description=_TARGET_WORDS_DESCRIPTION,
+    )
 
 
 class BookOut(ORMModel):
@@ -93,6 +114,11 @@ class ChapterContentOut(BaseModel):
     body: str
 
 
+class ChapterContentSaved(ChapterContentOut):
+    status: str
+    word_count: int
+
+
 class ChapterContentUpdate(BaseModel):
     body: str
 
@@ -150,6 +176,7 @@ class CharacterOut(ORMModel):
     order_index: int
     md_content: str
     state_json: str
+    derived_state: dict[str, str] = Field(default_factory=dict)
 
 
 # ---------- Worldbuilding ----------
@@ -181,6 +208,7 @@ class PlotThreadOut(ORMModel):
     name: str
     status: str
     description: str
+    derived_status: Literal["active", "closed"] | None = None
 
 
 # ---------- GenerationTask ----------
@@ -206,6 +234,15 @@ class AgentTraceEntryOut(ORMModel):
     created_at: datetime
 
 
+class AgentTracePageEntryOut(AgentTraceEntryOut):
+    sequence: int
+
+
+class AgentTracePageOut(BaseModel):
+    entries: list[AgentTracePageEntryOut]
+    has_more: bool
+
+
 # ---------- Generate 请求 ----------
 class GenerateWorldbuildingReq(BaseModel):
     book_id: str
@@ -218,12 +255,12 @@ class GenerateCharactersReq(BaseModel):
 
 class GenerateOutlineReq(BaseModel):
     book_id: str
-    volume_count: int = 3
+    volume_count: int = Field(default=3, ge=1, le=NOVEL_VOLUME_MAX)
 
 
 class GenerateChapterOutlinesReq(BaseModel):
     volume_id: str
-    chapter_count: int = 10
+    chapter_count: int = Field(default=10, ge=1, le=NOVEL_CHAPTERS_PER_VOLUME_MAX)
 
 
 class GenerateChapterReq(BaseModel):
@@ -240,7 +277,12 @@ class GenerateNovelReq(BaseModel):
     title: str | None = None
     genre: str = ""
     tone: str = ""
-    target_words: int = 100000
+    target_words: int = Field(
+        default=100000,
+        ge=1,
+        le=NOVEL_TARGET_WORDS_MAX,
+        description=_TARGET_WORDS_DESCRIPTION,
+    )
 
 
 class GenerateNovelFromBookReq(BaseModel):
@@ -257,7 +299,12 @@ class GenerateAgentReq(BaseModel):
     title: str | None = None
     genre: str = ""
     tone: str = ""
-    target_words: int = 100000
+    target_words: int = Field(
+        default=100000,
+        ge=1,
+        le=NOVEL_TARGET_WORDS_MAX,
+        description=_TARGET_WORDS_DESCRIPTION,
+    )
 
 
 class GenerateAgentFromBookReq(BaseModel):

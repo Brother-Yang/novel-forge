@@ -1,0 +1,5 @@
+target-version = "py313"
+
+[lint.flake8-bugbear]
+# FastAPI 的依赖声明对象按设计可在默认参数中构造,不共享可变业务状态。
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]

@@ -7,15 +7,15 @@ UUID(已有整数值会变成字符串形式的旧值,如 "1");新建记录由�
 (models.py::new_id())生成真正的 UUID。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260904_ids_uuid"
-down_revision: Union[str, Sequence[str], None] = "20260904_chapter_revision_approved"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "20260904_chapter_revision_approved"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 # 表名 -> [(列名, 该列是否允许为空), ...]
 _TABLE_COLUMNS: dict[str, list[tuple[str, bool]]] = {

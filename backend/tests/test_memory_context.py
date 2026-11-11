@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.db_base import Base
 from app.memory import context as memory_context
+from app.memory import sync
 
 
 @pytest.fixture
@@ -23,10 +24,13 @@ def db(tmp_path):
 
 class FakeLLM:
     def __init__(self, reply: str) -> None:
+        super().__init__()
         self._reply = reply
         self.last_prompt: str | None = None
 
-    async def chat(self, prompt: str, system: str = "", temperature: float = 0.8) -> str:
+    async def chat(
+        self, prompt: str, system: str = "", temperature: float = 0.8
+    ) -> str:
         self.last_prompt = prompt
         return self._reply
 
@@ -36,7 +40,9 @@ def _book_with_volume(db: Session) -> models.Volume:
     db.add(book)
     db.commit()
     db.refresh(book)
-    volume = models.Volume(book_id=book.id, title="第一卷", order_index=0, summary="旧摘要")
+    volume = models.Volume(
+        book_id=book.id, title="第一卷", order_index=0, summary="旧摘要"
+    )
     db.add(volume)
     db.commit()
     db.refresh(volume)
@@ -44,7 +50,7 @@ def _book_with_volume(db: Session) -> models.Volume:
 
 
 async def test_refresh_volume_summary_missing_volume_is_noop(db):
-    await memory_context.refresh_volume_summary(db, 999)  # 不应抛异常
+    await memory_context.refresh_volume_summary(db, "missing")  # 不应抛异常
 
 
 async def test_refresh_volume_summary_noop_without_done_chapters(db, monkeypatch):
@@ -75,10 +81,17 @@ async def test_refresh_volume_summary_rewrites_from_chapter_summaries(db, monkey
     chapter = models.Chapter(
         book_id=volume.book_id, volume_id=volume.id, title="第1章", status="done"
     )
+    chapter.content = models.ChapterContent(body="主角遇险时觉醒了异能。")
     db.add(chapter)
     db.commit()
     db.refresh(chapter)
-    db.add(models.ChapterSummary(chapter_id=chapter.id, summary="主角觉醒了异能"))
+    db.add(
+        models.ChapterSummary(
+            chapter_id=chapter.id,
+            summary="主角觉醒了异能",
+            source_hash=sync.chapter_body_hash(chapter),
+        )
+    )
     db.commit()
 
     fake_llm = FakeLLM("新的卷摘要:主角踏上冒险之路")
@@ -87,7 +100,8 @@ async def test_refresh_volume_summary_rewrites_from_chapter_summaries(db, monkey
     await memory_context.refresh_volume_summary(db, volume.id)
 
     db.refresh(volume)
-    assert volume.summary == "新的卷摘要:主角踏上冒险之路"
+    assert volume.summary == "旧摘要"
+    assert volume.memory_summary == "新的卷摘要:主角踏上冒险之路"
     assert fake_llm.last_prompt is not None
     assert "主角觉醒了异能" in fake_llm.last_prompt
     assert "第一卷" in fake_llm.last_prompt
@@ -127,7 +141,10 @@ async def test_chapter_context_includes_creative_brief(db, monkeypatch):
     db.commit()
     db.refresh(book)
     chapter = models.Chapter(
-        book_id=book.id, title="第1章", outline="主角在裁员会上掏出纸笔", status="outline"
+        book_id=book.id,
+        title="第1章",
+        outline="主角在裁员会上掏出纸笔",
+        status="outline",
     )
     db.add(chapter)
     db.commit()

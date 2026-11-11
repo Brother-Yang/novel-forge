@@ -1,6 +1,6 @@
 """智能体决策循环测试:用脚本化 LLM 与假工具验证循环控制逻辑
 (finish 条件、步数上限、工具调用次数上限、重写次数上限、后端能力探测、
-工具异常不导致任务崩溃),不依赖真实模型与真实数据库。
+工具异常不导致任务崩溃),不依赖真实模型，数据库使用临时内存库。
 """
 
 from __future__ import annotations
@@ -8,9 +8,13 @@ from __future__ import annotations
 import json
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
+from app import models
 from app.agents import orchestrator, planner, tools
 from app.config import settings
+from app.db_base import Base
 from app.llm.base import ToolCall, ToolChatResult
 
 
@@ -24,24 +28,25 @@ def _tool_calling_backend(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "openai")
 
 
-class FakeBook:
-    id = "book-1"
-    title = "测试之书"
-    brief = "一个测试用的故事想法"
-    intro = ""
-    target_words = 12000
-    key_elements = "[]"
-
-
-class FakeDB:
-    def get(self, model: object, id_: object) -> FakeBook | None:
-        return FakeBook()
+@pytest.fixture
+def db():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(models.Book(
+            id="book-1", title="测试之书", brief="一个测试用的故事想法",
+            target_words=12000,
+        ))
+        session.commit()
+        yield session
+    engine.dispose()
 
 
 class ScriptedLLM:
     """按顺序返回预设响应,脚本耗尽仍被调用则视为测试失败。"""
 
     def __init__(self, results: list[ToolChatResult]) -> None:
+        super().__init__()
         self._results = list(results)
 
     async def chat_with_tools(
@@ -59,7 +64,7 @@ def _finish(reason: str = "完成") -> ToolChatResult:
     return _call("finish_book", reason=reason)
 
 
-async def test_agent_finishes_on_finish_book(monkeypatch):
+async def test_agent_finishes_on_finish_book(monkeypatch, db: Session):
     llm = ScriptedLLM([_call("write_worldbuilding"), _finish()])
     monkeypatch.setattr(orchestrator, "get_llm", lambda: llm)
 
@@ -68,12 +73,12 @@ async def test_agent_finishes_on_finish_book(monkeypatch):
 
     monkeypatch.setattr(tools.registry, "dispatch", fake_dispatch)
 
-    events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     assert events[-1] == ("done", "")
     assert any(ev == "log" and "write_worldbuilding 完成" in data for ev, data in events)
 
 
-async def test_agent_stops_at_max_steps(monkeypatch):
+async def test_agent_stops_at_max_steps(monkeypatch, db: Session):
     llm = ScriptedLLM([_call("write_worldbuilding") for _ in range(10)])
     monkeypatch.setattr(orchestrator, "get_llm", lambda: llm)
 
@@ -83,13 +88,13 @@ async def test_agent_stops_at_max_steps(monkeypatch):
     monkeypatch.setattr(tools.registry, "dispatch", fake_dispatch)
     monkeypatch.setattr(settings, "agent_max_steps", 3)
 
-    events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     assert events[-1][0] == "error"
     assert "最大决策步数" in events[-1][1]
     assert not any(ev == "done" for ev, _ in events)
 
 
-async def test_agent_stops_at_max_tool_calls(monkeypatch):
+async def test_agent_stops_at_max_tool_calls(monkeypatch, db: Session):
     llm = ScriptedLLM([_call("write_worldbuilding") for _ in range(20)])
     monkeypatch.setattr(orchestrator, "get_llm", lambda: llm)
 
@@ -100,12 +105,12 @@ async def test_agent_stops_at_max_tool_calls(monkeypatch):
     monkeypatch.setattr(settings, "agent_max_steps", 50)
     monkeypatch.setattr(settings, "agent_max_tool_calls", 2)
 
-    events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     assert events[-1][0] == "error"
     assert "工具调用次数上限" in events[-1][1]
 
 
-async def test_agent_readonly_tool_calls_do_not_count_toward_budget(monkeypatch):
+async def test_agent_readonly_tool_calls_do_not_count_toward_budget(monkeypatch, db: Session):
     """get_book_state 是只读工具,提示词鼓励模型每步都调用它;
     即使调用次数远超上限,也不应触发"工具调用次数上限"熔断。"""
     script = [_call("get_book_state") for _ in range(10)] + [_finish()]
@@ -119,11 +124,11 @@ async def test_agent_readonly_tool_calls_do_not_count_toward_budget(monkeypatch)
     monkeypatch.setattr(settings, "agent_max_steps", 20)
     monkeypatch.setattr(settings, "agent_max_tool_calls", 3)
 
-    events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     assert events[-1] == ("done", "")
 
 
-async def test_agent_review_rewrite_limit(monkeypatch):
+async def test_agent_review_rewrite_limit(monkeypatch, db: Session):
     """无论模型怎么要求,超过 agent_max_rewrites 后 needs_revision 必须被强制置 false。"""
 
     async def fake_dispatch(db, book_id, name, args):
@@ -142,7 +147,7 @@ async def test_agent_review_rewrite_limit(monkeypatch):
     llm = ScriptedLLM(script)
     monkeypatch.setattr(orchestrator, "get_llm", lambda: llm)
 
-    events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     observations = [json.loads(data) for ev, data in events if ev == "observation"]
     assert observations[0]["needs_revision"] is True, "第1次重写请求应放行"
     assert observations[1]["needs_revision"] is False, "第2次(超过上限1次)应被强制关闭"
@@ -151,7 +156,7 @@ async def test_agent_review_rewrite_limit(monkeypatch):
     assert events[-1] == ("done", "")
 
 
-async def test_agent_tool_error_becomes_observation_not_crash(monkeypatch):
+async def test_agent_tool_error_becomes_observation_not_crash(monkeypatch, db: Session):
     async def failing_dispatch(db, book_id, name, args):
         if name == "finish_book":
             return {"ok": True}
@@ -161,11 +166,11 @@ async def test_agent_tool_error_becomes_observation_not_crash(monkeypatch):
     llm = ScriptedLLM([_call("write_chapter", chapter_id=999), _finish()])
     monkeypatch.setattr(orchestrator, "get_llm", lambda: llm)
 
-    events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     assert events[-1] == ("done", "")
 
 
-async def test_agent_no_tool_calls_prompts_continue(monkeypatch):
+async def test_agent_no_tool_calls_prompts_continue(monkeypatch, db: Session):
     """模型只给了一段文字没有调用任何工具时,应提醒它继续,而不是直接结束。"""
     llm = ScriptedLLM(
         [ToolChatResult(content="我在思考接下来该做什么", tool_calls=[]), _finish()]
@@ -177,12 +182,12 @@ async def test_agent_no_tool_calls_prompts_continue(monkeypatch):
 
     monkeypatch.setattr(tools.registry, "dispatch", fake_dispatch)
 
-    events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     assert ("thought", "我在思考接下来该做什么") in events
     assert events[-1] == ("done", "")
 
 
-async def test_agent_context_window_bounds_message_growth(monkeypatch):
+async def test_agent_context_window_bounds_message_growth(monkeypatch, db: Session):
     """长篇场景下(几十步决策)发给模型的消息列表不能无限增长,
     否则真实调用会越跑越贵、最终超出模型上下文窗口报错。"""
     monkeypatch.setattr(settings, "agent_max_steps", 30)
@@ -207,7 +212,7 @@ async def test_agent_context_window_bounds_message_growth(monkeypatch):
 
     monkeypatch.setattr(tools.registry, "dispatch", fake_dispatch)
 
-    events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     assert events[-1] == ("done", "")
 
     lengths = [len(msgs) for msgs in received]
@@ -222,32 +227,21 @@ async def test_agent_context_window_bounds_message_growth(monkeypatch):
     assert windowed[1]["role"] == "user"
 
 
-async def test_agent_reports_error_when_backend_lacks_tool_calling(monkeypatch):
+async def test_agent_reports_error_when_backend_lacks_tool_calling(monkeypatch, db: Session):
     monkeypatch.setattr(settings, "llm_provider", "ollama")
 
-    events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     assert events == [("error", events[0][1])]
     assert "function calling" in events[0][1]
 
 
-async def test_agent_plans_placeholder_title_before_loop(monkeypatch):
-    class UnnamedBook:
-        id = "book-1"
-        title = "未命名"
-        brief = "AI时代，中年程序员靠古法编程力挽狂澜"
-        intro = ""
-        genre = ""
-        tone = ""
-        target_words = 10000
-
-    book = UnnamedBook()
-
-    class DB:
-        def get(self, model: object, id_: object) -> UnnamedBook:
-            return book
-
-        def commit(self) -> None:
-            return None
+async def test_agent_plans_placeholder_title_before_loop(monkeypatch, db: Session):
+    book = db.get(models.Book, "book-1")
+    assert book is not None
+    book.title = "未命名"
+    book.brief = "AI时代，中年程序员靠古法编程力挽狂澜"
+    book.target_words = 10000
+    db.commit()
 
     async def fake_plan(brief: str, **kwargs: object) -> planner.NovelPlan:
         assert kwargs.get("title") in ("", None)
@@ -272,7 +266,7 @@ async def test_agent_plans_placeholder_title_before_loop(monkeypatch):
 
     monkeypatch.setattr(tools.registry, "dispatch", fake_dispatch)
 
-    events = [ev async for ev in orchestrator.run_agent(DB(), "book-1")]
+    events = [ev async for ev in orchestrator.run_agent(db, "book-1")]
     assert events[-1] == ("done", "")
     assert book.title == "古法残编"
     assert book.intro == "中年程序员在 AI 浪潮中用古法编程杀出一条路。"

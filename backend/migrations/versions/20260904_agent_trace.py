@@ -1,14 +1,14 @@
 """新增 agent_trace_entries 表:智能体决策循环的完整执行轨迹(Observability)。"""
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260904_agent_trace"
-down_revision: Union[str, Sequence[str], None] = "20260903_book_brief"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "20260903_book_brief"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

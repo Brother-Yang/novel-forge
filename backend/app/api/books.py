@@ -1,9 +1,15 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..memory import facts, sync, vector_store
+from ..tasks import book_generation
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -45,12 +51,35 @@ def update_book(
 
 
 @router.delete("/books/{book_id}")
-def delete_book(book_id: str, db: Session = Depends(get_db)):
-    book = db.get(models.Book, book_id)
-    if not book:
+async def delete_book(book_id: str, db: Session = Depends(get_db)):
+    if db.get(models.Book, book_id) is None:
         raise HTTPException(404, "书籍不存在")
-    db.delete(book)
-    db.commit()
+    try:
+        with book_generation.book_deletion(book_id):
+            await book_generation.cancel_book_tasks(db, book_id)
+            try:
+                await sync.suspend_book_memory(book_id)
+                try:
+                    # Preserve the manuscript for a delete retry if vector cleanup fails.
+                    vector_store.delete_book(book_id)
+                except Exception as exc:
+                    logger.error(
+                        "vector cleanup failed book=%s type=%s",
+                        book_id,
+                        type(exc).__name__,
+                    )
+                    raise HTTPException(
+                        503, "书籍记忆清理失败,生成任务已暂停,请重试删除"
+                    ) from exc
+                book = db.get(models.Book, book_id)
+                if book is not None:
+                    db.delete(book)
+                    db.commit()
+            finally:
+                # Success cascades all jobs; failure can resume the retained book.
+                sync.resume_book_memory(book_id)
+    except book_generation.BookBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {"ok": True}
 
 
@@ -102,6 +131,13 @@ def get_book_tree(book_id: str, db: Session = Depends(get_db)):
 
 @router.get("/books/{book_id}/plot_threads", response_model=list[schemas.PlotThreadOut])
 def list_plot_threads(book_id: str, db: Session = Depends(get_db)):
-    return db.scalars(
+    threads = db.scalars(
         select(models.PlotThread).where(models.PlotThread.book_id == book_id)
     ).all()
+    derived = facts.replay(db, book_id).threads
+    return [
+        schemas.PlotThreadOut.model_validate(thread).model_copy(
+            update={"derived_status": derived.get(thread.id)},
+        )
+        for thread in threads
+    ]

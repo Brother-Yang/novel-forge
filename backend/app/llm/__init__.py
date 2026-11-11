@@ -12,12 +12,12 @@ _TOOL_CALLING_PROVIDERS = ("openai", "bailian", "dashscope")
 
 
 @lru_cache
-def get_llm() -> LLMClient:
+def get_llm(*, max_output_tokens: int | None = None) -> LLMClient:
     if settings.llm_provider in ("bailian", "dashscope"):
-        return BailianClient()
+        return BailianClient(max_output_tokens=max_output_tokens)
     if settings.llm_provider == "openai":
-        return OpenAIClient()
-    return OllamaClient()
+        return OpenAIClient(max_output_tokens=max_output_tokens)
+    return OllamaClient(max_output_tokens=max_output_tokens)
 
 
 def supports_tool_calling() -> bool:

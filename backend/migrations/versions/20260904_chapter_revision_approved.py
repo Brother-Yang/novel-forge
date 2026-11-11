@@ -1,14 +1,14 @@
 """为 chapters 增加 revision_approved 字段(智能体高风险操作护栏用)。"""
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260904_chapter_revision_approved"
-down_revision: Union[str, Sequence[str], None] = "20260904_agent_trace"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "20260904_agent_trace"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

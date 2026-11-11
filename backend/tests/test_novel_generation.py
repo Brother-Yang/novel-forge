@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -72,3 +74,42 @@ async def test_ensure_plan_does_not_treat_brief_snippet_as_user_title(db, monkey
     assert book.intro == "中年程序员在 AI 浪潮中用古法编程杀出一条路。"
     assert book.brief == brief
     assert book.genre == "都市"
+
+
+async def test_resume_rejects_old_truncated_checkpoint_and_preserves_existing_content(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    book = models.Book(title="历史百万长篇", target_words=1_000_000)
+    volume = models.Volume(book=book, title="原有分卷")
+    chapter = models.Chapter(book=book, volume=volume, title="原有正文", status="done")
+    chapter.content = models.ChapterContent(body="已有内容必须保留")
+    db.add(chapter)
+    db.flush()
+    task = models.GenerationTask(
+        book_id=book.id,
+        type="novel",
+        status="running",
+        progress=30,
+        checkpoint_json=json.dumps(
+            {"volume_count": 12, "chapters_per_volume": 20, "words_per_chapter": 2500}
+        ),
+    )
+    db.add_all([chapter, task])
+    db.commit()
+
+    def forbid_llm() -> None:
+        raise AssertionError("旧规划不足必须先报错，不能继续调用模型")
+
+    monkeypatch.setattr(planner, "get_llm", forbid_llm)
+    await novel_generation.run_novel_task(db, task)
+    db.refresh(task)
+    db.refresh(book)
+    db.refresh(chapter)
+    assert task.status == "error"
+    assert "600000" in task.error
+    assert "1000000" in task.error
+    assert task.progress == 30
+    assert book.target_words == 1_000_000
+    content = chapter.content
+    assert content is not None
+    assert content.body == "已有内容必须保留"

@@ -1,16 +1,17 @@
 import os
+import sqlite3
+from collections.abc import Generator
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
 
 from .config import settings
-from .db_base import Base
 
 
 def _ensure_sqlite_dir(url: str) -> None:
     prefix = "sqlite:///"
     if url.startswith(prefix):
-        path = url[len(prefix):]
+        path = url[len(prefix) :]
         directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
@@ -25,10 +26,21 @@ engine = create_engine(
     else {},
 )
 
+
+@event.listens_for(engine, "connect")
+def _enable_sqlite_foreign_keys(connection: object, _connection_record: object) -> None:
+    if isinstance(connection, sqlite3.Connection):
+        cursor = connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def get_db():
+def get_db() -> Generator[Session]:
     db = SessionLocal()
     try:
         yield db
@@ -37,10 +49,8 @@ def get_db():
 
 
 def init_db() -> None:
-    from . import models  # noqa: F401  确保模型被注册
-
-    Base.metadata.create_all(bind=engine)
-    # SQLite 下连接池里残留的连接会占锁，导致 Alembic 批量改表卡住
+    # All schema changes, including a fresh database, must be represented by a
+    # migration. create_all would hide missing revisions in production.
     engine.dispose()
     _run_alembic_upgrade()
 
@@ -51,5 +61,6 @@ def _run_alembic_upgrade() -> None:
 
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cfg = Config(os.path.join(here, "alembic.ini"))
-    cfg.set_main_option("sqlalchemy.url", settings.database_url)
+    cfg.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+    cfg.attributes["database_url"] = settings.database_url
     command.upgrade(cfg, "head")

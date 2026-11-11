@@ -9,8 +9,8 @@ class BailianClient(OpenAIClient):
     仅覆盖 base_url / api_key / 模型名为百炼配置。
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *, max_output_tokens: int | None = None) -> None:
+        super().__init__(max_output_tokens=max_output_tokens)
         self.base_url = settings.dashscope_base_url.rstrip("/")
         self.api_key = settings.dashscope_api_key
         self.model = settings.bailian_generation_model

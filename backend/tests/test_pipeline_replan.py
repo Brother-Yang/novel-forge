@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.agents import pipeline
 from app.db_base import Base
+from app.memory import sync as memory_sync
 
 
 @pytest.fixture
@@ -22,6 +23,7 @@ def db(tmp_path):
 
 class FakeStreamLLM:
     def __init__(self, reply: str) -> None:
+        super().__init__()
         self._reply = reply
         self.last_prompt: str | None = None
 
@@ -57,16 +59,19 @@ def _volume_with_chapters(db: Session) -> models.Volume:
         outline="旧细纲2",
         status="outline",
     )
+    ch1.content = models.ChapterContent(body="第一章正文")
     db.add_all([ch1, ch2])
     db.commit()
     db.refresh(ch1)
-    db.add(models.ChapterSummary(chapter_id=ch1.id, summary="主角在第1章觉醒异能"))
+    db.add(models.ChapterSummary(
+        chapter_id=ch1.id, summary="主角在第1章觉醒异能", source_hash=memory_sync.chapter_body_hash(ch1),
+    ))
     db.commit()
     return volume
 
 
 async def test_replan_missing_volume_yields_error(db):
-    events = [ev async for ev in pipeline.replan_volume_chapters(db, 999, "剧情走偏")]
+    events = [ev async for ev in pipeline.replan_volume_chapters(db, "missing", "剧情走偏")]
     assert events[0][0] == "error"
 
 
@@ -119,3 +124,22 @@ async def test_replan_only_rewrites_pending_chapter_outline(db, monkeypatch):
     # 提示词里带上了已完成章节的摘要,保证续写连贯
     assert fake_llm.last_prompt is not None
     assert "主角在第1章觉醒异能" in fake_llm.last_prompt
+
+
+async def test_replan_refuses_partial_result_without_modifying_any_outline(db, monkeypatch):
+    volume = _volume_with_chapters(db)
+    additional = models.Chapter(
+        book_id=volume.book_id, volume_id=volume.id,
+        title="第3章", order_index=2, outline="旧细纲3", status="outline",
+    )
+    db.add(additional)
+    db.commit()
+    monkeypatch.setattr(pipeline, "get_llm", lambda: FakeStreamLLM("## 新章\n一项细纲"))
+
+    events = [event async for event in pipeline.replan_volume_chapters(db, volume.id, "调整剧情")]
+
+    assert events[-1][0] == "error"
+    assert "需要 2 项" in events[-1][1]
+    assert [ch.outline for ch in sorted(volume.chapters, key=lambda c: c.order_index)] == [
+        "旧细纲1", "旧细纲2", "旧细纲3",
+    ]

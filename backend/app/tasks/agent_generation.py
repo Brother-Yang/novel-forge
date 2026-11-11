@@ -25,6 +25,7 @@ from ..agents.completion import (
     chapter_counts,
     require_book_complete,
 )
+from ..agents.errors import GenerationError, redact_secrets
 from ..llm import supports_tool_calling
 from . import book_generation as runtime
 
@@ -85,13 +86,17 @@ def _tool_name_from_decision(data: str) -> str | None:
 
 
 async def run_agent_task(db: Session, task: models.GenerationTask) -> None:
+    task_id, book_id = task.id, task.book_id
     step_index = 0
     try:
         async for ev, data in orchestrator.run_agent(db, task.book_id):
             runtime.ensure_running(db, task)
+            data = redact_secrets(data)
             if ev == "error":
-                raise RuntimeError(data)
-            logger.info("agent task %s [%s] %s", task.id, ev, data)
+                raise GenerationError(data)
+            logger.info(
+                "agent task %s book %s [%s] step=%s", task_id, book_id, ev, step_index
+            )
             if ev in _TRACED_EVENTS:
                 step_index += 1
                 tool_name = _tool_name_from_decision(data) if ev == "decision" else None
@@ -107,19 +112,20 @@ async def run_agent_task(db: Session, task: models.GenerationTask) -> None:
                 task.progress = 100
                 db.commit()
                 return
-        raise RuntimeError("智能体未确认完成即停止,可重试继续")
+        raise GenerationError("智能体未确认完成即停止,可重试继续")
     except runtime.Paused:
+        db.rollback()
         logger.info("agent task %s paused", task.id)
         return
-    except Exception as exc:
-        logger.exception("agent task %s failed", task.id)
-        db.refresh(task)
-        step_index += 1
-        observability.record_step(db, task.id, step_index, "error", str(exc))
-        if task.status == "running":
-            task.status = "error"
-            task.error = str(exc)
-            db.commit()
+    except Exception as exc:  # noqa: BLE001 - persist failure and trace for task retry
+        runtime.fail_task(
+            db,
+            exc,
+            task_id=task_id,
+            book_id=book_id,
+            operation="agent run",
+            trace_step=step_index + 1,
+        )
 
 
 runtime.register_task_runner("agent", run_agent_task)

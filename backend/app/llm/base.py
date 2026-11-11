@@ -3,6 +3,10 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 
+class ModelResponseError(ValueError):
+    """A user-safe message describing an invalid provider response shape."""
+
+
 @dataclass
 class ToolCall:
     """模型在一次 function calling 响应中请求的一次工具调用。"""
@@ -30,11 +34,9 @@ class LLMClient(Protocol):
 
     async def chat(
         self, prompt: str, system: str = "", temperature: float = 0.8
-    ) -> str:
-        ...
+    ) -> str: ...
 
-    async def embed(self, text: str) -> list[float]:
-        ...
+    async def embed(self, text: str) -> list[float]: ...
 
     async def chat_with_tools(
         self,

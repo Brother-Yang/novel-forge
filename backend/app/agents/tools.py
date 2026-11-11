@@ -6,7 +6,7 @@
 - 输入 book_id(由编排层绑定,不暴露给模型选)+ 模型给出的其它参数。
 - 参数非法或目标不属于本书时抛出 ToolError,由编排层转换成"观察结果"
   回传给模型,而不是让整个任务崩溃。
-- 对"一次性"结构(设定/人物/大纲/某卷章纲)做幂等保护:已存在则跳过,
+- 对"一次性"结构(设定/人物/大纲/某卷章纲)做幂等保护:完整时才跳过,
   避免模型重复调用产生冗余数据。
 """
 
@@ -15,14 +15,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
 from ..config import settings
 from ..llm import get_llm
 from ..llm.retry import call_with_retry
-from . import pipeline, planner, prompts
+from . import pipeline, planner, prompts, stages
 from .completion import chapter_is_complete, require_book_complete
 from .state import BookNotFound, load_state
 
@@ -31,14 +30,19 @@ class ToolError(Exception):
     """工具参数非法或目标不存在/不属于本书;应作为观察结果回传给模型。"""
 
 
-async def _consume_pipeline(gen: AsyncIterator[tuple[str, str]]) -> list[str]:
+async def _consume_pipeline(gen: AsyncIterator[tuple[str, str]]) -> dict[str, object]:
     logs: list[str] = []
+    skipped: str | None = None
     async for ev, data in gen:
         if ev == "error":
             raise ToolError(data)
         if ev == "log":
             logs.append(data)
-    return logs
+        if ev == "skipped":
+            skipped = data
+    if skipped is not None:
+        return {"ok": False, "skipped": True, "message": skipped}
+    return {"ok": True, "logs": logs}
 
 
 def _as_int(value: object, default: int) -> int:
@@ -82,54 +86,31 @@ async def tool_get_book_state(
 async def tool_write_worldbuilding(
     db: Session, book_id: str, _args: dict[str, object]
 ) -> dict[str, object]:
-    existing = (
-        db.scalar(
-            select(func.count())
-            .select_from(models.Worldbuilding)
-            .where(models.Worldbuilding.book_id == book_id)
-        )
-        or 0
+    return await _consume_pipeline(
+        pipeline.gen_worldbuilding(db, book_id, recovery=stages.Recovery())
     )
-    if existing:
-        return {"ok": False, "skipped": True, "message": f"已存在 {existing} 条设定,无需重复生成"}
-    logs = await _consume_pipeline(pipeline.gen_worldbuilding(db, book_id))
-    return {"ok": True, "logs": logs}
 
 
 async def tool_create_characters(
     db: Session, book_id: str, args: dict[str, object]
 ) -> dict[str, object]:
-    existing = (
-        db.scalar(
-            select(func.count())
-            .select_from(models.Character)
-            .where(models.Character.book_id == book_id)
-        )
-        or 0
-    )
-    if existing:
-        return {"ok": False, "skipped": True, "message": f"已存在 {existing} 个人物,无需重复生成"}
     count = _clamp_int(args.get("count"), 5, 3, 8)
-    logs = await _consume_pipeline(pipeline.gen_characters(db, book_id, count))
-    return {"ok": True, "logs": logs}
+    return await _consume_pipeline(
+        pipeline.gen_characters(db, book_id, count, recovery=stages.Recovery())
+    )
 
 
 async def tool_create_outline(
     db: Session, book_id: str, args: dict[str, object]
 ) -> dict[str, object]:
-    existing = (
-        db.scalar(
-            select(func.count())
-            .select_from(models.Volume)
-            .where(models.Volume.book_id == book_id)
+    volume_count = _as_int(args.get("volume_count"), 3)
+    if not 1 <= volume_count <= planner.VOLUME_MAX:
+        raise ToolError(
+            f"volume_count 必须在 1..{planner.VOLUME_MAX} 之间，不能截断卷数"
         )
-        or 0
+    return await _consume_pipeline(
+        pipeline.gen_outline(db, book_id, volume_count, recovery=stages.Recovery())
     )
-    if existing:
-        return {"ok": False, "skipped": True, "message": f"已存在 {existing} 卷大纲,无需重复生成"}
-    volume_count = _clamp_int(args.get("volume_count"), 3, 1, 12)
-    logs = await _consume_pipeline(pipeline.gen_outline(db, book_id, volume_count))
-    return {"ok": True, "logs": logs}
 
 
 async def tool_create_chapter_outlines(
@@ -139,21 +120,14 @@ async def tool_create_chapter_outlines(
     volume = db.get(models.Volume, volume_id)
     if not volume or volume.book_id != book_id:
         raise ToolError(f"volume_id={volume_id} 不存在或不属于本书")
-    existing = (
-        db.scalar(
-            select(func.count())
-            .select_from(models.Chapter)
-            .where(models.Chapter.volume_id == volume_id)
+    chapter_count = _as_int(args.get("chapter_count"), 10)
+    if not 1 <= chapter_count <= planner.CHAPTERS_PER_VOLUME_MAX:
+        raise ToolError(
+            f"chapter_count 必须在 1..{planner.CHAPTERS_PER_VOLUME_MAX} 之间，请增加卷数分批规划"
         )
-        or 0
+    return await _consume_pipeline(
+        pipeline.gen_chapter_outlines(db, volume_id, chapter_count, recovery=stages.Recovery())
     )
-    if existing:
-        return {"ok": False, "skipped": True, "message": f"该卷已有 {existing} 章大纲,无需重复生成"}
-    chapter_count = _clamp_int(args.get("chapter_count"), 10, 1, 20)
-    logs = await _consume_pipeline(
-        pipeline.gen_chapter_outlines(db, volume_id, chapter_count)
-    )
-    return {"ok": True, "logs": logs}
 
 
 async def tool_write_chapter(
@@ -176,11 +150,15 @@ async def tool_write_chapter(
     words = _clamp_int(args.get("words"), 2500, 1000, 6000)
     is_ending_raw = args.get("is_ending")
     is_ending = bool(is_ending_raw) if is_ending_raw is not None else None
-    logs = await _consume_pipeline(
+    result = await _consume_pipeline(
         pipeline.gen_chapter_body(db, chapter_id, words, is_ending=is_ending)
     )
     db.refresh(chapter)
-    return {"ok": True, "logs": logs, "word_count": chapter.word_count, "status": chapter.status}
+    return {
+        **result,
+        "word_count": chapter.word_count,
+        "status": chapter.status,
+    }
 
 
 # ---------- 重新规划(剧情走偏时主动触发) ----------
@@ -194,10 +172,7 @@ async def tool_replan_volume(
     reason = str(args.get("reason") or "").strip()
     if not reason:
         raise ToolError("reason 不能为空,需说明剧情具体如何偏离原大纲")
-    logs = await _consume_pipeline(
-        pipeline.replan_volume_chapters(db, volume_id, reason)
-    )
-    return {"ok": True, "logs": logs}
+    return await _consume_pipeline(pipeline.replan_volume_chapters(db, volume_id, reason))
 
 
 # ---------- 质检反思(新增能力) ----------
@@ -252,7 +227,9 @@ async def tool_review_content(
     )
     result = _parse_review(raw)
     if target_type == "chapter" and result.get("needs_revision"):
-        chapter = db.get(models.Chapter, _require_str(args.get("target_id"), "target_id"))
+        chapter = db.get(
+            models.Chapter, _require_str(args.get("target_id"), "target_id")
+        )
         if chapter and chapter.book_id == book_id and chapter.status == "done":
             chapter.revision_approved = True
             db.commit()
@@ -358,9 +335,7 @@ registry.register(
         description="生成主要人物(仅在尚未生成人物时调用一次)。",
         parameters={
             "type": "object",
-            "properties": {
-                "count": {"type": "integer", "description": "人物数量,3-8"}
-            },
+            "properties": {"count": {"type": "integer", "description": "人物数量,3-8"}},
             "required": ["count"],
         },
         handler=tool_create_characters,
@@ -373,7 +348,12 @@ registry.register(
         parameters={
             "type": "object",
             "properties": {
-                "volume_count": {"type": "integer", "description": "卷数,1-12"}
+                "volume_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": planner.VOLUME_MAX,
+                    "description": f"卷数,1-{planner.VOLUME_MAX};长篇优先增加卷数",
+                }
             },
             "required": ["volume_count"],
         },
@@ -391,7 +371,12 @@ registry.register(
                     "type": "string",
                     "description": "目标卷 id,来自 get_book_state",
                 },
-                "chapter_count": {"type": "integer", "description": "该卷章数,1-20"},
+                "chapter_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": planner.CHAPTERS_PER_VOLUME_MAX,
+                    "description": f"该卷章数,1-{planner.CHAPTERS_PER_VOLUME_MAX}",
+                },
             },
             "required": ["volume_id", "chapter_count"],
         },

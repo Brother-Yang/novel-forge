@@ -21,6 +21,7 @@ def db(tmp_path):
 
 class FakeStreamLLM:
     def __init__(self, reply: str) -> None:
+        super().__init__()
         self._reply = reply
         self.last_prompt: str | None = None
 
@@ -43,11 +44,11 @@ async def test_worldbuilding_prompt_includes_user_brief(db, monkeypatch):
     db.commit()
     db.refresh(book)
 
-    fake = FakeStreamLLM("## 职场规则\n大模型外包横行。")
+    fake = FakeStreamLLM("## 职场规则\n大模型外包横行。\n## 环境\n旧机房\n## 组织\n维护小组\n## 矛盾\n系统停摆")
     monkeypatch.setattr(pipeline, "get_llm", lambda: fake)
 
-    async def _skip_index(*_args: object, **_kwargs: object) -> None:
-        return None
+    async def _skip_index(*_args: object, **_kwargs: object) -> bool:
+        return True
 
     monkeypatch.setattr(pipeline.memory, "index_worldbuilding", _skip_index)
 

@@ -7,18 +7,20 @@ Context Builder、Tool 等其它模块消费,而不是各自重新查一遍库�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..memory import facts
 
 
 @dataclass
 class CharacterState:
     id: str
     name: str
+    derived_state: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -68,7 +70,10 @@ class NovelState:
             "tone": self.tone,
             "target_words": self.target_words,
             "worldbuilding_count": self.worldbuilding_count,
-            "characters": [{"id": c.id, "name": c.name} for c in self.characters],
+            "characters": [
+                {"id": c.id, "name": c.name, "derived_state": c.derived_state}
+                for c in self.characters
+            ],
             "volumes": [
                 {
                     "volume_id": v.volume_id,
@@ -154,9 +159,9 @@ def load_state(db: Session, book_id: str) -> NovelState:
     threads = db.scalars(
         select(models.PlotThread).where(
             models.PlotThread.book_id == book_id,
-            models.PlotThread.status != "closed",
         )
     ).all()
+    derived = facts.replay(db, book_id)
 
     return NovelState(
         title=book.title,
@@ -164,12 +169,19 @@ def load_state(db: Session, book_id: str) -> NovelState:
         tone=book.tone,
         target_words=book.target_words,
         worldbuilding_count=wb_count,
-        characters=[CharacterState(id=c.id, name=c.name) for c in characters],
+        characters=[
+            CharacterState(
+                id=c.id, name=c.name, derived_state=derived.characters.get(c.id, {})
+            )
+            for c in characters
+        ],
         volumes=volume_states,
         chapters_total=len(all_chapters),
         chapters_done=sum(1 for c in all_chapters if c.status == "done"),
         total_word_count=sum(c.word_count for c in all_chapters),
         open_plot_threads=[
-            PlotThreadState(name=t.name, status=t.status) for t in threads
+            PlotThreadState(name=t.name, status=status)
+            for t in threads
+            if (status := derived.threads.get(t.id) or t.status) != "closed"
         ],
     )

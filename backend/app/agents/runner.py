@@ -27,8 +27,10 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..llm.base import LLMClient
+from ..llm.budget import ModelBudgetExceeded
 from ..llm.retry import call_with_retry
 from . import context
+from .errors import log_failure, public_failure, redact_secrets
 from .guardrails import (
     GuardrailLimits,
     apply_rewrite_limit,
@@ -80,9 +82,11 @@ async def run(
                 attempts=settings.llm_retry_attempts,
                 base_delay=settings.llm_retry_base_delay,
             )
-        except Exception as exc:
-            logger.exception("agent step %s: 决策调用失败", step)
-            yield ("error", f"决策调用失败:{exc}")
+        except Exception as exc:  # noqa: BLE001 - model adapter failure boundary
+            log_failure(
+                logger, exc, operation=f"agent decision step {step}", book_id=book_id
+            )
+            yield ("error", f"决策调用失败：{public_failure(exc)}")
             return
 
         if result.content:
@@ -129,21 +133,32 @@ async def run(
                     yield ("error", "已达到本次创作的最大工具调用次数上限,自动结束")
                     return
 
-            yield ("decision", f"{call.name}({json.dumps(call.arguments, ensure_ascii=False)})")
+            yield (
+                "decision",
+                f"{call.name}({json.dumps(call.arguments, ensure_ascii=False)})",
+            )
 
             try:
                 observation: dict[str, object] = await tool_registry.dispatch(
                     db, book_id, call.name, call.arguments
                 )
             except ToolError as exc:
-                observation = {"ok": False, "error": str(exc)}
-            except Exception as exc:
-                logger.exception("agent tool %s failed", call.name)
-                observation = {"ok": False, "error": f"内部错误:{exc}"}
+                observation = {"ok": False, "error": redact_secrets(str(exc))}
+            except Exception as exc:  # noqa: BLE001 - isolate plugin/tool failures
+                log_failure(
+                    logger, exc, operation=f"agent tool step {step}", book_id=book_id
+                )
+                db.rollback()
+                if isinstance(exc, ModelBudgetExceeded):
+                    yield ("error", public_failure(exc))
+                    return
+                observation = {"ok": False, "error": public_failure(exc)}
 
             if call.name == review_tool and observation.get("needs_revision"):
                 key = _review_key(call.arguments)
-                observation = apply_rewrite_limit(observation, rewrite_counts, key, limits)
+                observation = apply_rewrite_limit(
+                    observation, rewrite_counts, key, limits
+                )
 
             logs = observation.get("logs")
             if isinstance(logs, list):

@@ -4,6 +4,7 @@ from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .. import models
+from .errors import GenerationError
 
 # Python str.strip() 识别的 Unicode 空白;SQLite trim 默认只去掉 ASCII 空格。
 _BODY_WHITESPACE = (
@@ -49,16 +50,18 @@ def book_chapters(db: Session, book_id: str) -> list[models.Chapter]:
 def require_book_complete(db: Session, book_id: str) -> None:
     """不能仅凭模型结束信号或 done 元数据宣布完成。"""
     if db.get(models.Book, book_id) is None:
-        raise ValueError("书籍不存在")
+        raise GenerationError("书籍不存在")
     chapters = book_chapters(db, book_id)
     if not chapters:
-        raise ValueError("全书尚无已完成的非空章节正文,请先生成章节")
+        raise GenerationError("全书尚无已完成的非空章节正文,请先生成章节")
     pending = [chapter for chapter in chapters if not chapter_is_complete(chapter)]
     if pending:
-        raise ValueError(f"仍有 {len(pending)} 章未完成或正文为空,请继续生成后重试")
+        raise GenerationError(
+            f"仍有 {len(pending)} 章未完成或正文为空,请继续生成后重试"
+        )
     populated_volumes = {chapter.volume_id for chapter in chapters}
     volume_ids = db.scalars(
         select(models.Volume.id).where(models.Volume.book_id == book_id)
     )
     if any(volume_id not in populated_volumes for volume_id in volume_ids):
-        raise ValueError("仍有卷未生成章节,请继续生成后重试")
+        raise GenerationError("仍有卷未生成章节,请继续生成后重试")

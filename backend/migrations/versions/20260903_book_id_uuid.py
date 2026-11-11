@@ -3,15 +3,15 @@
 已有书籍的数字主键会转成字符串(如 "1"),不改写成 UUID;新建书籍由应用层生成 UUID。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260903_book_id_uuid"
-down_revision: Union[str, Sequence[str], None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "20260902_schema_baseline"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _FK_TABLES = (
     "volumes",

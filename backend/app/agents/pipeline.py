@@ -8,8 +8,9 @@
 生成结束后负责把结构化结果落库(卷/章/人物/设定/摘要)。
 """
 
-import re
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -17,8 +18,10 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..llm import get_llm
 from ..memory import context as memory
-from . import planner, prompts
+from ..memory import sync as memory_sync
+from . import planner, prompts, stages
 
+logger = logging.getLogger(__name__)
 Event = tuple[str, str]
 
 
@@ -40,56 +43,145 @@ def _book_prompt(book: models.Book) -> dict[str, str]:
     }
 
 
-def _split_h2(text: str) -> list[str]:
-    blocks = re.split(r"(?m)^##[ \t]+", text)
-    return [b.strip() for b in blocks[1:] if b.strip()]
-
-
-def _split_h1(text: str) -> list[str]:
-    blocks = re.split(r"(?m)^#[ \t]+", text)
-    return [b.strip() for b in blocks[1:] if b.strip()]
-
-
-async def _stream(system: str, user: str) -> AsyncIterator[Event]:
-    llm = get_llm()
+async def _stream(system: str, user: str) -> AsyncGenerator[Event]:
+    stream = get_llm().chat_stream(user, system=system)
     full: list[str] = []
-    async for chunk in llm.chat_stream(user, system=system):
-        full.append(chunk)
-        yield ("token", chunk)
+    try:
+        async for chunk in stream:
+            full.append(chunk)
+            yield ("token", chunk)
+    finally:
+        if isinstance(stream, AsyncGenerator):
+            await stream.aclose()
     yield ("full", "".join(full))
 
 
 # ---------- 1. 世界观 ----------
-async def gen_worldbuilding(db: Session, book_id: str) -> AsyncIterator[Event]:
+def _recovery_context(
+    existing: list[stages.Section],
+    label: str,
+    *,
+    limit: int = 2400,
+) -> str:
+    if not existing:
+        return ""
+    text = "\n".join(f"- {item.title}：{item.body[:200]}" for item in existing)
+    return f"\n以下是已保存的{label}，用来保持连续性，请勿重新输出：\n{text[:limit]}\n"
+
+
+def _remaining_numbers(
+    existing: list[stages.Section],
+    target: int,
+    unit: str,
+) -> list[int]:
+    # 旧版逐条提交的记录只可能是前缀。已有数字编号若明确指向其他位置，
+    # 无法可靠判断旧稿槽位；暂停而不是生成可能重复的分卷或章节。
+    if any(
+        (number := stages.ordinal(item.title, unit)) is not None and number != index
+        for index, item in enumerate(existing, 1)
+    ):
+        raise stages.InvalidStage(
+            f"已有{unit}编号不连续，无法安全补齐；请核对目录后重试，已有内容已保留"
+        )
+    return list(range(len(existing) + 1, target + 1))
+
+
+def _retry_message(exc: stages.InvalidStage) -> str:
+    return f"{exc}。本阶段未写入新内容，请修正或重试。"
+
+
+async def gen_worldbuilding(
+    db: Session,
+    book_id: str,
+    *,
+    recovery: stages.Recovery | None = None,
+) -> AsyncIterator[Event]:
     book = db.get(models.Book, book_id)
     if not book:
         yield ("error", "书籍不存在")
         return
-    user = prompts.WORLDBUILDING_USER.format(**_book_prompt(book))
-    full = ""
-    async for ev, data in _stream(prompts.WORLDBUILDING_SYSTEM, user):
-        if ev == "full":
-            full = data
-        else:
-            yield ev, data
-
-    count = 0
-    for block in _split_h2(full):
-        lines = block.split("\n", 1)
-        title = lines[0].strip()
-        body = lines[1].strip() if len(lines) > 1 else ""
-        item = models.Worldbuilding(
-            book_id=book_id, category="general", title=title, md_content=body
+    existing = (
+        list(
+            db.scalars(
+                select(models.Worldbuilding)
+                .where(models.Worldbuilding.book_id == book_id)
+                .order_by(models.Worldbuilding.id)
+            )
         )
-        db.add(item)
-        db.commit()
-        db.refresh(item)
+        if recovery
+        else []
+    )
+    saved = [stages.Section(item.title, item.md_content) for item in existing]
+    try:
+        stages.validate_existing(saved, "世界观设定")
+        previous = recovery.previous.get("worldbuilding", 0) if recovery else 0
+        target = max(stages.WORLD_MIN, min(previous, stages.WORLD_MAX))
+        if recovery and len(existing) >= target:
+            stages.commit(db, recovery, worldbuilding=len(existing))
+            yield ("skipped", f"已保存 {len(existing)} 条完整设定")
+            yield ("done", "")
+            return
+
+        minimum = target - len(existing)
+        maximum = minimum if existing or target > stages.WORLD_MIN else stages.WORLD_MAX
+        quantity = str(minimum) if minimum == maximum else f"{minimum}-{maximum}"
+        user = prompts.WORLDBUILDING_USER.format(
+            **_book_prompt(book),
+            count=quantity,
+            existing=_recovery_context(saved, "设定"),
+        )
+        full = ""
+        async with aclosing(_stream(prompts.WORLDBUILDING_SYSTEM, user)) as stream:
+            async for ev, data in stream:
+                if ev == "full":
+                    full = data
+                else:
+                    yield ev, data
+        sections = stages.parse_sections(
+            full,
+            level=2,
+            minimum=minimum,
+            maximum=maximum,
+            label="世界观设定",
+        )
+        stages.require_distinct(sections, saved, "设定")
+    except stages.InvalidStage as exc:
+        yield ("error", _retry_message(exc))
+        return
+
+    items = [
+        models.Worldbuilding(
+            book_id=book_id, category="general", title=item.title, md_content=item.body
+        )
+        for item in sections
+    ]
+    db.add_all(items)
+
+    def enqueue_memory() -> None:
+        for item in items:
+            memory_sync.enqueue(db, book_id, memory_sync.WORLD, item.id)
+
+    stages.commit(
+        db,
+        recovery,
+        before_commit=enqueue_memory,
+        worldbuilding=len(existing) + len(items),
+    )
+    for item in items:
         try:
-            await memory.index_worldbuilding(db, item)
-        except Exception as exc:  # 索引失败不阻断设定落库
-            yield ("log", f"设定《{title}》已保存,索引失败:{exc}")
-        count += 1
-    yield ("log", f"已生成并索引 {count} 条世界观设定")
+            indexed = await memory.index_worldbuilding(db, item)
+        except Exception as exc:  # noqa: BLE001 - durable outbox retries indexing
+            db.rollback()
+            logger.warning(
+                "worldbuilding index failed book=%s item=%s (%s)",
+                book_id,
+                item.id,
+                type(exc).__name__,
+            )
+            indexed = False
+        if indexed is False:
+            yield ("log", f"设定《{item.title}》已保存，记忆待修复")
+    yield ("log", f"已生成 {len(items)} 条世界观设定")
     yield ("done", "")
 
 
@@ -103,48 +195,85 @@ def _world_digest(db: Session, book_id: str, limit: int = 1500) -> str:
 
 
 async def gen_characters(
-    db: Session, book_id: str, count: int = 5
+    db: Session,
+    book_id: str,
+    count: int = 5,
+    *,
+    recovery: stages.Recovery | None = None,
 ) -> AsyncIterator[Event]:
+    if not 1 <= count <= planner.CHARACTER_MAX:
+        yield ("error", f"人物数量必须在 1 到 {planner.CHARACTER_MAX} 之间")
+        return
     book = db.get(models.Book, book_id)
     if not book:
         yield ("error", "书籍不存在")
         return
-    user = prompts.CHARACTERS_USER.format(
-        **_book_prompt(book),
-        world=_world_digest(db, book_id),
-        count=count,
-    )
-    full = ""
-    async for ev, data in _stream(prompts.CHARACTERS_SYSTEM, user):
-        if ev == "full":
-            full = data
-        else:
-            yield ev, data
-
-    base = db.scalar(
-        select(models.Character.order_index)
-        .where(models.Character.book_id == book_id)
-        .order_by(models.Character.order_index.desc())
-    )
-    order = (base or 0) + 1
-    created = 0
-    for block in _split_h1(full):
-        name = block.split("\n", 1)[0].strip()
-        if not name:
-            continue
-        db.add(
-            models.Character(
-                book_id=book_id,
-                name=name,
-                order_index=order,
-                md_content="# " + block,
-                state_json="{}",
+    existing = (
+        list(
+            db.scalars(
+                select(models.Character)
+                .where(models.Character.book_id == book_id)
+                .order_by(models.Character.order_index, models.Character.id)
             )
         )
-        order += 1
-        created += 1
-    db.commit()
-    yield ("log", f"已生成 {created} 个人物(各一份 md)")
+        if recovery
+        else []
+    )
+    saved = [stages.Section(item.name, item.md_content) for item in existing]
+    try:
+        stages.validate_existing(saved, "人物", maximum=count)
+        missing = count - len(existing)
+        if recovery and missing == 0:
+            stages.commit(db, recovery, characters=len(existing))
+            yield ("skipped", f"已保存 {len(existing)} 个完整人物")
+            yield ("done", "")
+            return
+        user = prompts.CHARACTERS_USER.format(
+            **_book_prompt(book),
+            world=_world_digest(db, book_id),
+            count=missing,
+            existing=_recovery_context(saved, "人物卡"),
+        )
+        full = ""
+        async with aclosing(_stream(prompts.CHARACTERS_SYSTEM, user)) as stream:
+            async for ev, data in stream:
+                if ev == "full":
+                    full = data
+                else:
+                    yield ev, data
+        sections = stages.parse_sections(
+            full,
+            level=1,
+            minimum=missing,
+            maximum=missing,
+            label="人物卡",
+            title_limit=128,
+        )
+        stages.validate_character_fields(sections)
+        stages.require_distinct(sections, saved, "人物")
+    except stages.InvalidStage as exc:
+        yield ("error", _retry_message(exc))
+        return
+
+    base = db.scalar(
+        select(func.max(models.Character.order_index)).where(
+            models.Character.book_id == book_id
+        )
+    )
+    order = (base if base is not None else -1) + 1
+    items = [
+        models.Character(
+            book_id=book_id,
+            name=item.title,
+            order_index=order + index,
+            md_content=f"# {item.title}\n{item.body}",
+            state_json="{}",
+        )
+        for index, item in enumerate(sections)
+    ]
+    db.add_all(items)
+    stages.commit(db, recovery, characters=len(existing) + len(items))
+    yield ("log", f"已生成 {len(items)} 个人物（各一份 Markdown）")
     yield ("done", "")
 
 
@@ -157,80 +286,212 @@ def _character_digest(db: Session, book_id: str, limit: int = 1200) -> str:
 
 
 async def gen_outline(
-    db: Session, book_id: str, volume_count: int = 3
+    db: Session,
+    book_id: str,
+    volume_count: int = 3,
+    *,
+    recovery: stages.Recovery | None = None,
 ) -> AsyncIterator[Event]:
+    if not 1 <= volume_count <= planner.VOLUME_MAX:
+        yield ("error", f"卷数必须在 1 到 {planner.VOLUME_MAX} 之间")
+        return
     book = db.get(models.Book, book_id)
     if not book:
         yield ("error", "书籍不存在")
         return
-    user = prompts.OUTLINE_USER.format(
-        **_book_prompt(book),
-        world=_world_digest(db, book_id),
-        characters=_character_digest(db, book_id),
-        volume_count=volume_count,
+    existing_volumes = (
+        list(
+            db.scalars(
+                select(models.Volume)
+                .where(models.Volume.book_id == book_id)
+                .order_by(models.Volume.order_index, models.Volume.id)
+            )
+        )
+        if recovery
+        else []
     )
-    full = ""
-    async for ev, data in _stream(prompts.OUTLINE_SYSTEM, user):
-        if ev == "full":
-            full = data
-        else:
-            yield ev, data
+    existing_threads = (
+        list(
+            db.scalars(
+                select(models.PlotThread)
+                .where(models.PlotThread.book_id == book_id)
+                .order_by(models.PlotThread.id)
+            )
+        )
+        if recovery
+        else []
+    )
+    saved_volumes = [stages.Section(row.title, row.summary) for row in existing_volumes]
+    saved_threads = [
+        stages.Section(row.name, row.description) for row in existing_threads
+    ]
 
-    # 拆出剧情线程段("# 剧情线程")
-    thread_text = ""
-    volume_text = full
-    m = re.search(r"(?m)^#[ \t]+剧情线程", full)
-    if m:
-        volume_text = full[: m.start()]
-        thread_text = full[m.end():]
+    try:
+        stages.validate_existing(saved_volumes, "分卷大纲", maximum=volume_count)
+        stages.validate_existing(saved_threads, "剧情线程")
+        volume_numbers = (
+            _remaining_numbers(saved_volumes, volume_count, "卷")
+            if len(saved_volumes) < volume_count
+            else []
+        )
+        previous_count = recovery.previous.get("threads", 0) if recovery else 0
+        missing_threads = max(1, previous_count) - len(saved_threads)
+        thread_count = (
+            max(0, missing_threads) if previous_count or saved_threads else None
+        )
+        if not volume_numbers and thread_count == 0:
+            stages.commit(
+                db,
+                recovery,
+                volumes=len(existing_volumes),
+                threads=len(existing_threads),
+            )
+            yield (
+                "skipped",
+                f"已保存 {len(existing_volumes)} 卷和 {len(existing_threads)} 条剧情线程",
+            )
+            yield ("done", "")
+            return
+
+        volumes_instruction = ""
+        if volume_numbers:
+            numbers = "、".join(str(number) for number in volume_numbers)
+            volumes_instruction = (
+                f"输出 {len(volume_numbers)} 项分卷大纲，只写第 {numbers} 卷，"
+                "按顺序，每卷以「## 第N卷 卷名」开头，其下写 150-300 字梗概。"
+                "若包含全书最后一卷，最后一卷梗概必须写明主线冲突的收束与全书结局。"
+            )
+        thread_instruction = ""
+        if thread_count != 0:
+            thread_quantity = "至少 1" if thread_count is None else str(thread_count)
+            thread_instruction = (
+                f"输出 {thread_quantity} 条剧情线程，以「# 剧情线程」开头；"
+                "其下每行一条，格式「- 线程名 | 简要描述」。若同时输出分卷大纲，线程小节放在最后。"
+            )
+        user = prompts.OUTLINE_USER.format(
+            **_book_prompt(book),
+            world=_world_digest(db, book_id),
+            characters=_character_digest(db, book_id),
+            volume_count=volume_count,
+            instructions="\n".join(
+                filter(None, (volumes_instruction, thread_instruction))
+            ),
+            existing=_recovery_context(saved_volumes, "分卷大纲")
+            + _recovery_context(saved_threads, "剧情线程"),
+        )
+        full = ""
+        async with aclosing(_stream(prompts.OUTLINE_SYSTEM, user)) as stream:
+            async for ev, data in stream:
+                if ev == "full":
+                    full = data
+                else:
+                    yield ev, data
+        volume_sections, thread_sections = stages.parse_outline(
+            full, volume_numbers, thread_count
+        )
+        stages.require_distinct(volume_sections, saved_volumes, "分卷")
+        stages.require_distinct(thread_sections, saved_threads, "剧情线程")
+    except stages.InvalidStage as exc:
+        yield ("error", _retry_message(exc))
+        return
 
     base = db.scalar(
-        select(models.Volume.order_index)
-        .where(models.Volume.book_id == book_id)
-        .order_by(models.Volume.order_index.desc())
+        select(func.max(models.Volume.order_index)).where(
+            models.Volume.book_id == book_id
+        )
     )
-    order = (base or -1) + 1
-    vcount = 0
-    for block in _split_h2(volume_text):
-        lines = block.split("\n", 1)
-        title = lines[0].strip()
-        summary = lines[1].strip() if len(lines) > 1 else ""
-        db.add(
-            models.Volume(
-                book_id=book_id, title=title, order_index=order, summary=summary
-            )
+    order = (base if base is not None else -1) + 1
+    volumes = [
+        models.Volume(
+            book_id=book_id,
+            title=item.title,
+            order_index=order + index,
+            summary=item.body,
         )
-        order += 1
-        vcount += 1
-    db.commit()
-
-    tcount = 0
-    for line in thread_text.splitlines():
-        line = line.strip().lstrip("-").strip()
-        if not line:
-            continue
-        if "|" in line:
-            name, desc = line.split("|", 1)
-        else:
-            name, desc = line, ""
-        db.add(
-            models.PlotThread(
-                book_id=book_id,
-                name=name.strip(),
-                description=desc.strip(),
-                status="open",
-            )
+        for index, item in enumerate(volume_sections)
+    ]
+    threads = [
+        models.PlotThread(
+            book_id=book_id, name=item.title, description=item.body, status="open"
         )
-        tcount += 1
-    db.commit()
-    yield ("log", f"已生成 {vcount} 卷、{tcount} 条剧情线程")
+        for item in thread_sections
+    ]
+    db.add_all([*volumes, *threads])
+    stages.commit(
+        db,
+        recovery,
+        volumes=len(existing_volumes) + len(volumes),
+        threads=len(existing_threads) + len(threads),
+    )
+    yield ("log", f"已生成 {len(volumes)} 卷、{len(threads)} 条剧情线程")
     yield ("done", "")
 
 
 # ---------- 4. 章节大纲 ----------
+def _chapter_insert_position(
+    db: Session,
+    volume: models.Volume,
+    count: int,
+    retained_ids: set[str] | None,
+) -> tuple[int, list[models.Chapter], int]:
+    if retained_ids is None:
+        base = db.scalar(
+            select(func.max(models.Chapter.order_index)).where(
+                models.Chapter.book_id == volume.book_id
+            )
+        )
+        return (base if base is not None else -1) + 1, [], 0
+
+    rows = db.execute(
+        select(models.Chapter, models.Volume.order_index)
+        .outerjoin(models.Volume, models.Volume.id == models.Chapter.volume_id)
+        .where(models.Chapter.book_id == volume.book_id)
+        .order_by(models.Chapter.order_index, models.Chapter.id)
+        .execution_options(populate_existing=True)
+    ).all()
+    existing = [chapter for chapter, _ in rows]
+    current = [chapter for chapter in existing if chapter.volume_id == volume.id]
+    if {chapter.id for chapter in current} != retained_ids:
+        raise stages.InvalidStage("生成期间卷内章节发生变动，请核对目录")
+    if len({chapter.order_index for chapter in existing}) != len(existing):
+        raise stages.InvalidStage("已有章节序号重复，请先调整目录顺序")
+    following = next(
+        (
+            chapter.order_index
+            for chapter, volume_order in rows
+            if volume_order is not None and volume_order > volume.order_index
+        ),
+        None,
+    )
+    if following is None:
+        return (existing[-1].order_index + 1 if existing else 0), [], 0
+    if any(chapter.order_index >= following for chapter in current):
+        raise stages.InvalidStage("本卷与后续卷章节交错，请先调整目录顺序")
+
+    preceding = [
+        chapter.order_index for chapter in existing if chapter.order_index < following
+    ]
+    start = preceding[-1] + 1 if preceding else min(0, following)
+    offset = max(0, start + count - following)
+    # 插入所需的最少空位，已有章节保留相对顺序。
+    shifted = (
+        [chapter for chapter in existing if chapter.order_index >= following]
+        if offset
+        else []
+    )
+    return start, shifted, offset
+
+
 async def gen_chapter_outlines(
-    db: Session, volume_id: str, chapter_count: int = 10
+    db: Session,
+    volume_id: str,
+    chapter_count: int = 10,
+    *,
+    recovery: stages.Recovery | None = None,
 ) -> AsyncIterator[Event]:
+    if not 1 <= chapter_count <= planner.CHAPTERS_PER_VOLUME_MAX:
+        yield ("error", f"每卷章数必须在 1 到 {planner.CHAPTERS_PER_VOLUME_MAX} 之间")
+        return
     volume = db.get(models.Volume, volume_id)
     if not volume:
         yield ("error", "卷不存在")
@@ -239,51 +500,92 @@ async def gen_chapter_outlines(
     if not book:
         yield ("error", "书籍不存在")
         return
-    max_volume_order = db.scalar(
-        select(func.max(models.Volume.order_index)).where(
-            models.Volume.book_id == book.id
-        )
-    )
-    is_final_volume = max_volume_order is not None and volume.order_index >= max_volume_order
-    user = prompts.CHAPTER_OUTLINE_USER.format(
-        **_book_prompt(book),
-        volume_title=_esc(volume.title),
-        volume_summary=_esc(volume.summary),
-        chapter_count=chapter_count,
-        ending_hint=(prompts.CHAPTER_OUTLINE_ENDING_HINT if is_final_volume else ""),
-    )
-    full = ""
-    async for ev, data in _stream(prompts.CHAPTER_OUTLINE_SYSTEM, user):
-        if ev == "full":
-            full = data
-        else:
-            yield ev, data
-
-    base = db.scalar(
-        select(models.Chapter.order_index)
-        .where(models.Chapter.book_id == book.id)
-        .order_by(models.Chapter.order_index.desc())
-    )
-    order = (base or -1) + 1
-    created = 0
-    for block in _split_h2(full):
-        lines = block.split("\n", 1)
-        title = lines[0].strip()
-        outline = lines[1].strip() if len(lines) > 1 else ""
-        db.add(
-            models.Chapter(
-                book_id=book.id,
-                volume_id=volume_id,
-                title=title,
-                order_index=order,
-                outline=outline,
-                status="outline",
+    existing = (
+        list(
+            db.scalars(
+                select(models.Chapter)
+                .where(models.Chapter.volume_id == volume_id)
+                .order_by(models.Chapter.order_index, models.Chapter.id)
             )
         )
-        order += 1
-        created += 1
-    db.commit()
-    yield ("log", f"已为《{volume.title}》生成 {created} 章大纲")
+        if recovery
+        else []
+    )
+    saved = [stages.Section(item.title, item.outline) for item in existing]
+    try:
+        stages.validate_existing(saved, "章节细纲", maximum=chapter_count)
+        if recovery and len(saved) == chapter_count:
+            stages.commit(db, recovery, chapters=len(existing))
+            yield ("skipped", f"《{volume.title}》已有 {len(existing)} 章完整细纲")
+            yield ("done", "")
+            return
+        numbers = _remaining_numbers(saved, chapter_count, "章")
+        max_volume_order = db.scalar(
+            select(func.max(models.Volume.order_index)).where(
+                models.Volume.book_id == book.id
+            )
+        )
+        is_final_volume = (
+            max_volume_order is not None and volume.order_index >= max_volume_order
+        )
+        user = prompts.CHAPTER_OUTLINE_USER.format(
+            **_book_prompt(book),
+            volume_title=_esc(volume.title),
+            volume_summary=_esc(volume.summary),
+            chapter_count=len(numbers),
+            chapter_numbers="、".join(str(number) for number in numbers),
+            existing=_recovery_context(saved, "章节细纲"),
+            ending_hint=(
+                prompts.CHAPTER_OUTLINE_ENDING_HINT if is_final_volume else ""
+            ),
+        )
+        full = ""
+        async with aclosing(_stream(prompts.CHAPTER_OUTLINE_SYSTEM, user)) as stream:
+            async for ev, data in stream:
+                if ev == "full":
+                    full = data
+                else:
+                    yield ev, data
+        sections = stages.parse_sections(
+            full,
+            level=2,
+            minimum=len(numbers),
+            maximum=len(numbers),
+            label="章节细纲",
+        )
+        stages.validate_ordinals(sections, numbers, "章")
+        stages.require_distinct(sections, saved, "章节")
+        order, shifted, offset = _chapter_insert_position(
+            db,
+            volume,
+            len(numbers),
+            {chapter.id for chapter in existing} if recovery else None,
+        )
+    except stages.InvalidStage as exc:
+        yield ("error", _retry_message(exc))
+        return
+
+    items = [
+        models.Chapter(
+            book_id=book.id,
+            volume_id=volume_id,
+            title=item.title,
+            order_index=order + index,
+            outline=item.body,
+            status="outline",
+        )
+        for index, item in enumerate(sections)
+    ]
+    for chapter in shifted:
+        chapter.order_index += offset
+    db.add_all(items)
+
+    stages.commit(
+        db,
+        recovery,
+        chapters=len(existing) + len(items),
+    )
+    yield ("log", f"已为《{volume.title}》生成 {len(items)} 章大纲")
     yield ("done", "")
 
 
@@ -310,9 +612,14 @@ async def gen_chapter_body(
                 models.Chapter.book_id == chapter.book_id
             )
         )
-        is_ending = max_chapter_order is not None and chapter.order_index >= max_chapter_order
+        is_ending = (
+            max_chapter_order is not None and chapter.order_index >= max_chapter_order
+        )
 
     ctx = await memory.build_chapter_context(db, chapter)
+    if ctx.endswith(memory.MEMORY_DEGRADED_BLOCK):
+        yield ("log", memory.MEMORY_DEGRADED_NOTE)
+        ctx = ctx.removesuffix(memory.MEMORY_DEGRADED_BLOCK)
     user = prompts.CHAPTER_BODY_USER.format(
         title=book.title,
         chapter_title=chapter.title,
@@ -322,11 +629,12 @@ async def gen_chapter_body(
     )
 
     full = ""
-    async for ev, data in _stream(prompts.CHAPTER_BODY_SYSTEM, user):
-        if ev == "full":
-            full = data
-        else:
-            yield ev, data
+    async with aclosing(_stream(prompts.CHAPTER_BODY_SYSTEM, user)) as stream:
+        async for ev, data in stream:
+            if ev == "full":
+                full = data
+            else:
+                yield ev, data
 
     body = full.strip()
     if not body:
@@ -338,29 +646,16 @@ async def gen_chapter_body(
     if chapter.content:
         chapter.content.body = body
     else:
-        db.add(models.ChapterContent(chapter_id=chapter.id, body=body))
+        chapter.content = models.ChapterContent(body=body)
     chapter.word_count = len(body)
     chapter.status = "done"
+    memory_sync.enqueue_chapter(db, chapter)
     db.commit()
 
     # 一致性回写:生成章摘要并写入记忆库
     yield ("log", "正在提取章摘要并回写记忆...")
-    llm = get_llm()
-    try:
-        summary = await llm.chat(
-            prompts.SUMMARY_USER.format(body=body[:4000]),
-            system=prompts.SUMMARY_SYSTEM,
-        )
-        await memory.index_chapter_summary(db, chapter, summary.strip())
-    except Exception as exc:  # 摘要失败不影响正文
-        yield ("log", f"摘要生成失败(已跳过):{exc}")
-
-    # 卷摘要随情节推进持续精炼;失败同样不阻断正文,降级为沿用旧摘要。
-    if chapter.volume_id:
-        try:
-            await memory.refresh_volume_summary(db, chapter.volume_id)
-        except Exception as exc:
-            yield ("log", f"卷摘要刷新失败(已跳过):{exc}")
+    if not await memory.process_chapter_memory(db, chapter):
+        yield ("log", "正文已保存，部分记忆待修复；可在书籍工作区重试。")
 
     yield ("done", "")
 
@@ -387,7 +682,11 @@ async def replan_volume_chapters(
             .order_by(models.Chapter.order_index)
         )
     )
-    pending = [c for c in chapters if c.status != "done"]
+    pending = [
+        c
+        for c in chapters
+        if c.status != "done" and not (c.content and c.content.body.strip())
+    ]
     if not pending:
         yield ("log", f"《{volume.title}》所有章节已完成正文,无需重新规划")
         yield ("done", "")
@@ -397,9 +696,9 @@ async def replan_volume_chapters(
     for ch in chapters:
         if ch.status != "done":
             continue
-        s = db.get(models.ChapterSummary, ch.id)
-        if s and s.summary:
-            summaries.append(f"[{ch.title}] {s.summary}")
+        summary = memory_sync.valid_summary(ch)
+        if summary:
+            summaries.append(f"[{ch.title}] {summary}")
     completed_summaries = "\n".join(summaries) or "(该卷暂无已完成章节)"
 
     user = prompts.CHAPTER_REPLAN_USER.format(
@@ -411,23 +710,33 @@ async def replan_volume_chapters(
         pending_count=len(pending),
     )
     full = ""
-    async for ev, data in _stream(prompts.CHAPTER_REPLAN_SYSTEM, user):
-        if ev == "full":
-            full = data
-        else:
-            yield ev, data
+    async with aclosing(_stream(prompts.CHAPTER_REPLAN_SYSTEM, user)) as stream:
+        async for ev, data in stream:
+            if ev == "full":
+                full = data
+            else:
+                yield ev, data
 
-    blocks = _split_h2(full)
-    n = min(len(blocks), len(pending))
-    for chapter, block in zip(pending[:n], blocks[:n]):
-        lines = block.split("\n", 1)
-        chapter.title = lines[0].strip() or chapter.title
-        chapter.outline = lines[1].strip() if len(lines) > 1 else ""
+    try:
+        sections = stages.parse_sections(
+            full,
+            level=2,
+            minimum=len(pending),
+            maximum=len(pending),
+            label="章节细纲",
+        )
+        retained = [
+            stages.Section(ch.title, ch.outline) for ch in chapters if ch not in pending
+        ]
+        stages.require_distinct(sections, retained, "章节")
+    except stages.InvalidStage as exc:
+        yield ("error", _retry_message(exc))
+        return
+    for chapter, section in zip(pending, sections, strict=True):
+        chapter.title = section.title
+        chapter.outline = section.body
         chapter.status = "outline"
-    db.commit()
+    stages.commit(db, None)
 
-    msg = f"已重新规划《{volume.title}》{n}/{len(pending)} 章细纲"
-    if n < len(pending):
-        msg += "(模型产出章节数少于待规划章数,多出的章节保留原细纲,可再次调用补齐)"
-    yield ("log", msg)
+    yield ("log", f"已重新规划《{volume.title}》{len(pending)} 章细纲")
     yield ("done", "")
