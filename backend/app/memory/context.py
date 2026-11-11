@@ -50,7 +50,7 @@ def _previous_summaries(db: Session, chapter: models.Chapter) -> list[str]:
             models.Chapter.status == "done",
             models.ChapterSummary.source_hash != "",
         )
-        .order_by(models.Chapter.order_index.desc())
+        .order_by(models.Chapter.order_index.desc(), models.Chapter.id.desc())
         .limit(settings.previous_summary_count)
     ).all()
     summaries: list[str] = []

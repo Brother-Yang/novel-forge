@@ -160,6 +160,43 @@ async def test_volume_summary_input_uses_chapter_id_to_break_equal_order(
     assert llm.last_prompt.index("[后插入]") < llm.last_prompt.index("[先插入]")
 
 
+@pytest.mark.parametrize("catalog_index", [False, True])
+def test_previous_summary_limit_breaks_ties_by_id_without_including_target_order(
+    db: Session, monkeypatch: pytest.MonkeyPatch, catalog_index: bool
+) -> None:
+    if not catalog_index:
+        db.connection().exec_driver_sql("DROP INDEX ix_chapters_book_order")
+    volume = _book_with_volume(db)
+    for chapter_id, order_index in (
+        ("a-earlier", 1),
+        ("c-earlier", 1),
+        ("b-earlier", 1),
+        ("same-order", 2),
+    ):
+        chapter = models.Chapter(
+            id=chapter_id,
+            book_id=volume.book_id,
+            volume_id=volume.id,
+            title=chapter_id,
+            order_index=order_index,
+            status="done",
+            content=models.ChapterContent(body=f"{chapter_id}正文"),
+        )
+        chapter.summary = models.ChapterSummary(
+            summary=f"{chapter_id}摘要", source_hash=sync.chapter_body_hash(chapter)
+        )
+        db.add(chapter)
+    target = models.Chapter(book_id=volume.book_id, title="目标章", order_index=2)
+    db.add(target)
+    db.commit()
+
+    monkeypatch.setattr(memory_context.settings, "previous_summary_count", 2)
+    assert memory_context._previous_summaries(db, target) == [
+        "[b-earlier] b-earlier摘要",
+        "[c-earlier] c-earlier摘要",
+    ]
+
+
 async def test_chapter_context_includes_creative_brief(db, monkeypatch):
     brief = "AI时代，中年程序员靠古法编程力挽狂澜"
     book = models.Book(
