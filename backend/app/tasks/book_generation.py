@@ -71,7 +71,7 @@ def _as_object_dict(value: object) -> dict[str, object] | None:
     return cast(dict[str, object], value)
 
 
-class BookBusyError(Exception):
+class BookBusyError(GenerationError):
     """同一本书已有未完成的全书级生成任务。"""
 
     status_code = 409
@@ -301,38 +301,41 @@ async def run_chapter_bodies(
         db.commit()
 
 
-async def _run(task_id: str, lease: GenerationLease) -> None:
-    db = SessionLocal()
+def _record_runtime_failure(
+    task_id: str, book_id: str, exc: Exception, *, operation: str
+) -> None:
     try:
-        task = db.get(models.GenerationTask, task_id)
-        if not task or task.status != "running":
-            return
-        try:
-            _ensure_task_runners()
-            runner = _task_runners.get(task.type)
-            if runner is not None:
+        with SessionLocal() as db:
+            fail_task(db, exc, task_id=task_id, book_id=book_id, operation=operation)
+    except Exception as persist_error:  # noqa: BLE001 - preserve explicit retry
+        log_failure(
+            logger,
+            persist_error,
+            operation="persist task failure",
+            book_id=book_id,
+            task_id=task_id,
+        )
+
+
+async def _run(task_id: str, lease: GenerationLease, runner: TaskRunner) -> None:
+    try:
+        with SessionLocal() as db:
+            task = db.get(models.GenerationTask, task_id)
+            if task is not None and task.status == "running":
                 await runner(db, task)
-            else:
-                await run_chapter_bodies(db, task)
-        except Paused:
-            logger.info("generation task %s paused", task_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - runtime task failure boundary
-            fail_task(
-                db, exc, task_id=task_id, book_id=lease.book_id, operation="task runner"
-            )
+    except Paused:
+        logger.info("generation task %s paused", task_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - runtime task failure boundary
+        _record_runtime_failure(task_id, lease.book_id, exc, operation="task runner")
     finally:
-        try:
-            db.close()
-        finally:
-            _ = _running.pop(task_id, None)
-            release_generation(lease)
+        _ = _running.pop(task_id, None)
+        release_generation(lease)
 
 
-def launch(task_id: str) -> None:
-    if task_id in _running and not _running[task_id].done():
-        return
+def launch(task_id: str) -> bool:
+    """Schedule a committed running task and record a failed launch for retry."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError as exc:
@@ -340,17 +343,40 @@ def launch(task_id: str) -> None:
             "全书生成必须在 FastAPI 的 asyncio 事件循环中启动(接口需为 async)"
         ) from exc
     with _registry_lock:
-        with SessionLocal() as db:
-            task = db.get(models.GenerationTask, task_id)
-            if task is None or task.status != "running":
-                return
-            book_id = task.book_id
-        if book_id in _deleting_books or book_id in _active_books:
-            raise BookBusyError("该书正在生成或删除，不能重复执行任务")
-        ensure_generation_capacity()
-        lease = GenerationLease(book_id, task_id)
+        if task_id in _running and not _running[task_id].done():
+            return True
+        book_id = ""
+        try:
+            with SessionLocal() as db:
+                task = db.get(models.GenerationTask, task_id)
+                if task is None or task.status != "running":
+                    return False
+                book_id, task_type = task.book_id, task.type
+            _ensure_task_runners()
+            runner = _task_runners.get(task_type)
+            if runner is None and task_type == "book":
+                runner = run_chapter_bodies
+            if runner is None:
+                raise GenerationError(
+                    "当前版本不支持此任务类型，请在工作区重新发起生成"
+                )
+            if book_id in _deleting_books or book_id in _active_books:
+                raise BookBusyError("该书正在生成或删除，不能重复执行任务")
+            ensure_generation_capacity()
+            lease = GenerationLease(book_id, task_id)
+            coroutine = _run(task_id, lease, runner)
+            try:
+                handle = loop.create_task(coroutine)
+            except BaseException:
+                coroutine.close()
+                raise
+        except Exception as exc:
+            _record_runtime_failure(task_id, book_id, exc, operation="task launch")
+            if isinstance(exc, BookBusyError):
+                raise
+            return False
+
         _active_books[book_id] = lease
-        handle = loop.create_task(_run(task_id, lease))
         lease.handle = handle
         _running[task_id] = handle
 
@@ -361,6 +387,7 @@ def launch(task_id: str) -> None:
             release_generation(lease)
 
         handle.add_done_callback(finished)
+        return True
 
 
 def pause_task(db: Session, task_id: str) -> None:
@@ -375,12 +402,18 @@ def pause_task(db: Session, task_id: str) -> None:
 
 def resume_task(db: Session, task_id: str) -> None:
     task = db.get(models.GenerationTask, task_id)
-    if task and task.status in ("paused", "error"):
-        ensure_book_idle(db, task.book_id, exclude_task_id=task.id)
-        task.status = "running"
-        task.error = ""
-        db.commit()
-        launch(task.id)
+    if task is None or task.status not in ("paused", "error", "running"):
+        return
+    handle = _running.get(task_id)
+    if task.status == "running" and handle is not None and not handle.done():
+        return
+    # A failed DB write may have prevented a stopped runner from recording its
+    # error. An explicit retry can still recover its checkpoint once DB is back.
+    ensure_book_idle(db, task.book_id, exclude_task_id=task_id)
+    task.status = "running"
+    task.error = ""
+    db.commit()
+    _ = launch(task_id)
 
 
 def recover_running_tasks() -> int:
@@ -399,18 +432,11 @@ def recover_running_tasks() -> int:
     for task_id in ids:
         logger.info("recover running generation task %s", task_id)
         try:
-            launch(task_id)
-            recovered += 1
-        except BookBusyError as exc:
+            recovered += int(launch(task_id))
+        except BookBusyError:
             # A legacy database may contain duplicate running tasks or more
-            # work than the configured capacity. Keep excess work recoverable.
-            with SessionLocal() as recovery_db:
-                task = recovery_db.get(models.GenerationTask, task_id)
-                if task is not None:
-                    task.status = "error"
-                    task.error = str(exc)
-                    recovery_db.commit()
-            logger.warning("did not recover task %s: %s", task_id, exc)
+            # work than capacity. launch has already recorded a retryable error.
+            continue
     return recovered
 
 
