@@ -5,6 +5,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -56,6 +57,7 @@ class Book(Base):
 
 class Volume(Base):
     __tablename__ = "volumes"
+    __table_args__ = (Index("ix_volumes_book_order", "book_id", "order_index", "id"),)
 
     id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), primary_key=True, default=new_id
@@ -78,6 +80,7 @@ class Chapter(Base):
     """章节元数据,不含正文(正文在 ChapterContent,懒加载)。"""
 
     __tablename__ = "chapters"
+    __table_args__ = (Index("ix_chapters_book_order", "book_id", "order_index", "id"),)
 
     id: Mapped[str] = mapped_column(
         String(BOOK_ID_LEN), primary_key=True, default=new_id

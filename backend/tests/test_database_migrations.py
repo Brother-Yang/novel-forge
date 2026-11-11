@@ -17,12 +17,16 @@ from app import database, models
 from app.db_base import Base
 
 
-def migrate(path: Path, target: str = "head") -> None:
+def migration_config(path: Path) -> Config:
     config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     # Deliberately do not alter app.settings: administrative migration URLs
     # must not accidentally be redirected to the configured business database.
     config.set_main_option("sqlalchemy.url", f"sqlite:///{path}")
-    command.upgrade(config, target)
+    return config
+
+
+def migrate(path: Path, target: str = "head") -> None:
+    command.upgrade(migration_config(path), target)
 
 
 def test_empty_database_is_created_by_migrations_only(tmp_path: Path) -> None:
@@ -55,6 +59,67 @@ def test_empty_database_is_created_by_migrations_only(tmp_path: Path) -> None:
                 connection.execute(text("SELECT title FROM books")).scalar_one()
                 == "仅迁移建库"
             )
+    finally:
+        engine.dispose()
+
+
+def test_catalog_indexes_upgrade_and_downgrade_preserve_existing_book(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog-before-indexes.db"
+    previous = "20261111_fact_roster_hash"
+    migrate(path, previous)
+    engine = create_engine(f"sqlite:///{path}")
+    tables = ("volumes", "chapters")
+    try:
+        with Session(engine) as db:
+            book = models.Book(id="existing-book", title="原书")
+            volume = models.Volume(id="z-volume", book=book, title="同序卷甲")
+            db.add_all(
+                [
+                    volume,
+                    models.Volume(id="a-volume", book=book, title="同序卷乙"),
+                    models.Chapter(
+                        id="z-chapter",
+                        book=book,
+                        volume=volume,
+                        title="同序章甲",
+                        outline="原大纲",
+                        content=models.ChapterContent(body="已保存的正文"),
+                    ),
+                    models.Chapter(
+                        id="a-chapter", book=book, volume=volume, title="同序章乙"
+                    ),
+                ]
+            )
+            db.commit()
+
+        def contents() -> tuple[list[tuple[object, ...]], ...]:
+            with engine.connect() as connection:
+                return tuple(
+                    [tuple(row) for row in connection.exec_driver_sql(statement)]
+                    for statement in (
+                        "SELECT * FROM books ORDER BY id",
+                        "SELECT * FROM volumes ORDER BY id",
+                        "SELECT * FROM chapters ORDER BY id",
+                        "SELECT * FROM chapter_content ORDER BY chapter_id",
+                    )
+                )
+
+        before = contents()
+        assert all(not inspect(engine).get_indexes(table) for table in tables)
+        migrate(path)
+        for table in tables:
+            indexes = inspect(engine).get_indexes(table)
+            assert len(indexes) == 1
+            assert indexes[0]["name"] == f"ix_{table}_book_order"
+            assert indexes[0]["column_names"] == ["book_id", "order_index", "id"]
+            assert not indexes[0]["unique"]
+        assert contents() == before
+
+        command.downgrade(migration_config(path), previous)
+        assert all(not inspect(engine).get_indexes(table) for table in tables)
+        assert contents() == before
     finally:
         engine.dispose()
 
@@ -408,6 +473,8 @@ def test_full_integer_legacy_schema_preserves_body_summary_and_task_history(
         with engine.begin() as connection:
             # This fixture is seeded through today's ORM. Recreate the actual
             # legacy shape before testing the migration from integer IDs.
+            connection.exec_driver_sql("DROP INDEX ix_chapters_book_order")
+            connection.exec_driver_sql("DROP INDEX ix_volumes_book_order")
             connection.exec_driver_sql("DROP TABLE memory_sync_jobs")
             connection.exec_driver_sql("DROP TABLE chapter_facts")
             connection.exec_driver_sql("ALTER TABLE volumes DROP COLUMN memory_summary")
