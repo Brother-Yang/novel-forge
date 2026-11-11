@@ -1,4 +1,4 @@
-import { Button, Input, List, Popconfirm, Space, Typography } from "antd";
+import { Button, Input, Popconfirm, Space } from "antd";
 import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import MDEditor from "@uiw/react-md-editor";
 import { api, sseEndpoints } from "../api";
@@ -36,8 +36,8 @@ export default function CharacterPanel({ bookId }: { bookId: string }) {
   });
 
   return (
-    <div style={{ display: "flex", height: "100%" }}>
-      <div style={{ width: 240, borderRight: "1px solid #f0f0f0", padding: 12, overflow: "auto" }}>
+    <div className="nf-card-panel">
+      <div className="nf-card-panel__list">
         <Space style={{ marginBottom: 8 }}>
           <Button size="small" icon={<PlusOutlined />} onClick={add}>
             新增
@@ -51,30 +51,31 @@ export default function CharacterPanel({ bookId }: { bookId: string }) {
             AI 生成
           </Button>
         </Space>
-        <List
-          size="small"
-          dataSource={list}
-          renderItem={(c) => (
-            <List.Item
+        <div className="nf-namecards">
+          {list.map((c) => (
+            <div
+              key={c.id}
+              className={`nf-namecard${current?.id === c.id ? " nf-namecard--active" : ""}`}
+              role="button"
+              tabIndex={0}
               onClick={() => select(c)}
-              style={{
-                cursor: "pointer",
-                background: current?.id === c.id ? "#e6f4ff" : undefined,
-                paddingInline: 8,
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  select(c);
+                }
               }}
-              actions={[
-                <Popconfirm key="d" title="删除?" onConfirm={() => remove(c.id)}>
-                  <DeleteOutlined onClick={(e) => e.stopPropagation()} />
-                </Popconfirm>,
-              ]}
             >
-              {c.name}
-            </List.Item>
-          )}
-        />
+              <span className="nf-namecard__name">{c.name}</span>
+              <Popconfirm title="删除?" onConfirm={() => remove(c.id)}>
+                <DeleteOutlined onClick={(e) => e.stopPropagation()} />
+              </Popconfirm>
+            </div>
+          ))}
+        </div>
       </div>
 
-      <div style={{ flex: 1, padding: 16, overflow: "auto" }} data-color-mode="light">
+      <div className="nf-card-panel__editor" data-color-mode="light">
         {current ? (
           <>
             <Space style={{ width: "100%", justifyContent: "space-between", marginBottom: 12 }}>
@@ -82,7 +83,7 @@ export default function CharacterPanel({ bookId }: { bookId: string }) {
                 value={current.name}
                 onChange={(e) => setCurrent({ ...current, name: e.target.value })}
                 onBlur={() => api.updateCharacter(current.id, { name: current.name }).then(load)}
-                style={{ width: 240, fontWeight: 600 }}
+                style={{ width: 240, fontWeight: 600, fontFamily: "var(--font-serif)" }}
               />
               <Button type="primary" icon={<SaveOutlined />} onClick={save}>
                 保存人物卡
@@ -95,9 +96,10 @@ export default function CharacterPanel({ bookId }: { bookId: string }) {
             />
           </>
         ) : (
-          <Typography.Text type="secondary">
-            选择或新增一个人物,每个人物维护一份 Markdown 人物卡。
-          </Typography.Text>
+            <div className="nf-empty nf-empty--fill">
+              <span className="nf-empty__glyph">人</span>
+              <p>选择或新增一个人物,每个人物维护一份 Markdown 人物卡。</p>
+            </div>
         )}
       </div>
     </div>

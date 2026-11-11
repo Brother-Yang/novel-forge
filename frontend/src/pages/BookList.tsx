@@ -2,26 +2,19 @@ import { useEffect, useState } from "react";
 import {
   App,
   Button,
-  Card,
-  Col,
   Form,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
-  Row,
   Space,
   Typography,
 } from "antd";
-import {
-  PlusOutlined,
-  DeleteOutlined,
-  RobotOutlined,
-  ThunderboltOutlined,
-} from "@ant-design/icons";
+import { PlusOutlined, DeleteOutlined, RobotOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Book } from "../api/types";
+import BrandMark from "../components/BrandMark";
 import { paths } from "../router/paths";
 
 function errMessage(err: unknown): string {
@@ -80,32 +73,64 @@ export default function BookList() {
   };
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: 32 }}>
-      <Row justify="space-between" align="middle" style={{ marginBottom: 24 }}>
-        <Typography.Title level={2} style={{ margin: 0 }}>
-          我的小说
-        </Typography.Title>
-        <Space>
-          <Button onClick={() => setEmptyOpen(true)} icon={<PlusOutlined />}>
+    <div className="nf-page nf-library">
+      <header className="nf-library__top">
+        <BrandMark />
+        <Space wrap>
+          <Button className="nf-ghost" onClick={() => setEmptyOpen(true)} icon={<PlusOutlined />}>
             新建空书
           </Button>
-          <Button icon={<ThunderboltOutlined />} onClick={() => setNovelOpen(true)}>
+          <Button
+            className="nf-ghost"
+            icon={<ThunderboltOutlined />}
+            onClick={() => setNovelOpen(true)}
+          >
             一句话出书
           </Button>
-          <Button type="primary" icon={<RobotOutlined />} onClick={() => navigate(paths.agentChat)}>
+          <Button
+            className="nf-ghost"
+            type="primary"
+            icon={<RobotOutlined />}
+            onClick={() => navigate(paths.agentChat)}
+          >
             AI 自主创作
           </Button>
         </Space>
-      </Row>
+      </header>
 
-      <Row gutter={[16, 16]}>
-        {books.map((b) => (
-          <Col key={b.id} xs={24} sm={12} md={8}>
-            <Card
-              hoverable
+      <section className="nf-library__hero">
+        <h1>我的小说</h1>
+        <p className="nf-library__lede">
+          长篇不怕长，怕写到后面不认人。人设、世界、伏笔，一章章接着往下认。
+        </p>
+      </section>
+
+      {books.length === 0 ? (
+        <div className="nf-empty">
+          <span className="nf-empty__glyph">空</span>
+          <Typography.Text type="secondary">
+            还没有书籍,点击右上角「一句话出书」或「新建空书」。
+          </Typography.Text>
+        </div>
+      ) : (
+        <div className="nf-book-grid">
+          {books.map((b, i) => (
+            <article
+              key={b.id}
+              className="nf-book-card"
+              style={{ animationDelay: `${i * 60}ms` }}
+              role="button"
+              tabIndex={0}
               onClick={() => navigate(paths.book(b.id))}
-              title={b.title}
-              extra={
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  navigate(paths.book(b.id));
+                }
+              }}
+            >
+              <div className="nf-book-card__head">
+                <h3>{b.title}</h3>
                 <Popconfirm
                   title="删除该书籍?"
                   onConfirm={async (e) => {
@@ -118,27 +143,21 @@ export default function BookList() {
                     }
                   }}
                 >
-                  <DeleteOutlined onClick={(e) => e.stopPropagation()} style={{ color: "#999" }} />
+                  <DeleteOutlined
+                    className="nf-book-card__delete"
+                    onClick={(e) => e.stopPropagation()}
+                  />
                 </Popconfirm>
-              }
-            >
-              <Typography.Paragraph type="secondary" ellipsis={{ rows: 2 }}>
-                {b.intro || "暂无简介"}
-              </Typography.Paragraph>
-              <div style={{ color: "#888", fontSize: 12 }}>
-                {b.genre || "未分类"} · 目标 {b.target_words.toLocaleString()} 字
               </div>
-            </Card>
-          </Col>
-        ))}
-        {books.length === 0 && (
-          <Col span={24}>
-            <Typography.Text type="secondary">
-              还没有书籍,点击右上角「一句话出书」或「新建空书」。
-            </Typography.Text>
-          </Col>
-        )}
-      </Row>
+              <p className="nf-book-card__intro">{b.intro || "暂无简介"}</p>
+              <div className="nf-book-card__meta">
+                <span className="nf-seal">{b.genre || "未分类"}</span>
+                <span>目标 {b.target_words.toLocaleString()} 字</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
 
       <Modal
         title="一句话出书"

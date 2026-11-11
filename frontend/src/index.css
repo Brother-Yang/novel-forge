@@ -1,3 +1,23 @@
+:root {
+  --nf-ink: #16110c;
+  --nf-ink-2: #1e1710;
+  --nf-lacquer: #2a2118;
+  --nf-cinnabar: #c23b22;
+  --nf-cinnabar-deep: #9a2e1a;
+  --nf-brass: #c4a574;
+  --nf-brass-dim: #8c7350;
+  --nf-paper: #f3ead8;
+  --nf-paper-bright: #faf6ee;
+  --nf-manila: #ebe0cc;
+  --nf-ink-text: #2c241c;
+  --nf-mist: #8a7d6f;
+  --nf-line: #d9cbb6;
+  --nf-moss: #5a7d4e;
+  --font-display: "Kaiti SC", "STKaiti", "KaiTi", "楷体", serif;
+  --font-serif: "Songti SC", "STSong", "SimSun", "宋体", serif;
+  --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
 html,
 body,
 #root {
@@ -6,7 +26,879 @@ body,
 }
 
 body {
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei",
-    sans-serif;
+  color: var(--nf-paper);
+  font-family: var(--font-sans);
+  background-color: var(--nf-ink);
+  background-image:
+    radial-gradient(ellipse 90% 55% at 50% -18%, rgba(196, 165, 116, 0.2), transparent 58%),
+    radial-gradient(ellipse 42% 36% at 100% 100%, rgba(194, 59, 34, 0.1), transparent 55%),
+    radial-gradient(ellipse 30% 28% at 0% 70%, rgba(90, 125, 78, 0.06), transparent 50%);
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  opacity: 0.07;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+::selection {
+  background: rgba(194, 59, 34, 0.28);
+  color: var(--nf-paper-bright);
+}
+
+@keyframes nf-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes nf-stamp {
+  from {
+    opacity: 0;
+    transform: rotate(-12deg) scale(0.7);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(-8deg) scale(1);
+  }
+}
+
+@keyframes nf-ink {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 1px var(--nf-line);
+  }
+  50% {
+    box-shadow: inset 0 0 0 1px var(--nf-cinnabar), 0 0 0 3px rgba(194, 59, 34, 0.14);
+  }
+}
+
+.nf-page {
+  min-height: 100%;
+  position: relative;
+}
+
+/* —— 印记品牌 —— */
+.nf-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: default;
+  text-align: left;
+}
+
+button.nf-brand {
+  cursor: pointer;
+}
+
+.nf-brand__seal {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 2px solid var(--nf-cinnabar);
+  color: var(--nf-cinnabar);
+  font-family: var(--font-display);
+  font-size: 26px;
+  line-height: 1;
+  box-shadow: inset 0 0 0 1px rgba(194, 59, 34, 0.35);
+  animation: nf-stamp 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.nf-brand--compact .nf-brand__seal {
+  width: 34px;
+  height: 34px;
+  font-size: 20px;
+}
+
+.nf-brand__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nf-brand__en {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  line-height: 1.1;
+  color: var(--nf-paper-bright);
+}
+
+.nf-brand--compact .nf-brand__en {
+  font-size: 15px;
+}
+
+.nf-brand__zh {
+  color: var(--nf-brass);
+  font-size: 11px;
+  letter-spacing: 0.32em;
+}
+
+/* —— 书库 —— */
+.nf-library {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 28px 28px 72px;
+}
+
+.nf-library__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 48px;
+  animation: nf-rise 0.6s ease both;
+}
+
+.nf-library__hero {
+  margin-bottom: 36px;
+  animation: nf-rise 0.7s ease 0.06s both;
+}
+
+.nf-library__hero h1 {
+  margin: 0 0 10px;
+  color: var(--nf-paper-bright);
+  font-family: var(--font-serif);
+  font-size: clamp(36px, 5vw, 52px);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.15;
+}
+
+.nf-library__lede {
+  max-width: 36em;
+  margin: 0;
+  color: var(--nf-mist);
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.nf-book-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.nf-book-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+  padding: 22px 22px 18px 28px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.35), transparent 28%), var(--nf-paper-bright);
+  border: 1px solid #e4d5bc;
+  border-radius: 2px 10px 10px 2px;
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.22);
+  color: var(--nf-ink-text);
+  cursor: pointer;
+  text-align: left;
+  animation: nf-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.nf-book-card:hover,
+.nf-book-card:focus-visible {
+  transform: translateY(-5px) rotate(-0.3deg);
+  border-color: var(--nf-brass);
+  box-shadow: 0 22px 40px rgba(0, 0, 0, 0.32);
+  outline: none;
+}
+
+.nf-book-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 7px;
+  background: linear-gradient(180deg, var(--nf-cinnabar-deep), var(--nf-cinnabar), var(--nf-cinnabar-deep));
+}
+
+.nf-book-card::after {
+  content: "";
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: 28px;
+  height: 28px;
+  border-right: 1px solid rgba(194, 59, 34, 0.28);
+  border-bottom: 1px solid rgba(194, 59, 34, 0.28);
+  pointer-events: none;
+}
+
+.nf-book-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.nf-book-card__head h3 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.nf-book-card__delete {
+  color: var(--nf-mist);
+  font-size: 14px;
+  transition: color 0.15s ease;
+}
+
+.nf-book-card__delete:hover {
+  color: var(--nf-cinnabar);
+}
+
+.nf-book-card__intro {
+  flex: 1;
+  margin: 12px 0 18px;
+  color: #6b5e52;
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.nf-book-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--nf-mist);
+  font-size: 12px;
+}
+
+.nf-seal {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px 0;
+  border: 1px solid var(--nf-cinnabar);
+  color: var(--nf-cinnabar);
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  transform: rotate(-6deg);
+}
+
+.nf-empty {
+  display: grid;
+  place-items: center;
+  padding: 48px 16px 24px;
+  text-align: center;
+  animation: nf-rise 0.6s ease 0.1s both;
+}
+
+.nf-empty__glyph {
+  margin-bottom: 8px;
+  color: rgba(196, 165, 116, 0.22);
+  font-family: var(--font-display);
+  font-size: 92px;
+  line-height: 1;
+}
+
+.nf-empty .ant-typography {
+  color: var(--nf-mist) !important;
+}
+
+/* 深色底上的描边按钮 */
+.nf-ghost.ant-btn {
+  color: var(--nf-paper) !important;
+  background: transparent !important;
+  border-color: rgba(196, 165, 116, 0.55) !important;
+}
+
+.nf-ghost.ant-btn:hover {
+  color: var(--nf-paper-bright) !important;
+  border-color: var(--nf-cinnabar) !important;
+  background: rgba(194, 59, 34, 0.12) !important;
+}
+
+.nf-ghost.ant-btn-primary {
+  color: var(--nf-paper-bright) !important;
+  background: var(--nf-cinnabar) !important;
+  border-color: var(--nf-cinnabar) !important;
+}
+
+.nf-ghost.ant-btn-primary:hover {
+  background: #d14a30 !important;
+  border-color: #d14a30 !important;
+}
+
+.nf-ghost.ant-btn-text {
+  border-color: transparent !important;
+}
+
+.nf-ghost.ant-btn-text:hover {
+  border-color: transparent !important;
+}
+
+/* —— 写作工坊 —— */
+.nf-studio.ant-layout {
+  height: 100vh;
+  background: transparent;
+}
+
+.nf-studio > .ant-layout {
+  flex: 1;
+  min-height: 0;
+}
+
+.nf-studio__header.ant-layout-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 64px;
+  line-height: 1.2;
+  padding-inline: 16px 20px;
+  background: linear-gradient(180deg, #1c160f, var(--nf-ink-2));
+  border-bottom: 1px solid rgba(196, 165, 116, 0.18);
+}
+
+.nf-studio__title {
+  margin: 0;
+  color: var(--nf-paper-bright);
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.nf-studio__meta {
+  color: var(--nf-mist) !important;
+  font-size: 12px;
+}
+
+.nf-rail.ant-layout-sider {
+  background: var(--nf-ink-2) !important;
+  border-right: 1px solid rgba(196, 165, 116, 0.14);
+}
+
+.nf-rail .ant-menu {
+  background: transparent;
+  border-inline-end: none !important;
+  padding-top: 12px;
+}
+
+.nf-rail .ant-menu-item {
+  margin: 6px 8px !important;
+  width: calc(100% - 16px) !important;
+  border-radius: 4px;
+  color: #cbbba6;
+}
+
+.nf-rail .ant-menu-item .anticon {
+  font-size: 18px !important;
+}
+
+.nf-rail .ant-menu-item:hover {
+  color: var(--nf-paper-bright) !important;
+  background: rgba(196, 165, 116, 0.1) !important;
+}
+
+.nf-rail .ant-menu-item-selected {
+  color: var(--nf-paper-bright) !important;
+  background: rgba(194, 59, 34, 0.38) !important;
+}
+
+.nf-rail .ant-menu-item-selected::after {
+  display: none;
+}
+
+.nf-manila.ant-layout-sider {
+  background: var(--nf-manila) !important;
+  border-right: 1px solid var(--nf-line);
+}
+
+.nf-manuscript.ant-layout-content {
+  overflow: auto;
+  background:
+    linear-gradient(180deg, rgba(255, 248, 232, 0.5), transparent 120px), var(--nf-paper);
+  color: var(--nf-ink-text);
+}
+
+.nf-boot {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  gap: 16px;
+}
+
+.nf-boot .nf-brand__seal {
+  width: 56px;
+  height: 56px;
+  font-size: 32px;
+}
+
+/* —— 目录 —— */
+.nf-catalog {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px 10px 16px;
+}
+
+.nf-catalog__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding: 0 4px;
+}
+
+.nf-catalog__label {
+  color: var(--nf-cinnabar);
+  font-family: var(--font-display);
+  font-size: 18px;
+  letter-spacing: 0.28em;
+}
+
+.nf-catalog .ant-tree {
+  background: transparent;
+  color: var(--nf-ink-text);
+}
+
+.nf-catalog .ant-tree-treenode {
+  width: 100%;
+  padding: 2px 0;
+}
+
+.nf-catalog .ant-tree-node-content-wrapper {
+  border-radius: 0 6px 6px 0;
+  padding-block: 4px !important;
+}
+
+.nf-catalog .ant-tree-node-content-wrapper:hover {
+  background: rgba(255, 248, 232, 0.55) !important;
+}
+
+.nf-catalog .ant-tree-node-content-wrapper.ant-tree-node-selected {
+  background: var(--nf-paper-bright) !important;
+  box-shadow: inset 3px 0 0 var(--nf-cinnabar);
+}
+
+.nf-catalog .ant-tree-title strong {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+
+/* —— 章节编辑器 —— */
+.nf-editor {
+  max-width: 42em;
+  margin: 0 auto;
+  padding: 36px 28px 72px;
+  animation: nf-rise 0.45s ease both;
+}
+
+.nf-editor__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.nf-editor__title.ant-input {
+  width: min(420px, 100%);
+  color: var(--nf-ink-text);
+  font-family: var(--font-serif);
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.nf-editor__outline.ant-card {
+  margin-bottom: 20px;
+  border-color: var(--nf-line);
+  box-shadow: none;
+}
+
+.nf-editor__outline .ant-card-head {
+  font-family: var(--font-serif);
+  min-height: 42px;
+}
+
+.nf-editor__count {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--nf-mist);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+}
+
+.nf-editor__body.ant-input {
+  padding: 22px 24px;
+  background: var(--nf-paper-bright);
+  border-color: var(--nf-line);
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 2.05;
+}
+
+.nf-editor__body--live.ant-input {
+  caret-color: var(--nf-cinnabar);
+  animation: nf-ink 1.6s ease-in-out infinite;
+}
+
+.nf-empty p {
+  max-width: 22em;
+  margin: 8px 0 0;
+  color: var(--nf-mist);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.nf-empty--fill {
+  height: 100%;
+  padding: 0;
+}
+
+.nf-empty--fill .nf-empty__glyph {
+  font-size: 84px;
+}
+
+/* —— 人物 / 设定 —— */
+.nf-card-panel {
+  display: flex;
+  height: 100%;
+}
+
+.nf-card-panel__list {
+  width: 248px;
+  padding: 14px 12px;
+  overflow: auto;
+  background: var(--nf-manila);
+  border-right: 1px solid var(--nf-line);
+}
+
+.nf-namecards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nf-namecard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 12px 10px 14px;
+  background:
+    linear-gradient(90deg, rgba(194, 59, 34, 0.08), transparent 8px), var(--nf-paper-bright);
+  border: 1px solid var(--nf-line);
+  border-radius: 0 8px 8px 0;
+  box-shadow: 2px 3px 0 rgba(44, 36, 28, 0.04);
+  color: var(--nf-ink-text);
+  cursor: pointer;
+}
+
+.nf-namecard:hover,
+.nf-namecard:focus-visible {
+  border-color: var(--nf-brass);
+  outline: none;
+}
+
+.nf-namecard--active {
+  border-color: var(--nf-cinnabar);
+  box-shadow: inset 3px 0 0 var(--nf-cinnabar);
+}
+
+.nf-namecard__name {
+  font-family: var(--font-display);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+}
+
+.nf-card-panel__editor .w-md-editor-toolbar {
+  background: var(--nf-manila);
+  border-bottom: 1px solid var(--nf-line);
+}
+
+.nf-tasks .ant-progress-bg {
+  transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.nf-card-panel__editor {
+  flex: 1;
+  padding: 20px 22px;
+  overflow: auto;
+}
+
+.nf-card-panel__editor .w-md-editor {
+  background: var(--nf-paper-bright);
+  border: 1px solid var(--nf-line);
+  box-shadow: none;
+}
+
+/* —— 任务台 —— */
+.nf-tasks {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 28px 24px 56px;
+  animation: nf-rise 0.4s ease both;
+}
+
+.nf-tasks .ant-card {
+  border-color: var(--nf-line);
+  box-shadow: 0 10px 24px rgba(44, 36, 28, 0.06);
+}
+
+.nf-tasks .ant-card-head-title {
+  font-family: var(--font-serif);
+  font-size: 18px;
+}
+
+.nf-log {
+  height: 220px;
+  overflow: auto;
+  padding: 14px 16px;
+  border-radius: 4px;
+  background: #1a1612;
+  color: #e4d5bc;
+  font-family: "IBM Plex Mono", "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+/* —— AI 书斋 —— */
+.nf-atelier {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.nf-atelier__nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 22px 0;
+}
+
+.nf-atelier__stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 720px;
+  margin: 8vh auto 0;
+  padding: 0 24px 48px;
+  text-align: center;
+  animation: nf-rise 0.65s ease both;
+}
+
+.nf-atelier__stage h1 {
+  margin: 22px 0 8px;
+  color: var(--nf-paper-bright);
+  font-family: var(--font-serif);
+  font-size: clamp(32px, 4vw, 44px);
+  font-weight: 700;
+}
+
+.nf-atelier__stage .ant-typography {
+  color: var(--nf-mist) !important;
+}
+
+.nf-composer {
+  width: 100%;
+  margin-top: 28px;
+  padding: 18px;
+  text-align: left;
+  background: var(--nf-paper-bright);
+  border: 1px solid #e4d5bc;
+  border-radius: 2px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.28);
+  position: relative;
+}
+
+.nf-composer::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border: 1px solid rgba(194, 59, 34, 0.12);
+  pointer-events: none;
+}
+
+.nf-composer .ant-input {
+  background: transparent;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.nf-composer__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+}
+
+.nf-session {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.nf-session__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 22px;
+  background: linear-gradient(180deg, #1c160f, var(--nf-ink-2));
+  border-bottom: 1px solid rgba(196, 165, 116, 0.18);
+}
+
+.nf-session__title {
+  color: var(--nf-paper-bright);
+  font-family: var(--font-serif);
+  font-size: 16px;
+}
+
+.nf-session__body {
+  flex: 1;
+  overflow: auto;
+  padding: 28px 24px 16px;
+}
+
+.nf-session__body .ant-typography {
+  color: var(--nf-mist) !important;
+}
+
+.nf-bubble--decision .ant-typography {
+  color: var(--nf-ink-text) !important;
+}
+
+.nf-bubble--thought .ant-typography {
+  color: var(--nf-brass) !important;
+}
+
+.nf-bubble--error .ant-typography {
+  color: var(--nf-cinnabar) !important;
+}
+
+.nf-trace {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.nf-note {
+  margin: 18px 0;
+  color: var(--nf-mist);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+.nf-note--danger {
+  color: #e07070;
+}
+
+.nf-bubble {
+  max-width: 640px;
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  border-radius: 2px 12px 12px 12px;
+  font-size: 14px;
+  line-height: 1.7;
+  animation: nf-rise 0.35s ease both;
+}
+
+.nf-bubble--thought {
+  background: rgba(243, 234, 216, 0.08);
+  border: 1px solid rgba(196, 165, 116, 0.18);
+  color: #cbbba6;
+  font-style: italic;
+}
+
+.nf-bubble--decision {
+  background: var(--nf-paper-bright);
+  border-left: 3px solid var(--nf-cinnabar);
+  color: var(--nf-ink-text);
+}
+
+.nf-bubble--error {
+  background: #fff1f0;
+  border: 1px solid #ffa39e;
+}
+
+.nf-bubble pre {
+  margin: 0;
+  color: #6b5e52;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.nf-obs {
+  max-width: 640px;
+  margin-bottom: 12px;
+}
+
+.nf-obs pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 4px;
+  background: #1a1612;
+  color: #e4d5bc;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.nf-obs .ant-collapse-header {
+  color: var(--nf-mist) !important;
+}
+
+/* antd 弹层保持稿纸气质 */
+.ant-modal .ant-modal-title,
+.ant-modal-confirm-title {
+  font-family: var(--font-serif);
+}
+
+.ant-btn-primary {
+  box-shadow: none;
+}
+
+@media (max-width: 720px) {
+  .nf-library__top {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .nf-editor__toolbar,
+  .nf-composer__bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .nf-card-panel {
+    flex-direction: column;
+  }
+
+  .nf-card-panel__list {
+    width: 100%;
+    max-height: 220px;
+    border-right: 0;
+    border-bottom: 1px solid var(--nf-line);
+  }
 }

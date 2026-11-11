@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { App, Button, Dropdown, Space, Tree, Typography } from "antd";
-import type { TreeDataNode, TreeProps } from "antd";
+import type { TreeDataNode } from "antd";
 import { PlusOutlined, FileAddOutlined, MoreOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import type { BookTree } from "../api/types";
@@ -137,60 +137,27 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
     return [...volumeNodes, ...looseNodes];
   }, [tree]);
 
-  // 拖拽:本地重建结构后,批量持久化章节 order_index 与 volume_id
-  const onDrop: TreeProps["onDrop"] = async (info) => {
-    if (!tree) return;
-    const dragId = (info.dragNode.key as string).slice(2);
-    const dragIsChapter = (info.dragNode.key as string).startsWith("c-");
-    if (!dragIsChapter) return; // 简化:仅支持章节拖拽
-
-    const dropKey = info.node.key as string;
-    let targetVolume: string | null = null;
-    if (dropKey.startsWith("v-")) targetVolume = dropKey.slice(2);
-    else if (dropKey.startsWith("c-")) {
-      const cid = dropKey.slice(2);
-      const owner = tree.volumes.find((v) => v.chapters.some((c) => c.id === cid));
-      targetVolume = owner ? owner.id : null;
-    }
-
-    const siblings =
-      targetVolume == null
-        ? tree.loose_chapters.map((c) => c.id)
-        : tree.volumes.find((v) => v.id === targetVolume)!.chapters.map((c) => c.id);
-
-    const filtered = siblings.filter((x) => x !== dragId);
-    let insertAt = filtered.length;
-    if (dropKey.startsWith("c-")) {
-      const dropId = dropKey.slice(2);
-      const idx = filtered.indexOf(dropId);
-      insertAt = info.dropPosition < 0 ? idx : idx + 1;
-    }
-    filtered.splice(insertAt, 0, dragId);
-
-    await api.reorderChapters(
-      filtered.map((cid, i) => ({ id: cid, order_index: i, volume_id: targetVolume }))
-    );
-    load();
-  };
-
   return (
-    <div style={{ padding: 8 }}>
-      <Space style={{ marginBottom: 8, paddingLeft: 4 }}>
-        <Button size="small" icon={<PlusOutlined />} onClick={addVolume}>
-          卷
-        </Button>
-        <Button size="small" icon={<FileAddOutlined />} onClick={() => addChapter(null)}>
-          章
-        </Button>
-      </Space>
+    <div className="nf-catalog">
+      <div className="nf-catalog__bar">
+        <span className="nf-catalog__label">目录</span>
+        <Space size={6}>
+          <Button size="small" icon={<PlusOutlined />} onClick={addVolume}>
+            卷
+          </Button>
+          <Button size="small" icon={<FileAddOutlined />} onClick={() => addChapter(null)}>
+            章
+          </Button>
+        </Space>
+      </div>
       <Tree
+        key={tree ? "loaded" : "empty"}
         blockNode
-        draggable
-        showLine
+        showLine={false}
+        defaultExpandAll
         height={window.innerHeight - 160}
         treeData={treeData}
         selectedKeys={selectedChapter ? [`c-${selectedChapter}`] : []}
-        onDrop={onDrop}
         onSelect={(keys) => {
           const k = keys[0] as string | undefined;
           if (k && k.startsWith("c-")) onSelectChapter(k.slice(2));

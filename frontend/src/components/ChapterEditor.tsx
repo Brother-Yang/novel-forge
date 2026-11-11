@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { App, Button, Card, Empty, Input, Space, Tag, Typography } from "antd";
+import { App, Button, Card, Input, Space, Tag } from "antd";
 import { SaveOutlined, ThunderboltOutlined, StopOutlined } from "@ant-design/icons";
 import { api, sseEndpoints } from "../api";
 import { sseFetch } from "../api/client";
 import type { Chapter } from "../api/types";
+import { CHAPTER_STATUS_LABEL } from "../constants/chapterStatus";
 import { useAppStore } from "../store";
 
 interface Props {
@@ -29,8 +30,9 @@ export default function ChapterEditor({ chapterId }: Props) {
 
   if (!chapterId || !chapter) {
     return (
-      <div style={{ display: "grid", placeItems: "center", height: "100%" }}>
-        <Empty description="从左侧选择一个章节" />
+      <div className="nf-empty nf-empty--fill">
+        <span className="nf-empty__glyph">卷</span>
+        <p>从左侧选择一个章节</p>
       </div>
     );
   }
@@ -85,17 +87,19 @@ export default function ChapterEditor({ chapterId }: Props) {
   };
 
   return (
-    <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
-      <Space style={{ width: "100%", justifyContent: "space-between", marginBottom: 12 }}>
+    <div className="nf-editor">
+      <div className="nf-editor__toolbar">
         <Input
+          className="nf-editor__title"
           value={chapter.title}
           onChange={(e) => setChapter({ ...chapter, title: e.target.value })}
           onBlur={() => saveMeta({ title: chapter.title })}
-          style={{ fontSize: 18, fontWeight: 600, width: 400 }}
           variant="borderless"
         />
         <Space>
-          <Tag color="blue">{chapter.status}</Tag>
+          <Tag color={chapter.status === "done" ? "success" : "default"}>
+            {CHAPTER_STATUS_LABEL[chapter.status] ?? chapter.status}
+          </Tag>
           {generating ? (
             <Button danger icon={<StopOutlined />} onClick={stop}>
               停止
@@ -109,24 +113,25 @@ export default function ChapterEditor({ chapterId }: Props) {
             保存
           </Button>
         </Space>
-      </Space>
+      </div>
 
-      <Card size="small" title="本章大纲" style={{ marginBottom: 16 }}>
+      <Card className="nf-editor__outline" size="small" title="本章大纲">
         <Input.TextArea
           value={chapter.outline}
           onChange={(e) => setChapter({ ...chapter, outline: e.target.value })}
           onBlur={() => saveMeta({ outline: chapter.outline })}
           autoSize={{ minRows: 2, maxRows: 6 }}
           placeholder="本章梗概:涉及人物、地点、推进的剧情线程..."
+          variant="borderless"
         />
       </Card>
 
-      <Typography.Text type="secondary">正文({body.length} 字)</Typography.Text>
+      <span className="nf-editor__count">正文 {body.length} 字</span>
       <Input.TextArea
+        className={`nf-editor__body${generating ? " nf-editor__body--live" : ""}`}
         value={body}
         onChange={(e) => setBody(e.target.value)}
         autoSize={{ minRows: 18 }}
-        style={{ marginTop: 8, fontSize: 15, lineHeight: 1.9 }}
         placeholder="点击“生成正文”让 AI 基于大纲与记忆写作,或直接手写。"
       />
     </div>

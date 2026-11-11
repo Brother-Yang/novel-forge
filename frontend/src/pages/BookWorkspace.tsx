@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Layout, Menu, Button, Typography, Spin, Dropdown } from "antd";
+import { Layout, Menu, Button, Spin, Dropdown } from "antd";
 import {
   ArrowLeftOutlined,
   BookOutlined,
@@ -59,36 +59,34 @@ export default function BookWorkspace() {
     downloadFile(api.exportUrl(bookId, format));
   };
 
-  if (!book || !bookId) return <Spin style={{ margin: 80 }} />;
+  if (!book || !bookId) {
+    return (
+      <div className="nf-boot">
+        <span className="nf-brand__seal">墨</span>
+        <Spin />
+      </div>
+    );
+  }
 
   return (
-    <Layout style={{ height: "100vh" }}>
-      <Header
-        style={{
-          background: "#fff",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          borderBottom: "1px solid #f0f0f0",
-          paddingInline: 16,
-        }}
-      >
+    <Layout className="nf-studio">
+      <Header className="nf-studio__header">
         <Button
+          className="nf-ghost"
           icon={<ArrowLeftOutlined />}
           type="text"
           onClick={() =>
             navigate(fromTask && bookId ? paths.agentChatFor(bookId, fromTask) : paths.home)
           }
         />
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          {book.title}
-        </Typography.Title>
-        <Typography.Text type="secondary">
+        <h1 className="nf-studio__title">{book.title}</h1>
+        <span className="nf-studio__meta">
           {book.genre} · 目标 {book.target_words.toLocaleString()} 字
-        </Typography.Text>
+        </span>
         <div style={{ flex: 1 }} />
         {fromTask && bookId && (
           <Button
+            className="nf-ghost"
             icon={<RobotOutlined />}
             onClick={() => navigate(paths.agentChatFor(bookId, fromTask))}
           >
@@ -104,11 +102,13 @@ export default function BookWorkspace() {
             onClick: ({ key }) => exportBook(key as "txt" | "epub"),
           }}
         >
-          <Button icon={<DownloadOutlined />}>导出</Button>
+          <Button className="nf-ghost" icon={<DownloadOutlined />}>
+            导出
+          </Button>
         </Dropdown>
       </Header>
       <Layout>
-        <Sider width={80} theme="light" style={{ borderRight: "1px solid #f0f0f0" }}>
+        <Sider className="nf-rail" width={80} theme="light">
           <Menu
             mode="inline"
             selectedKeys={[view]}
@@ -124,11 +124,7 @@ export default function BookWorkspace() {
         </Sider>
 
         {view === "chapters" && (
-          <Sider
-            width={320}
-            theme="light"
-            style={{ borderRight: "1px solid #f0f0f0", overflow: "auto" }}
-          >
+          <Sider className="nf-manila" width={300} theme="light" style={{ overflow: "auto" }}>
             <CatalogTree
               bookId={bookId}
               selectedChapter={selectedChapter}
@@ -137,7 +133,7 @@ export default function BookWorkspace() {
           </Sider>
         )}
 
-        <Content style={{ overflow: "auto", background: "#fafafa" }}>
+        <Content className="nf-manuscript">
           {view === "chapters" && (
             <ChapterEditor
               key={selectedChapter ?? "none"}

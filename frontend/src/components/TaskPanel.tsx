@@ -40,7 +40,7 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
   const loadTasks = () =>
     api
       .listTasks(bookId)
-      .then(setTasks)
+      .then((data) => setTasks(Array.isArray(data) ? data : []))
       .catch((err: unknown) => message.error(errMessage(err)));
   const loadTree = () =>
     api
@@ -128,7 +128,7 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
   };
 
   return (
-    <div style={{ padding: 24, maxWidth: 960, margin: "0 auto" }}>
+    <div className="nf-tasks">
       <Card title="一键全自动生成" style={{ marginBottom: 16 }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
           按世界观 → 人物 → 大纲 → 章纲 →
@@ -216,20 +216,7 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
       />
 
       <Card title="实时日志" style={{ marginBottom: 16 }}>
-        <div
-          ref={logRef}
-          style={{
-            height: 220,
-            overflow: "auto",
-            whiteSpace: "pre-wrap",
-            background: "#0d1117",
-            color: "#d1d5da",
-            padding: 12,
-            borderRadius: 6,
-            fontFamily: "monospace",
-            fontSize: 13,
-          }}
-        >
+        <div ref={logRef} className="nf-log">
           {log || "等待任务..."}
         </div>
       </Card>

@@ -1,4 +1,4 @@
-import { Button, Input, List, Popconfirm, Space, Typography } from "antd";
+import { Button, Input, Popconfirm, Space } from "antd";
 import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import MDEditor from "@uiw/react-md-editor";
 import { api, sseEndpoints } from "../api";
@@ -36,8 +36,8 @@ export default function WorldbuildingPanel({ bookId }: { bookId: string }) {
   });
 
   return (
-    <div style={{ display: "flex", height: "100%" }}>
-      <div style={{ width: 240, borderRight: "1px solid #f0f0f0", padding: 12, overflow: "auto" }}>
+    <div className="nf-card-panel">
+      <div className="nf-card-panel__list">
         <Space style={{ marginBottom: 8 }}>
           <Button size="small" icon={<PlusOutlined />} onClick={add}>
             新增
@@ -51,30 +51,31 @@ export default function WorldbuildingPanel({ bookId }: { bookId: string }) {
             AI 生成
           </Button>
         </Space>
-        <List
-          size="small"
-          dataSource={list}
-          renderItem={(w) => (
-            <List.Item
+        <div className="nf-namecards">
+          {list.map((w) => (
+            <div
+              key={w.id}
+              className={`nf-namecard${current?.id === w.id ? " nf-namecard--active" : ""}`}
+              role="button"
+              tabIndex={0}
               onClick={() => select(w)}
-              style={{
-                cursor: "pointer",
-                background: current?.id === w.id ? "#e6f4ff" : undefined,
-                paddingInline: 8,
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  select(w);
+                }
               }}
-              actions={[
-                <Popconfirm key="d" title="删除?" onConfirm={() => remove(w.id)}>
-                  <DeleteOutlined onClick={(e) => e.stopPropagation()} />
-                </Popconfirm>,
-              ]}
             >
-              {w.title}
-            </List.Item>
-          )}
-        />
+              <span className="nf-namecard__name">{w.title}</span>
+              <Popconfirm title="删除?" onConfirm={() => remove(w.id)}>
+                <DeleteOutlined onClick={(e) => e.stopPropagation()} />
+              </Popconfirm>
+            </div>
+          ))}
+        </div>
       </div>
 
-      <div style={{ flex: 1, padding: 16, overflow: "auto" }} data-color-mode="light">
+      <div className="nf-card-panel__editor" data-color-mode="light">
         {current ? (
           <>
             <Space style={{ width: "100%", justifyContent: "space-between", marginBottom: 12 }}>
@@ -84,7 +85,7 @@ export default function WorldbuildingPanel({ bookId }: { bookId: string }) {
                 onBlur={() =>
                   api.updateWorldbuilding(current.id, { title: current.title }).then(load)
                 }
-                style={{ width: 240, fontWeight: 600 }}
+                style={{ width: 240, fontWeight: 600, fontFamily: "var(--font-serif)" }}
               />
               <Button type="primary" icon={<SaveOutlined />} onClick={save}>
                 保存设定
@@ -97,9 +98,10 @@ export default function WorldbuildingPanel({ bookId }: { bookId: string }) {
             />
           </>
         ) : (
-          <Typography.Text type="secondary">
-            维护世界观、地理、势力、物品等设定,生成正文时按需注入。
-          </Typography.Text>
+            <div className="nf-empty nf-empty--fill">
+              <span className="nf-empty__glyph">界</span>
+              <p>维护世界观、地理、势力、物品等设定,生成正文时按需注入。</p>
+            </div>
         )}
       </div>
     </div>

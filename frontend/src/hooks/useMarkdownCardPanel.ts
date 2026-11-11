@@ -36,7 +36,16 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
   const [generating, setGenerating] = useState(false);
   const { message } = App.useApp();
 
-  const load = useCallback(() => list(bookId).then(setItems), [bookId, list]);
+  const load = useCallback(
+    () =>
+      list(bookId)
+        .then((data) => setItems(Array.isArray(data) ? data : []))
+        .catch((err: unknown) => {
+          setItems([]);
+          message.error(err instanceof Error ? err.message : "加载失败");
+        }),
+    [bookId, list, message]
+  );
   useEffect(() => {
     load();
   }, [load]);
