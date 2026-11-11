@@ -84,8 +84,9 @@ async def test_agent_stops_at_max_steps(monkeypatch):
     monkeypatch.setattr(settings, "agent_max_steps", 3)
 
     events = [ev async for ev in orchestrator.run_agent(FakeDB(), "book-1")]
-    assert events[-1] == ("done", "")
-    assert any("最大决策步数" in data for ev, data in events if ev == "log")
+    assert events[-1][0] == "error"
+    assert "最大决策步数" in events[-1][1]
+    assert not any(ev == "done" for ev, _ in events)
 
 
 async def test_agent_stops_at_max_tool_calls(monkeypatch):
@@ -152,6 +153,8 @@ async def test_agent_review_rewrite_limit(monkeypatch):
 
 async def test_agent_tool_error_becomes_observation_not_crash(monkeypatch):
     async def failing_dispatch(db, book_id, name, args):
+        if name == "finish_book":
+            return {"ok": True}
         raise tools.ToolError("参数非法:章节不存在")
 
     monkeypatch.setattr(tools.registry, "dispatch", failing_dispatch)
@@ -263,6 +266,11 @@ async def test_agent_plans_placeholder_title_before_loop(monkeypatch):
     monkeypatch.setattr(planner, "plan_novel", fake_plan)
     llm = ScriptedLLM([_finish()])
     monkeypatch.setattr(orchestrator, "get_llm", lambda: llm)
+
+    async def fake_dispatch(db, book_id, name, args):
+        return {"ok": True}
+
+    monkeypatch.setattr(tools.registry, "dispatch", fake_dispatch)
 
     events = [ev async for ev in orchestrator.run_agent(DB(), "book-1")]
     assert events[-1] == ("done", "")

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { App, Button, Dropdown, Space, Tree, Typography } from "antd";
 import type { TreeDataNode } from "antd";
 import { PlusOutlined, FileAddOutlined, MoreOutlined } from "@ant-design/icons";
@@ -19,7 +19,16 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   const { message, modal } = App.useApp();
   const treeVersion = useAppStore((s) => s.treeVersion);
 
-  const load = useCallback(() => api.getTree(bookId).then(setTree), [bookId]);
+  const load = useCallback(
+    () =>
+      api
+        .getTree(bookId)
+        .then(setTree)
+        .catch((err: unknown) => {
+          message.error(err instanceof Error ? err.message : "加载目录失败");
+        }),
+    [bookId, message]
+  );
   useEffect(() => {
     load();
   }, [load, treeVersion]);
@@ -63,12 +72,29 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
     });
   };
 
-  const remove = async (kind: "volume" | "chapter", id: string) => {
-    if (kind === "volume") await api.deleteVolume(id);
-    else await api.deleteChapter(id);
-    if (kind === "chapter" && id === selectedChapter) onSelectChapter(null);
-    message.success("已删除");
-    load();
+  const remove = async (kind: "volume" | "chapter", id: string, title: string) => {
+    const isVolume = kind === "volume";
+    await modal.confirm({
+      title: `删除${isVolume ? "卷" : "章节"}《${title}》？`,
+      content: isVolume
+        ? "仅删除卷，卷内章节及正文会保留并移到“未归卷”。"
+        : "该章节的正文和摘要将一并删除，此操作无法撤销。",
+      okText: isVolume ? "删除卷" : "删除章节",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          if (isVolume) await api.deleteVolume(id);
+          else await api.deleteChapter(id);
+        } catch (err: unknown) {
+          message.error(err instanceof Error ? err.message : "删除失败，请重试");
+          throw err;
+        }
+        if (!isVolume && id === selectedChapter) onSelectChapter(null);
+        message.success(isVolume ? "已删除卷，章节及正文已保留" : "已删除章节");
+        await load();
+      },
+    });
   };
 
   const nodeMenu = (kind: "volume" | "chapter", id: string, title: string) => ({
@@ -80,13 +106,13 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
     onClick: ({ key, domEvent }: { key: string; domEvent: React.SyntheticEvent }) => {
       domEvent.stopPropagation();
       if (key === "rename") rename(kind, id, title);
-      else if (key === "delete") remove(kind, id);
+      else if (key === "delete") remove(kind, id, title);
       else if (key === "addChapter") addChapter(id);
     },
   });
 
-  const treeData: TreeDataNode[] = useMemo(() => {
-    if (!tree) return [];
+  const treeData: TreeDataNode[] = [];
+  if (tree) {
     const renderChapter = (c: {
       id: string;
       title: string;
@@ -134,8 +160,8 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
     }));
 
     const looseNodes = tree.loose_chapters.map(renderChapter);
-    return [...volumeNodes, ...looseNodes];
-  }, [tree]);
+    treeData.push(...volumeNodes, ...looseNodes);
+  }
 
   return (
     <div className="nf-catalog">

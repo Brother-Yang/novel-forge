@@ -12,8 +12,8 @@
   - log:         工具执行过程中的提示(沿用工具内部的 log 事件)
   - observation: 工具执行后的结构化结果(JSON),含重写次数上限等护栏生效后的
                  最终结果,便于追溯"模型看到的是什么"
-  - done:        正常结束(调用了 finish_tool 或达到步数上限)
-  - error:       不可恢复的错误(决策调用失败、超出最大工具调用次数)
+  - done:        正常结束(成功调用了 finish_tool)
+  - error:       本次运行失败(决策调用失败、耗尽决策步数或工具次数,可由任务重试)
 """
 
 from __future__ import annotations
@@ -159,10 +159,9 @@ async def run(
                 }
             )
 
-            if call.name == finish_tool:
+            if call.name == finish_tool and observation.get("ok") is True:
                 yield ("log", f"智能体决定结束创作:{call.arguments.get('reason', '')}")
                 yield ("done", "")
                 return
 
-    yield ("log", "已达到最大决策步数,自动结束本次创作")
-    yield ("done", "")
+    yield ("error", "已达到最大决策步数,本次创作未完成,可重试继续")

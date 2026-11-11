@@ -13,11 +13,16 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import cast
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
 from ..agents import pipeline
+from ..agents.completion import (
+    book_chapters,
+    chapter_is_complete,
+    require_book_complete,
+)
 from ..database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -81,15 +86,7 @@ def ensure_running(db: Session, task: models.GenerationTask) -> None:
 
 
 def _pending_chapters(db: Session, book_id: str) -> list[str]:
-    rows = db.scalars(
-        select(models.Chapter)
-        .where(
-            models.Chapter.book_id == book_id,
-            models.Chapter.status != "done",
-        )
-        .order_by(models.Chapter.order_index)
-    ).all()
-    return [c.id for c in rows]
+    return [c.id for c in book_chapters(db, book_id) if not chapter_is_complete(c)]
 
 
 def reset_empty_drafts(db: Session, book_id: str) -> None:
@@ -151,25 +148,19 @@ async def run_chapter_bodies(
     mark_done: bool = True,
 ) -> None:
     reset_empty_drafts(db, task.book_id)
-    pending = _pending_chapters(db, task.book_id)
-    done_count = (
-        db.scalar(
-            select(func.count())
-            .select_from(models.Chapter)
-            .where(
-                models.Chapter.book_id == task.book_id,
-                models.Chapter.status == "done",
-            )
-        )
-        or 0
-    )
-    total = done_count + len(pending)
+    chapters = book_chapters(db, task.book_id)
+    pending = [c.id for c in chapters if not chapter_is_complete(c)]
+    total = len(chapters)
+    done_count = total - len(pending)
     span = max(0, progress_hi - progress_lo)
 
     for chapter_id in pending:
         ensure_running(db, task)
         try:
             await consume_stage(pipeline.gen_chapter_body(db, chapter_id, words))
+            chapter = db.get(models.Chapter, chapter_id)
+            if chapter is None or not chapter_is_complete(chapter):
+                raise RuntimeError("章节正文未有效完成,请重试")
         except Paused:
             raise
         except Exception as exc:
@@ -181,7 +172,7 @@ async def run_chapter_bodies(
 
         done_count += 1
         ratio = done_count / total if total else 1
-        task.progress = progress_lo + int(ratio * span) if total else progress_hi
+        task.progress = min(99, progress_lo + int(ratio * span))
         merge_checkpoint(
             task,
             stage="chapter_bodies",
@@ -192,6 +183,7 @@ async def run_chapter_bodies(
 
     if mark_done:
         ensure_running(db, task)
+        require_book_complete(db, task.book_id)
         task.status = "done"
         task.progress = 100
         merge_checkpoint(task, stage="done")

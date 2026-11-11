@@ -109,6 +109,9 @@ def test_update_progress_computes_ratio_with_cap(db):
             )
         )
     db.commit()
+    for chapter in db.query(models.Chapter).filter_by(book_id=book.id, status="done"):
+        chapter.content = models.ChapterContent(body="已完成正文")
+    db.commit()
     task = _task(db, book)
 
     agent_generation._update_progress(db, task)
@@ -126,6 +129,9 @@ def test_update_progress_never_exceeds_cap(db):
             )
         )
     db.commit()
+    for chapter in db.query(models.Chapter).filter_by(book_id=book.id, status="done"):
+        chapter.content = models.ChapterContent(body="已完成正文")
+    db.commit()
     task = _task(db, book)
 
     agent_generation._update_progress(db, task)
@@ -136,6 +142,10 @@ def test_update_progress_never_exceeds_cap(db):
 # ---------- run_agent_task:三种终态落库是否正确 ----------
 async def test_run_agent_task_marks_done_on_finish(db, monkeypatch):
     book = _book(db)
+    chapter = models.Chapter(book_id=book.id, title="终章", status="done")
+    chapter.content = models.ChapterContent(body="结局正文")
+    db.add(chapter)
+    db.commit()
     task = _task(db, book)
 
     async def fake_run_agent(db_, book_id):

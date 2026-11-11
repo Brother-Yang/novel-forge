@@ -329,6 +329,12 @@ async def gen_chapter_body(
             yield ev, data
 
     body = full.strip()
+    if not body:
+        # 重写失败时保留旧正文和字数,且不能留下可被续跑跳过的 done 状态。
+        chapter.status = "outline"
+        db.commit()
+        yield ("error", "模型未生成有效章节正文,请重试")
+        return
     if chapter.content:
         chapter.content.body = body
     else:

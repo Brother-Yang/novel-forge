@@ -63,8 +63,10 @@ class Volume(Base):
     summary: Mapped[str] = mapped_column(Text, default="")
 
     book: Mapped["Book"] = relationship(back_populates="volumes")
+    # 卷只负责归类;删除卷时由 ORM 将 volume_id 置空,章节仍由 Book 拥有。
+    # 保留默认 passive_deletes=False,兼容未启用外键约束的 SQLite 连接。
     chapters: Mapped[list["Chapter"]] = relationship(
-        back_populates="volume", cascade="all, delete-orphan"
+        back_populates="volume"
     )
 
 

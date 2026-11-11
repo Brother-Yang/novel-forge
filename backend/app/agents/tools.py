@@ -23,6 +23,7 @@ from ..config import settings
 from ..llm import get_llm
 from ..llm.retry import call_with_retry
 from . import pipeline, planner, prompts
+from .completion import chapter_is_complete, require_book_complete
 from .state import BookNotFound, load_state
 
 
@@ -162,7 +163,7 @@ async def tool_write_chapter(
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter or chapter.book_id != book_id:
         raise ToolError(f"chapter_id={chapter_id} 不存在或不属于本书")
-    if chapter.status == "done":
+    if chapter_is_complete(chapter):
         # 高风险操作护栏:覆盖已完成正文会丢弃已有内容,自动拦截而非直接执行。
         # 只有 review_content 刚对这一章给出 needs_revision=true 时才放行一次。
         if not chapter.revision_approved:
@@ -260,8 +261,12 @@ async def tool_review_content(
 
 # ---------- 控制 ----------
 async def tool_finish_book(
-    _db: Session, _book_id: str, args: dict[str, object]
+    db: Session, book_id: str, args: dict[str, object]
 ) -> dict[str, object]:
+    try:
+        require_book_complete(db, book_id)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
     return {"ok": True, "reason": str(args.get("reason", ""))}
 
 

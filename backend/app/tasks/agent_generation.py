@@ -17,11 +17,14 @@ from __future__ import annotations
 import logging
 from typing import cast
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
 from ..agents import observability, orchestrator
+from ..agents.completion import (
+    chapter_counts,
+    require_book_complete,
+)
 from ..llm import supports_tool_calling
 from . import book_generation as runtime
 
@@ -66,27 +69,9 @@ def _append_decision(task: models.GenerationTask, entry: str) -> None:
 
 
 def _update_progress(db: Session, task: models.GenerationTask) -> None:
-    total = (
-        db.scalar(
-            select(func.count())
-            .select_from(models.Chapter)
-            .where(models.Chapter.book_id == task.book_id)
-        )
-        or 0
-    )
+    total, done = chapter_counts(db, task.book_id)
     if not total:
         return
-    done = (
-        db.scalar(
-            select(func.count())
-            .select_from(models.Chapter)
-            .where(
-                models.Chapter.book_id == task.book_id,
-                models.Chapter.status == "done",
-            )
-        )
-        or 0
-    )
     task.progress = min(95, 5 + int(done / total * 90))
 
 
@@ -117,9 +102,12 @@ async def run_agent_task(db: Session, task: models.GenerationTask) -> None:
                 _update_progress(db, task)
                 db.commit()
             if ev == "done":
+                require_book_complete(db, task.book_id)
                 task.status = "done"
                 task.progress = 100
                 db.commit()
+                return
+        raise RuntimeError("智能体未确认完成即停止,可重试继续")
     except runtime.Paused:
         logger.info("agent task %s paused", task.id)
         return

@@ -154,7 +154,7 @@ class FakeAgentLLM:
 
 
 class StuckLLM:
-    """永远重复同一个已完成动作,模拟决策卡死,用于验证步数上限会强制收尾。"""
+    """永远重复已完成动作,验证步数耗尽后停止并保留可重试错误。"""
 
     async def chat_with_tools(self, messages, tool_defs, temperature=0.7) -> ToolChatResult:
         return _tc("write_worldbuilding")
@@ -553,7 +553,9 @@ async def main() -> None:
     app_settings.agent_max_steps = orig_max_steps
     db.expire_all()
     task_b = db.get(models.GenerationTask, task_b.id)
-    check(task_b.status == "done", f"达到步数上限后强制收尾(非 error),实际{task_b.status}")
+    assert task_b is not None
+    check(task_b.status == "error", f"达到步数上限后保留可重试错误,实际{task_b.status}")
+    check(task_b.progress < 100 and "最大决策步数" in task_b.error, "熔断任务未标为100%完成")
     wb_b = db.query(models.Worldbuilding).filter_by(book_id=book_b.id).count()
     check(wb_b > 0, f"熔断前已执行过工具调用,设定条数{wb_b}")
 

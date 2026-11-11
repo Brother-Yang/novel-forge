@@ -132,6 +132,7 @@ async def test_write_chapter_rejects_non_integer_chapter_id(db):
 async def test_write_chapter_blocks_rewriting_done_chapter_without_approval(db, monkeypatch):
     book = _book(db)
     chapter = models.Chapter(book_id=book.id, title="第1章", status="done", word_count=500)
+    chapter.content = models.ChapterContent(body="已有完成正文")
     db.add(chapter)
     db.commit()
     db.refresh(chapter)
@@ -146,6 +147,7 @@ async def test_write_chapter_allows_rewrite_once_after_revision_approved(db, mon
     chapter = models.Chapter(
         book_id=book.id, title="第1章", status="done", word_count=500, revision_approved=True
     )
+    chapter.content = models.ChapterContent(body="已有完成正文")
     db.add(chapter)
     db.commit()
     db.refresh(chapter)
@@ -314,5 +316,9 @@ async def test_dispatch_unknown_tool_raises(db):
 
 async def test_dispatch_finish_book_routes_correctly(db):
     book = _book(db)
+    chapter = models.Chapter(book_id=book.id, title="终章", status="done")
+    chapter.content = models.ChapterContent(body="结局正文")
+    db.add(chapter)
+    db.commit()
     result = await tools.dispatch(db, book.id, "finish_book", {"reason": "写完了"})
     assert result == {"ok": True, "reason": "写完了"}
