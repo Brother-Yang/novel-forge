@@ -24,7 +24,7 @@ python -m pip check
 
 `requirements.in` 和 `requirements-dev.in` 记录直接依赖,同名 `.txt` 是包含传递依赖及平台标记的锁文件。运行时安装 `requirements.txt`,开发和 CI 安装 `requirements-dev.txt`。
 
-本轮锁定使用已通过项目测试的现有版本,没有批量升级依赖。OpenTelemetry 的稳定 SDK 指定了对应的 `opentelemetry-semantic-conventions` beta 版本,它作为 SDK 的传递依赖保留,不要单独替换为不匹配版本。
+直接依赖保留已验证版本；安全扫描发现的 aiohttp、证书、文件锁、HTTP 与 OpenTelemetry 等传递依赖已更新到最新稳定兼容版本,并在干净环境通过完整后端回归。OpenTelemetry 的稳定 SDK 指定了对应的 `opentelemetry-semantic-conventions` beta 版本,它及同一发布批次的 exporter-common 作为 SDK 的传递依赖保留,不要单独替换为不匹配版本。
 
 新增或升级依赖时,先按 AGENTS.md 解析最新稳定版本并更新 `.in`,再生成锁文件:
 
@@ -34,7 +34,7 @@ uv pip compile requirements.in --python-version 3.13 --universal --no-annotate -
 uv pip compile requirements-dev.in --python-version 3.13 --universal --no-annotate -o requirements-dev.txt
 ```
 
-生成器默认尽量复用现有锁定版本。仅在明确升级某个包时使用 `--upgrade-package 包名`,并同时验证两个锁文件的公共版本一致。不要把本地绝对路径、包仓库凭据或 `.env` 内容写入锁文件。
+生成器默认尽量复用现有锁定版本。仅在明确升级某个包时使用 `--upgrade-package 包名`,开发输入通过 `-c requirements.txt` 约束运行时版本,须先生成运行锁再生成开发锁。不要把本地绝对路径、包仓库凭据或 `.env` 内容写入锁文件。
 
 ## 本地检查
 

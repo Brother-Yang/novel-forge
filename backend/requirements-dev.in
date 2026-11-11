@@ -1,4 +1,6 @@
 -r requirements.in
+# Keep the runtime dependency set identical in development and production.
+-c requirements.txt
 
 # Development tools.
 ruff==0.16.5
