@@ -1,5 +1,4 @@
-export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
-const BASE = API_BASE;
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL?.trim() || "/api").replace(/\/+$/, "");
 
 const unauthorizedListeners = new Set<() => void>();
 const responseSessions = new WeakMap<Response, number>();
@@ -55,7 +54,7 @@ export async function requireOk(
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetchWithSession(`${BASE}${path}`, {
+  const res = await fetchWithSession(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
@@ -100,7 +99,7 @@ export async function sseFetch(path: string, body: unknown, handlers: SSEHandler
 
   try {
     handlers.signal?.throwIfAborted();
-    const res = await fetchWithSession(`${BASE}${path}`, {
+    const res = await fetchWithSession(`${API_BASE}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify(body ?? {}),
