@@ -89,9 +89,10 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
     try {
       const item = await create(items.length);
       if (scope.current !== owner) return;
-      // 只更新列表，创建完成时不抢走用户后来选择的卡片。
-      await load();
-      if (scope.current === owner && selectionVersion.current === selection) select(item);
+      setItems((existing) => [...existing, item]);
+      // 创建完成时不抢走用户后来选择的卡片。
+      if (selectionVersion.current === selection) select(item);
+      void load();
     } catch (err: unknown) {
       if (scope.current === owner) message.error(err instanceof Error ? err.message : "新增失败");
     } finally {
@@ -122,7 +123,11 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
       if (scope.current !== owner) return;
       // 保存的响应只刷新列表，编辑器始终保留当前选择及最新草稿。
       if (announce) message.success("已保存");
-      await load();
+      setItems((existing) =>
+        existing.map((item) => (item.id === id ? { ...item, ...patch } : item))
+      );
+      // 写入已经完成；慢列表刷新不应继续占用写锁。
+      void load();
     } catch (err: unknown) {
       if (scope.current === owner) message.error(err instanceof Error ? err.message : "保存失败");
     } finally {
@@ -151,7 +156,8 @@ export function useMarkdownCardPanel<T extends MarkdownCard>({
         if (selected?.id !== id) return selected;
         return null;
       });
-      await load();
+      setItems((existing) => existing.filter((item) => item.id !== id));
+      void load();
     } catch (err: unknown) {
       if (scope.current === owner) message.error(err instanceof Error ? err.message : "删除失败");
     } finally {

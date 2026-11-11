@@ -47,6 +47,56 @@ beforeEach(() => {
 });
 
 describe("useMarkdownCardPanel 编辑安全", () => {
+  it("保存成功后的慢列表刷新不阻塞再次保存，迟到列表不能覆盖新结果", async () => {
+    const refresh = deferred<Card[]>();
+    const { result } = renderHook(() => useMarkdownCardPanel(options), { wrapper });
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+    act(() => result.current.select(a));
+    list.mockReturnValueOnce(refresh.promise);
+    await act(async () => result.current.save());
+    act(() => result.current.setMd("第二次正文"));
+    list.mockResolvedValueOnce([{ ...a, md_content: "第二次正文" }, b]);
+    await act(async () => result.current.save());
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenLastCalledWith("a", { md_content: "第二次正文" });
+    await act(async () => refresh.resolve([a]));
+    expect(result.current.items[0].md_content).toBe("第二次正文");
+    expect(result.current.md).toBe("第二次正文");
+  });
+
+  it("新增成功立即选择卡片，列表刷新慢时仍可继续新增且数量正确", async () => {
+    const refresh = deferred<Card[]>();
+    const added: Card = { id: "c", title: "C", md_content: "新增正文" };
+    create.mockResolvedValueOnce(added).mockResolvedValueOnce({ ...added, id: "d" });
+    const { result } = renderHook(() => useMarkdownCardPanel(options), { wrapper });
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+    list.mockReturnValueOnce(refresh.promise);
+    await act(async () => result.current.add());
+    expect(result.current.current).toEqual(added);
+    expect(result.current.items).toHaveLength(3);
+    await act(async () => result.current.add());
+    expect(create).toHaveBeenNthCalledWith(1, 2);
+    expect(create).toHaveBeenNthCalledWith(2, 3);
+    await act(async () => refresh.resolve([a, b, added]));
+  });
+
+  it("删除成功后立即移除卡片，慢刷新不阻塞生成且失败仍可见", async () => {
+    const refresh = deferred<Card[]>();
+    remove.mockResolvedValueOnce({ ok: true });
+    vi.mocked(sseFetch).mockImplementation(() => new Promise<void>(() => {}));
+    const { result } = renderHook(() => useMarkdownCardPanel(options), { wrapper });
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+    act(() => result.current.select(a));
+    list.mockReturnValueOnce(refresh.promise);
+    await act(async () => result.current.remove("a"));
+    expect(result.current.current).toBeNull();
+    expect(result.current.items).toEqual([b]);
+    act(() => result.current.generate());
+    expect(sseFetch).toHaveBeenCalledTimes(1);
+    await act(async () => refresh.reject(new Error("列表刷新失败")));
+    expect(await screen.findByText("列表刷新失败")).toBeInTheDocument();
+  });
+
   it("同字段保存仍防重入，写入中不能删除；请求结束后可删除", async () => {
     const pending = deferred<Card>();
     update.mockReturnValueOnce(pending.promise);
