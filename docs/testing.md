@@ -58,6 +58,8 @@ python tests/e2e_offline.py
 
 后端单元测试和离线 E2E 使用假模型及临时数据库,不得通过测试连接真实书稿数据库或消耗模型额度。新增网络逻辑使用 HTTP mock / ASGI transport,数据库行为使用临时 SQLite;迁移测试应构造真实历史表结构,不能用最新模型冒充旧库。
 
+`tests/offline_environment.py` 在测试收集和离线 E2E 导入应用前隔离配置：应用与 Chroma 不读取项目 `.env`，清除继承的应用配置，数据目录固定为本次测试的临时绝对路径，模型地址指向不可用的回环端口，关闭 Chroma 遥测。这只影响测试进程，保留工作目录、PATH 和相对路径选测试的方式。需要验证 dotenv 解析时，显式传入临时文件，不能使用真实配置。
+
 供应商协议回归覆盖 [Ollama `/api/embed`](https://docs.ollama.com/api/embed) 的 `input` / `embeddings` 契约，以及 [OpenAI 完成原因](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events) 的正常结束、长度截断、过滤和错误。模拟断流、取消及超大嵌入数值时，必须保留原正文并释放 HTTP 资源，不连接真实服务。
 
 ## 浏览器回归
@@ -72,7 +74,7 @@ pnpm test:e2e
 
 浏览器回归也覆盖两个窗口编辑同一章：旧版本保存被拒绝并保留草稿，确认重新加载后才能继续保存。
 
-浏览器回归覆盖受保护访问、创作基本操作、轨迹分页、双窗口正文冲突、401 弹出层隔离，以及跨面板/章节/前进后退保留正文草稿。
+浏览器回归覆盖受保护访问、创作基本操作、轨迹分页、双窗口正文冲突、401 弹出层隔离，以及跨面板/章节/前进后退保留正文草稿。慢保存和远端删除用真实 API 组合验证：服务端提交成功后暂缓回包，另一窗口删除章节，原窗口仍可恢复和明确丢弃草稿。
 
 测试使用 `dist/` 中以 `/api` 为 API 前缀的生产构建。每次运行在独立的回环端口启动预览与后端，自动迁移临时 SQLite，并在结束时清理 SQLite、Chroma 和服务。测试使用合成书稿和会话，模型地址指向本机不可用的端口。默认使用 `backend/.venv/bin/python`，也可以通过 `NOVEL_FORGE_E2E_PYTHON` 指定已安装后端依赖的 Python 路径。
 

@@ -13,7 +13,6 @@
 import asyncio
 import json
 import os
-import shutil
 import sys
 import tempfile
 import uuid
@@ -24,9 +23,12 @@ from pathlib import Path
 # 保证可从 backend 根目录导入 app,并使用独立的临时数据目录
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _BACKEND_ROOT)
-_TMP = tempfile.mkdtemp(prefix="novel_e2e_")
-os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/novel.db"
-os.environ["CHROMA_DIR"] = f"{_TMP}/chroma"
+
+from tests.offline_environment import configure_offline_environment
+
+_OFFLINE_DATA = tempfile.TemporaryDirectory(prefix="novel_e2e_")
+_TMP = _OFFLINE_DATA.name
+configure_offline_environment(Path(_TMP))
 
 from sqlalchemy.orm import Session
 
@@ -609,7 +611,7 @@ def run() -> int:
     try:
         asyncio.run(main())
     finally:
-        shutil.rmtree(_TMP, ignore_errors=True)
+        _OFFLINE_DATA.cleanup()
     print("\n===== 结果 =====")
     if FAILURES:
         print(f"存在 {len(FAILURES)} 处失败:")

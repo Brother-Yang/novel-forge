@@ -34,7 +34,7 @@
 ### 后端
 
 - **数据库结构变更必须通过 Alembic 迁移**,禁止仅依赖 `Base.metadata.create_all()` 做生产环境建表。新增/修改 `models.py` 中的表结构时,同步生成对应的迁移脚本到 `backend/migrations/versions/`。
-- **测试**:新增功能需要有对应测试。优先使用 `pytest`(需先加入 `requirements-dev.txt`),测试文件遵循 `test_*.py` 命名以便被自动发现;现有的 `tests/e2e_offline.py` 端到端脚本继续保留,但不作为唯一测试手段。
+- **测试**:新增功能需要有对应测试。使用已配置在 `requirements-dev.in` / `requirements-dev.txt` 的 `pytest`,测试文件遵循 `test_*.py` 命名以便被自动发现;现有的 `tests/e2e_offline.py` 端到端脚本继续保留,但不作为唯一测试手段。
 - **安全边界**:
   - `CORSMiddleware` 不允许 `allow_origins=["*"]` 与 `allow_credentials=True` 同时出现;需按环境(开发/生产)配置具体的允许域名列表。
   - 涉及外部可访问的生成类接口,评估是否需要鉴权/限流,避免 API Key 被无限调用消耗额度。
