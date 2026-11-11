@@ -580,8 +580,9 @@ async def test_task_errors_keep_safe_status_and_trace_without_provider_details(
     )
 
     async def broken_stream(
-        _db: Session, _cid: str, _words: int
+        _db: Session, _cid: str, _words: int, *, unfinished_only: bool = False
     ) -> AsyncIterator[tuple[str, str]]:
+        assert unfinished_only
         yield ("token", "中断前的内容")
         raise provider_error
 

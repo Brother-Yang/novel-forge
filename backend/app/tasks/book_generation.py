@@ -17,10 +17,10 @@ from threading import RLock
 from typing import cast
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .. import models
-from ..agents import observability, pipeline
+from ..agents import chapter_writes, observability, pipeline
 from ..agents.completion import (
     chapter_completion_queue,
     chapter_is_complete,
@@ -162,22 +162,27 @@ def _pending_chapters(db: Session, book_id: str) -> list[str]:
 
 
 def reset_empty_drafts(db: Session, book_id: str) -> None:
-    """进程中断时可能留下 status=drafting 且正文为空的章,重置后整章重写。"""
-    rows = db.scalars(
-        select(models.Chapter).where(
-            models.Chapter.book_id == book_id,
-            models.Chapter.status == "drafting",
-        )
-    ).all()
-    changed = False
-    for chapter in rows:
-        body = chapter.content.body if chapter.content else ""
-        if not body.strip():
-            chapter.status = "outline"
-            chapter.word_count = 0
-            changed = True
-    if changed:
+    """Recover empty drafts left by a process exit without racing an editor."""
+    db.rollback()
+    try:
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        rows = db.scalars(
+            select(models.Chapter)
+            .where(
+                models.Chapter.book_id == book_id,
+                models.Chapter.status == "drafting",
+            )
+            .options(selectinload(models.Chapter.content))
+        ).all()
+        for chapter in rows:
+            body = chapter.content.body if chapter.content else ""
+            if not body.strip():
+                chapter.status = chapter_writes.unfinished_status(chapter.outline)
+                chapter.word_count = 0
         db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 def merge_checkpoint(task: models.GenerationTask, **fields: object) -> None:
@@ -263,7 +268,9 @@ async def run_chapter_bodies(
     for chapter_id in pending:
         ensure_running(db, task)
         try:
-            await consume_stage(pipeline.gen_chapter_body(db, chapter_id, words))
+            await consume_stage(
+                pipeline.gen_chapter_body(db, chapter_id, words, unfinished_only=True)
+            )
             chapter = db.get(models.Chapter, chapter_id)
             if chapter is None or not chapter_is_complete(chapter):
                 raise GenerationError("章节正文未有效完成,请重试")

@@ -198,7 +198,7 @@ async def test_blank_generation_preserves_existing_body_and_completion(
     db.refresh(chapter)
     assert any(ev == "error" for ev, _ in events)
     assert not any(ev == "done" for ev, _ in events)
-    assert chapter.status == ("done" if old_body else "outline")
+    assert chapter.status == ("done" if old_body else "empty")
     assert chapter.word_count == original_count
     assert (chapter.content.body if chapter.content else None) == old_body
     assert book_generation._pending_chapters(db, book.id) == (

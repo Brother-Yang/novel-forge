@@ -22,7 +22,7 @@ from ..memory import context as memory
 from ..memory import sync as memory_sync
 from . import chapter_plans, chapter_writes, planner, prompts, stages
 from .chapter_versions import ChapterContentConflict
-from .errors import GenerationError
+from .errors import GenerationError, log_failure
 
 logger = logging.getLogger(__name__)
 Event = tuple[str, str]
@@ -528,13 +528,15 @@ async def gen_chapter_body(
     *,
     expected_version: str | None = None,
     require_revision_approval: bool = False,
-) -> AsyncIterator[Event]:
+    unfinished_only: bool = False,
+) -> AsyncGenerator[Event]:
     try:
-        chapter, expected, book_title = chapter_writes.begin_draft(
+        draft = chapter_writes.begin_draft(
             db,
             chapter_id,
             expected_version=expected_version,
             require_revision_approval=require_revision_approval,
+            unfinished_only=unfinished_only,
         )
     except ChapterContentConflict:
         yield ("content_conflict", "")
@@ -543,51 +545,71 @@ async def gen_chapter_body(
     except GenerationError as exc:
         yield ("error", str(exc))
         return
+    if draft is None:
+        yield ("skipped", "章节正文已完成，跳过生成")
+        yield ("done", "")
+        return
+    chapter, expected, book_title = draft
 
-    if is_ending is None:
-        last_chapter_id = db.scalar(
-            select(models.Chapter.id)
-            .where(models.Chapter.book_id == expected.book_id)
-            .order_by(models.Chapter.order_index.desc(), models.Chapter.id.desc())
-            .limit(1)
+    result_saved = False
+    try:
+        if is_ending is None:
+            last_chapter_id = db.scalar(
+                select(models.Chapter.id)
+                .where(models.Chapter.book_id == expected.book_id)
+                .order_by(models.Chapter.order_index.desc(), models.Chapter.id.desc())
+                .limit(1)
+            )
+            is_ending = expected.chapter_id == last_chapter_id
+
+        try:
+            ctx = await memory.build_chapter_context(db, chapter)
+        except ObjectDeletedError:
+            db.rollback()
+            yield ("error", chapter_writes.DELETED_DURING_GENERATION)
+            return
+        if ctx.endswith(memory.MEMORY_DEGRADED_BLOCK):
+            yield ("log", memory.MEMORY_DEGRADED_NOTE)
+            ctx = ctx.removesuffix(memory.MEMORY_DEGRADED_BLOCK)
+        user = prompts.CHAPTER_BODY_USER.format(
+            title=book_title,
+            chapter_title=expected.title,
+            context=ctx,
+            words=words,
+            ending_note=(prompts.CHAPTER_BODY_ENDING_NOTE if is_ending else ""),
         )
-        is_ending = expected.chapter_id == last_chapter_id
-
-    try:
-        ctx = await memory.build_chapter_context(db, chapter)
-    except ObjectDeletedError:
         db.rollback()
-        yield ("error", chapter_writes.DELETED_DURING_GENERATION)
-        return
-    if ctx.endswith(memory.MEMORY_DEGRADED_BLOCK):
-        yield ("log", memory.MEMORY_DEGRADED_NOTE)
-        ctx = ctx.removesuffix(memory.MEMORY_DEGRADED_BLOCK)
-    user = prompts.CHAPTER_BODY_USER.format(
-        title=book_title,
-        chapter_title=expected.title,
-        context=ctx,
-        words=words,
-        ending_note=(prompts.CHAPTER_BODY_ENDING_NOTE if is_ending else ""),
-    )
-    db.rollback()
 
-    full = ""
-    async with aclosing(_stream(prompts.CHAPTER_BODY_SYSTEM, user)) as stream:
-        async for ev, data in stream:
-            if ev == "full":
-                full = data
-            else:
-                yield ev, data
+        full = ""
+        async with aclosing(_stream(prompts.CHAPTER_BODY_SYSTEM, user)) as stream:
+            async for ev, data in stream:
+                if ev == "full":
+                    full = data
+                else:
+                    yield ev, data
 
-    body = full.strip()
-    try:
-        chapter = chapter_writes.save_result(db, expected, body)
-    except GenerationError as exc:
-        yield ("error", str(exc))
-        return
-    if not body:
-        yield ("error", "模型未生成有效章节正文,请重试")
-        return
+        body = full.strip()
+        try:
+            chapter = chapter_writes.save_result(db, expected, body)
+        except GenerationError as exc:
+            yield ("error", str(exc))
+            return
+        result_saved = True
+        if not body:
+            yield ("error", "模型未生成有效章节正文,请重试")
+            return
+    finally:
+        if not result_saved:
+            try:
+                chapter_writes.abandon_draft(db, expected)
+            except Exception as exc:  # noqa: BLE001 - preserve the original outcome
+                log_failure(
+                    logger,
+                    exc,
+                    operation="restore unfinished chapter status",
+                    book_id=expected.book_id,
+                    chapter_id=expected.chapter_id,
+                )
 
     # 一致性回写:生成章摘要并写入记忆库
     yield ("log", "正在提取章摘要并回写记忆...")

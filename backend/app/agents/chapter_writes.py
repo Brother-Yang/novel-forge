@@ -1,6 +1,7 @@
 """Save generated chapter text only if the author has not changed the chapter."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -55,6 +56,26 @@ def _lock_chapter(db: Session, chapter_id: str) -> models.Chapter | None:
     return db.get(models.Chapter, chapter_id)
 
 
+def unfinished_status(outline: str) -> Literal["empty", "outline"]:
+    return "outline" if outline.strip() else "empty"
+
+
+def abandon_draft(db: Session, expected: DraftSnapshot) -> None:
+    """Restore the idle status only while this generation still owns the draft."""
+    if expected.status != "drafting":
+        return
+    try:
+        chapter = _lock_chapter(db, expected.chapter_id)
+        if chapter is None or _snapshot(chapter) != expected:
+            db.rollback()
+            return
+        chapter.status = unfinished_status(chapter.outline)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
 def clear_book_revision_approvals(db: Session, book_id: str) -> None:
     """An approval from a prior Agent run cannot authorize a new run."""
     db.execute(
@@ -98,14 +119,19 @@ def begin_draft(
     *,
     expected_version: str | None = None,
     require_revision_approval: bool = False,
-) -> tuple[models.Chapter, DraftSnapshot, str]:
-    """Capture the inputs and mark an unfinished chapter drafting."""
+    unfinished_only: bool = False,
+) -> tuple[models.Chapter, DraftSnapshot, str] | None:
+    """Capture the draft, or skip a chapter already completed by the author."""
     try:
         chapter = _lock_chapter(db, chapter_id)
         if chapter is None:
             raise GenerationError("章节不存在")
         current_body = chapter.content.body if chapter.content else ""
         require_content_version(current_body, expected_version)
+        complete = chapter_is_complete(chapter)
+        if complete and unfinished_only:
+            db.rollback()
+            return None
         book_title = db.scalar(
             select(models.Book.title).where(models.Book.id == chapter.book_id)
         )
@@ -113,7 +139,7 @@ def begin_draft(
             raise GenerationError("书籍不存在")
         # A rewrite keeps the last complete body published until a replacement
         # is ready. Failed or cancelled attempts must not make it pending again.
-        if chapter_is_complete(chapter):
+        if complete:
             if require_revision_approval and not chapter.revision_approved:
                 raise GenerationError(REVIEW_REQUIRED)
         else:
@@ -145,7 +171,7 @@ def save_result(db: Session, expected: DraftSnapshot, body: str) -> models.Chapt
             memory_sync.enqueue_chapter(db, chapter)
         elif not chapter_is_complete(chapter):
             # Empty output leaves an unfinished chapter retryable.
-            chapter.status = "outline"
+            chapter.status = unfinished_status(chapter.outline)
         db.commit()
     except Exception:
         db.rollback()
