@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    llm_provider: str = "ollama"
+    llm_provider: Literal["ollama", "openai", "bailian", "dashscope"] = "ollama"
     ollama_base_url: str = "http://localhost:11434"
     generation_model: str = "qwen2.5:14b"
     embedding_model: str = "qwen3-embedding:latest"
@@ -53,17 +53,17 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
     # 粗略以字符数近似 token,用于上下文预算控制
-    context_token_budget: int = 6000
-    previous_summary_count: int = 6
+    context_token_budget: int = Field(default=6000, ge=0)
+    previous_summary_count: int = Field(default=6, ge=0)
 
     # 智能体自主决策模式的安全上限,防止死循环/重写不止/额度失控
-    agent_max_steps: int = 40
-    agent_max_tool_calls: int = 60
-    agent_max_rewrites: int = 2
+    agent_max_steps: int = Field(default=40, ge=0)
+    agent_max_tool_calls: int = Field(default=60, ge=0)
+    agent_max_rewrites: int = Field(default=2, ge=0)
 
-    # LLM 调用失败(超时/限流/5xx)时的重试次数与首次重试延迟(指数退避)
-    llm_retry_attempts: int = 3
-    llm_retry_base_delay: float = 1.0
+    # 模型调用总尝试次数包含首次请求；退避延迟为 0 时立即重试。
+    llm_retry_attempts: int = Field(default=3, ge=1)
+    llm_retry_base_delay: float = Field(default=1.0, ge=0, allow_inf_nan=False)
 
 
 @lru_cache
