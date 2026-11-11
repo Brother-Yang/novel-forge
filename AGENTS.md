@@ -52,7 +52,7 @@
 
 ## 三、其他工程规范建议
 
-- **CI**:`.github/workflows/quality.yml` 在 push / pull request 时检查前端 lint、格式、测试和构建,以及后端依赖一致性、Ruff、basedpyright、pytest 和离线 E2E。修改后先通过对应本地检查。CI 不配置模型密钥、不运行真实模型评估;相关操作见 `docs/testing.md`。
+- **CI**:`.github/workflows/quality.yml` 在 push / pull request 时检查前端 lint、格式、测试、构建和隔离 Chromium 回归,以及后端依赖一致性、Ruff、basedpyright、pytest 和离线 E2E。修改后先通过对应本地检查。CI 不配置模型密钥、不运行真实模型评估;相关操作见 `docs/testing.md`。
 - **Lint/格式化**:前端已有 ESLint(`eslint.config.js`)+ Prettier(`.prettierrc.json`)配置,新增代码前跑 `pnpm lint` / `pnpm format:check`,不要绕开或再改动这套配置。
 - **Git 提交**:每次改动只做与需求直接相关的最小变更,不顺手"优化"未涉及的代码;提交信息说明改动原因而非罗列改了什么文件。
 - **文档同步**:目录结构、启动方式、环境变量发生变化时,同步更新根目录 `README.md`,避免文档与实际结构脱节。

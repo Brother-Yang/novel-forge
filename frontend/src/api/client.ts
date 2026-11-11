@@ -5,6 +5,16 @@ const unauthorizedListeners = new Set<() => void>();
 const responseSessions = new WeakMap<Response, number>();
 let sessionVersion = 0;
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export function onUnauthorized(listener: () => void): () => void {
   unauthorizedListeners.add(listener);
   return () => unauthorizedListeners.delete(listener);
@@ -30,7 +40,7 @@ export async function requireOk(
   if (res.status === 401 && reportUnauthorized && responseSessions.get(res) === sessionVersion) {
     for (const listener of unauthorizedListeners) listener();
   }
-  if (!readErrorBody) throw new Error(`生成请求失败（HTTP ${res.status}）`);
+  if (!readErrorBody) throw new ApiError(res.status, `生成请求失败（HTTP ${res.status}）`);
   const text = await res.text();
   let detail = text;
   try {
@@ -41,7 +51,7 @@ export async function requireOk(
   } catch {
     // A reverse proxy can return a plain-text error.
   }
-  throw new Error(`${res.status}: ${detail || "请求失败"}`);
+  throw new ApiError(res.status, `${res.status}: ${detail || "请求失败"}`);
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {

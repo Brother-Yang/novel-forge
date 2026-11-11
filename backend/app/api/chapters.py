@@ -1,3 +1,5 @@
+from hashlib import sha256
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -139,13 +141,19 @@ def reorder_chapters(payload: schemas.ReorderRequest, db: Session = Depends(get_
     return {"ok": True}
 
 
+def _content_version(body: str) -> str:
+    return sha256(body.encode("utf-8")).hexdigest()
+
+
 @router.get("/chapters/{chapter_id}/content", response_model=schemas.ChapterContentOut)
 def get_chapter_content(chapter_id: str, db: Session = Depends(get_db)):
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
         raise HTTPException(404, "章节不存在")
     body = chapter.content.body if chapter.content else ""
-    return schemas.ChapterContentOut(chapter_id=chapter_id, body=body)
+    return schemas.ChapterContentOut(
+        chapter_id=chapter_id, body=body, version=_content_version(body)
+    )
 
 
 @router.put(
@@ -156,24 +164,40 @@ def update_chapter_content(
     payload: schemas.ChapterContentUpdate,
     db: Session = Depends(get_db),
 ):
-    chapter = db.get(models.Chapter, chapter_id)
-    if not chapter:
-        raise HTTPException(404, "章节不存在")
-    if chapter.content:
-        chapter.content.body = payload.body
-    else:
-        chapter.content = models.ChapterContent(body=payload.body)
-    if payload.body.strip():
-        chapter.word_count = len(payload.body)
-        chapter.status = "done"
-    else:
-        chapter.word_count = 0
-        chapter.status = "outline" if chapter.outline.strip() else "empty"
-    memory_sync.enqueue_chapter(db, chapter)
-    db.commit()
-    return schemas.ChapterContentSaved(
-        chapter_id=chapter_id,
-        body=payload.body,
-        status=chapter.status,
-        word_count=chapter.word_count,
-    )
+    db.rollback()
+    try:
+        # Hold the SQLite write lock from reading the current version through
+        # saving the text and memory jobs, so concurrent saves cannot both pass.
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        chapter = db.get(models.Chapter, chapter_id)
+        if not chapter:
+            raise HTTPException(404, "章节不存在")
+        current_body = chapter.content.body if chapter.content else ""
+        if (
+            payload.expected_version is not None
+            and payload.expected_version != _content_version(current_body)
+        ):
+            raise HTTPException(409, "章节正文已在其他窗口更新，请重新加载后保存")
+        if chapter.content:
+            chapter.content.body = payload.body
+        else:
+            chapter.content = models.ChapterContent(body=payload.body)
+        if payload.body.strip():
+            chapter.word_count = len(payload.body)
+            chapter.status = "done"
+        else:
+            chapter.word_count = 0
+            chapter.status = "outline" if chapter.outline.strip() else "empty"
+        memory_sync.enqueue_chapter(db, chapter)
+        saved = schemas.ChapterContentSaved(
+            chapter_id=chapter_id,
+            body=payload.body,
+            version=_content_version(payload.body),
+            status=chapter.status,
+            word_count=chapter.word_count,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return saved

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { App, Button, Card, Input, Space, Tag } from "antd";
+import { Alert, App, Button, Card, Input, Space, Tag } from "antd";
 import { SaveOutlined, ThunderboltOutlined, StopOutlined } from "@ant-design/icons";
 import { api, sseEndpoints } from "../api";
+import { ApiError } from "../api/client";
 import type { Chapter } from "../api/types";
 import { CHAPTER_STATUS_LABEL } from "../constants/chapterStatus";
 import { useGenerationStream } from "../hooks/useGenerationStream";
@@ -21,6 +22,11 @@ export default function ChapterEditor({ bookId, chapterId }: Props) {
 function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [body, setBody] = useState("");
+  const [contentVersion, setContentVersion] = useState<string | null>(null);
+  const [contentConflict, setContentConflict] = useState(false);
+  const [confirmingContent, setConfirmingContent] = useState(false);
+  const [reloadingContent, setReloadingContent] = useState(false);
+  const [confirmationFailed, setConfirmationFailed] = useState(false);
   const [generationPreview, setGenerationPreview] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -31,8 +37,10 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   const metaSaves = useRef(new Set<MetaField>());
   const requestRef = useRef<AbortController | null>(null);
   const generationVersion = useRef(0);
+  const contentRead = useRef(false);
+  const unconfirmedBody = useRef<string | null>(null);
   const { running: generating, isRunning, start, cancel } = useGenerationStream(chapterId);
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const refreshTree = useAppStore((s) => s.refreshTree);
 
   useEffect(() => {
@@ -50,6 +58,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
           if (scope.current !== owner || request.signal.aborted) return;
           setChapter(data);
           setBody(content.body);
+          setContentVersion(content.version);
           setLoadFailed(false);
         })
         .catch((err: unknown) => {
@@ -107,14 +116,22 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   };
 
   const saveBody = async () => {
-    if (bodySave.current || isRunning()) return;
+    if (
+      bodySave.current ||
+      contentRead.current ||
+      isRunning() ||
+      !contentVersion ||
+      contentConflict
+    )
+      return;
     const owner = scope.current;
     generationVersion.current += 1;
     bodySave.current = true;
     setSavingBody(true);
     try {
-      const saved = await api.saveContent(chapter.id, body);
+      const saved = await api.saveContent(chapter.id, body, contentVersion);
       if (scope.current !== owner) return;
+      setContentVersion(saved.version);
       // 保存确认只更新服务端元信息,保留请求期间继续输入的草稿。
       setChapter((draft) =>
         draft?.id === saved.chapter_id
@@ -124,8 +141,10 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
       message.success("已保存正文");
       refreshTree();
     } catch (err: unknown) {
-      if (scope.current === owner)
+      if (scope.current === owner) {
+        if (err instanceof ApiError && err.status === 409) setContentConflict(true);
         message.error(err instanceof Error ? err.message : "正文保存失败");
+      }
     } finally {
       if (scope.current === owner) {
         bodySave.current = false;
@@ -134,10 +153,70 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
     }
   };
 
-  const generate = () => {
-    if (isRunning() || bodySave.current || metaSaves.current.size > 0) return;
+  // 生成完成后重新读取版本，但不能把另一个窗口的新稿当成本地草稿的基线。
+  // 显式重新加载才替换编辑区；确认生成版本时允许继续输入并保留这些输入。
+  const readContent = async (reload: boolean) => {
+    if (contentRead.current) return;
     const owner = scope.current;
     const version = ++generationVersion.current;
+    contentRead.current = true;
+    setConfirmingContent(true);
+    setReloadingContent(reload);
+    setConfirmationFailed(false);
+    try {
+      const [updated, content] = await Promise.all([
+        api.getChapter(chapter.id, requestRef.current?.signal),
+        api.getContent(chapter.id, requestRef.current?.signal),
+      ]);
+      if (scope.current !== owner || generationVersion.current !== version) return;
+      if (!reload && content.body !== unconfirmedBody.current) {
+        setContentConflict(true);
+        return;
+      }
+      if (reload) setBody(content.body);
+      setContentVersion(content.version);
+      setContentConflict(false);
+      unconfirmedBody.current = null;
+      setChapter((draft) =>
+        draft?.id === updated.id
+          ? { ...draft, status: updated.status, word_count: updated.word_count }
+          : draft
+      );
+    } catch (err: unknown) {
+      if (scope.current === owner && generationVersion.current === version) {
+        setConfirmationFailed(true);
+        message.error(err instanceof Error ? err.message : "正文版本确认失败");
+      }
+    } finally {
+      if (scope.current === owner && generationVersion.current === version) {
+        contentRead.current = false;
+        setConfirmingContent(false);
+        setReloadingContent(false);
+      }
+    }
+  };
+
+  const reloadContent = () => {
+    modal.confirm({
+      title: "重新加载服务器正文？",
+      content: "这会替换当前编辑区的草稿。请先复制需要保留的文字，再重新加载并合并修改。",
+      okText: "替换并重新加载",
+      cancelText: "保留本地草稿",
+      onOk: () => readContent(true),
+    });
+  };
+
+  const generate = () => {
+    if (
+      isRunning() ||
+      bodySave.current ||
+      metaSaves.current.size > 0 ||
+      contentRead.current ||
+      contentConflict ||
+      !contentVersion
+    )
+      return;
+    generationVersion.current += 1;
     let generatedBody = "";
     setGenerationPreview(null);
     start(
@@ -151,25 +230,13 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
           if (generatedBody.trim()) setGenerationPreview(generatedBody);
         },
         onDone: () => {
-          if (generatedBody.trim()) setBody(generatedBody.trim());
+          const confirmedBody = generatedBody.trim();
+          if (confirmedBody) setBody(confirmedBody);
+          unconfirmedBody.current = confirmedBody;
+          setContentVersion(null);
           setGenerationPreview(null);
           refreshTree();
-          void api
-            .getChapter(chapter.id, requestRef.current?.signal)
-            .then((updated) => {
-              if (scope.current !== owner || generationVersion.current !== version) return;
-              // 生成只改变状态、字数；标题和大纲仍由本地编辑状态拥有。
-              setChapter((draft) =>
-                draft?.id === updated.id
-                  ? { ...draft, status: updated.status, word_count: updated.word_count }
-                  : draft
-              );
-            })
-            .catch((err: unknown) => {
-              if (scope.current === owner && generationVersion.current === version) {
-                message.error(err instanceof Error ? err.message : "章节状态刷新失败");
-              }
-            });
+          void readContent(false);
         },
         onError: (err) => {
           setGenerationPreview(null);
@@ -208,7 +275,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
             <Button
               type="primary"
               icon={<ThunderboltOutlined />}
-              disabled={savingBody || savingFields.length > 0}
+              disabled={savingBody || savingFields.length > 0 || !contentVersion || contentConflict}
               onClick={generate}
             >
               生成正文
@@ -216,13 +283,40 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
           )}
           <Button
             icon={<SaveOutlined />}
-            disabled={generating || savingBody}
+            disabled={generating || savingBody || !contentVersion || contentConflict}
             onClick={() => void saveBody()}
           >
             保存
           </Button>
         </Space>
       </div>
+
+      {contentConflict ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="服务器正文已有新版本，本地草稿已保留"
+          description="请先复制需要保留的文字，再重新加载服务器正文并合并修改。"
+          action={
+            <Button loading={confirmingContent} onClick={reloadContent}>
+              重新加载正文
+            </Button>
+          }
+        />
+      ) : confirmationFailed ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="尚未确认生成后的正文版本，当前草稿已保留"
+          action={
+            <Button loading={confirmingContent} onClick={() => void readContent(false)}>
+              重新确认版本
+            </Button>
+          }
+        />
+      ) : confirmingContent ? (
+        <span role="status">正在确认正文版本…</span>
+      ) : null}
 
       <Card className="nf-editor__outline" size="small" title="本章大纲">
         <Input.TextArea
@@ -242,7 +336,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
       <Input.TextArea
         className={`nf-editor__body${generating ? " nf-editor__body--live" : ""}`}
         value={displayedBody}
-        disabled={generating}
+        disabled={generating || reloadingContent}
         onChange={(e) => setBody(e.target.value)}
         autoSize={{ minRows: 18 }}
         placeholder="点击“生成正文”让 AI 基于大纲与记忆写作,或直接手写。"

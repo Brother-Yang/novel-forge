@@ -45,8 +45,11 @@ export const api = {
     http.post("/chapters/reorder", { items }),
   getContent: (id: string, signal?: AbortSignal) =>
     http.get<ChapterContent>(`/chapters/${id}/content`, signal),
-  saveContent: (id: string, body: string) =>
-    http.put<ChapterContentSaved>(`/chapters/${id}/content`, { body }),
+  saveContent: (id: string, body: string, expectedVersion: string) =>
+    http.put<ChapterContentSaved>(`/chapters/${id}/content`, {
+      body,
+      expected_version: expectedVersion,
+    }),
 
   // characters
   listCharacters: (bookId: string) => http.get<Character[]>(`/books/${bookId}/characters`),

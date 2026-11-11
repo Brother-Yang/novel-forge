@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { http, onUnauthorized, sseFetch } from "./client";
+import { ApiError, http, onUnauthorized, sseFetch } from "./client";
 
 function mockFetch(response: Partial<Response> & { jsonBody?: unknown; textBody?: string }) {
   const res = {
@@ -42,6 +42,15 @@ describe("http", () => {
   it("响应非 2xx 时抛出包含状态码与错误文本的异常", async () => {
     mockFetch({ ok: false, status: 404, textBody: "书籍不存在" });
     await expect(http.get("/books/999")).rejects.toThrow("404: 书籍不存在");
+  });
+
+  it("错误保留结构化状态码，正文冲突不依赖解析提示文案", async () => {
+    mockFetch({ ok: false, status: 409, textBody: '{"detail":"正文已有新版本"}' });
+    await expect(http.put("/chapters/a/content", {})).rejects.toMatchObject({
+      name: "ApiError",
+      status: 409,
+      message: "409: 正文已有新版本",
+    });
   });
 
   it("204 No Content 时返回 undefined", async () => {
@@ -115,7 +124,7 @@ describe("sseFetch", () => {
     const onError = vi.fn();
     const onEvent = vi.fn();
     await sseFetch("/generate/chapter", {}, { onEvent, onError });
-    expect(onError).toHaveBeenCalledWith(new Error("429: 生成请求已达到本时段限额"));
+    expect(onError).toHaveBeenCalledWith(new ApiError(429, "429: 生成请求已达到本时段限额"));
     expect(onEvent).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledWith(
       "/api/generate/chapter",

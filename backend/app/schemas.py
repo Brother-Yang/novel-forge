@@ -112,6 +112,7 @@ class ChapterOut(ORMModel):
 class ChapterContentOut(BaseModel):
     chapter_id: str
     body: str
+    version: str
 
 
 class ChapterContentSaved(ChapterContentOut):
@@ -121,6 +122,7 @@ class ChapterContentSaved(ChapterContentOut):
 
 class ChapterContentUpdate(BaseModel):
     body: str
+    expected_version: str | None = None
 
 
 class ReorderItem(BaseModel):

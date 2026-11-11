@@ -32,6 +32,7 @@ export interface Chapter {
 export interface ChapterContent {
   chapter_id: string;
   body: string;
+  version: string;
 }
 
 export interface ChapterContentSaved extends ChapterContent {

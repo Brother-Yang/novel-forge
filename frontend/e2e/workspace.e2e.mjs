@@ -129,6 +129,80 @@ test("登录后创建并编辑书稿，删卷保留章节，按需打开编辑�
   });
 });
 
+test("两个窗口编辑同一章时保留冲突草稿，确认恢复后才能继续保存", async ({
+  page,
+  context,
+  runtime,
+}) => {
+  await login(page, runtime);
+  const bookResponse = await context.request.post(`${runtime.origin}/api/books`, {
+    headers: { Origin: runtime.origin },
+    data: { title: "多窗口保存测试" },
+  });
+  await expect(bookResponse).toBeOK();
+  const book = await bookResponse.json();
+  const chapterResponse = await context.request.post(`${runtime.origin}/api/chapters`, {
+    headers: { Origin: runtime.origin },
+    data: { book_id: book.id, title: "冲突章节", outline: "合成章纲" },
+  });
+  await expect(chapterResponse).toBeOK();
+  const chapter = await chapterResponse.json();
+  const contentUrl = `${runtime.origin}/api/chapters/${chapter.id}/content`;
+  const otherPage = await context.newPage();
+  const errors = [];
+  otherPage.on("pageerror", (error) => errors.push(error.message));
+  await otherPage.route("**/*", (route) =>
+    new URL(route.request().url()).origin === runtime.origin
+      ? route.continue()
+      : route.abort("blockedbyclient")
+  );
+  const editor = (current) => current.locator(".nf-editor");
+  const body = (current) => editor(current).getByPlaceholder(/点击“生成正文”/);
+  const save = (current) => editor(current).getByRole("button", { name: /保\s*存$/ });
+  const contentSave = (current) =>
+    current.waitForResponse(
+      (response) => response.url() === contentUrl && response.request().method() === "PUT"
+    );
+  try {
+    for (const current of [page, otherPage]) {
+      await current.goto(`${runtime.origin}/books/${book.id}`);
+      await current.locator(".nf-catalog").getByText("冲突章节", { exact: true }).click();
+      await expect(body(current)).toHaveValue("");
+    }
+    await body(page).fill("第一个窗口已保存的正文");
+    const [saved] = await Promise.all([contentSave(page), save(page).click()]);
+    expect(saved.status()).toBe(200);
+    await body(otherPage).fill("第二个窗口尚未合并的草稿");
+    const [conflict] = await Promise.all([contentSave(otherPage), save(otherPage).click()]);
+    expect(conflict.status()).toBe(409);
+    await expect(
+      otherPage.getByText("服务器正文已有新版本，本地草稿已保留", { exact: true })
+    ).toBeVisible();
+    await expect(body(otherPage)).toHaveValue("第二个窗口尚未合并的草稿");
+    await expect(save(otherPage)).toBeDisabled();
+
+    await otherPage.getByRole("button", { name: "重新加载正文", exact: true }).click();
+    await otherPage.getByRole("dialog").getByRole("button", { name: "保留本地草稿" }).click();
+    await expect(otherPage.getByRole("dialog")).toBeHidden();
+    await expect(body(otherPage)).toHaveValue("第二个窗口尚未合并的草稿");
+    expect((await (await context.request.get(contentUrl)).json()).body).toBe(
+      "第一个窗口已保存的正文"
+    );
+
+    await otherPage.getByRole("button", { name: "重新加载正文", exact: true }).click();
+    await otherPage.getByRole("dialog").getByRole("button", { name: "替换并重新加载" }).click();
+    await expect(otherPage.getByRole("dialog")).toBeHidden();
+    await expect(body(otherPage)).toHaveValue("第一个窗口已保存的正文");
+    await body(otherPage).fill("两个窗口手工合并后的正文");
+    const [merged] = await Promise.all([contentSave(otherPage), save(otherPage).click()]);
+    expect(merged.status()).toBe(200);
+    expect((await merged.json()).body).toBe("两个窗口手工合并后的正文");
+    expect(errors).toEqual([]);
+  } finally {
+    await otherPage.close();
+  }
+});
+
 test("轨迹向前翻页保持阅读位置，接收新事件并在任务结束后补拉", async ({ page, runtime }) => {
   await login(page, runtime);
   const database = new DatabaseSync(runtime.database);
