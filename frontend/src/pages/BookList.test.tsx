@@ -122,12 +122,16 @@ describe("BookList", () => {
     const draft = { body: "本地草稿", base: { body: "", version: "original" } };
     useAppStore.getState().setChapterDraft(removed, draft);
     useAppStore.getState().setChapterDraft(preserved, draft);
-    vi.mocked(api.listBooks).mockResolvedValueOnce([book]).mockResolvedValueOnce([]);
+    const otherBook = { ...book, id: "other-book", title: "仍保留的书" };
+    vi.mocked(api.listBooks)
+      .mockResolvedValueOnce([book, otherBook])
+      .mockResolvedValueOnce([otherBook]);
     if (failed) vi.mocked(api.deleteBook).mockRejectedValueOnce(new Error("无法删除测试书"));
     else vi.mocked(api.deleteBook).mockResolvedValueOnce({ ok: true });
     const user = userEvent.setup();
     renderWithProviders();
-    const deleteIcon = await screen.findByRole("img", { name: "delete" });
+    const bookCard = await screen.findByRole("button", { name: /待删除的测试书/ });
+    const deleteIcon = within(bookCard).getByRole("img", { name: "delete" });
     await user.click(deleteIcon);
     await user.click(await screen.findByRole("button", { name: "OK" }));
     if (failed) {
@@ -137,7 +141,7 @@ describe("BookList", () => {
         [preserved]: draft,
       });
     } else {
-      expect(await screen.findByText(/还没有书籍/)).toBeVisible();
+      await waitFor(() => expect(screen.queryByText(book.title)).not.toBeInTheDocument());
       expect(useAppStore.getState().chapterDrafts).toEqual({ [preserved]: draft });
     }
   });

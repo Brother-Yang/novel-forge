@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Layout, Menu, Button, Spin, Dropdown, Alert, App } from "antd";
+import { Layout, Menu, Button, Spin, Dropdown, Alert, App, Space } from "antd";
 import {
   ArrowLeftOutlined,
   BookOutlined,
@@ -18,6 +18,7 @@ import AsyncContent from "../components/AsyncContent";
 import AuthSignOut from "../components/AuthSignOut";
 import { useBook } from "../hooks/useBook";
 import { paths } from "../router/paths";
+import { chapterDraftKey, useAppStore } from "../store";
 import { downloadFile } from "../utils/download";
 
 const { Sider, Content, Header } = Layout;
@@ -31,6 +32,41 @@ type View = (typeof views)[number];
 
 function isView(value: string | null): value is View {
   return views.some((view) => view === value);
+}
+
+function markBookDraftsMissing(bookId: string) {
+  const { chapterDrafts, markChapterDraftsMissing } = useAppStore.getState();
+  const prefix = chapterDraftKey(bookId, "");
+  markChapterDraftsMissing(Object.keys(chapterDrafts).filter((key) => key.startsWith(prefix)));
+}
+
+function MissingBookDrafts({ bookId }: { bookId: string }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const drafts = useAppStore((state) => state.chapterDrafts);
+  const prefix = chapterDraftKey(bookId, "");
+  const entries = Object.entries(drafts).flatMap(([key, draft]) =>
+    draft && key.startsWith(prefix) ? [{ id: key.slice(prefix.length), title: draft.title }] : []
+  );
+  if (!entries.length) return null;
+  return (
+    <section aria-label="本窗口的正文草稿">
+      <h2 style={{ color: "var(--nf-paper-bright)" }}>本窗口的正文草稿</h2>
+      <Space wrap>
+        {entries.map(({ id, title }) => (
+          <Button
+            key={id}
+            type={selected === id ? "primary" : "default"}
+            onClick={() => setSelected(id)}
+          >
+            查看草稿：{title || id}
+          </Button>
+        ))}
+      </Space>
+      {selected && drafts[chapterDraftKey(bookId, selected)] && (
+        <ChapterEditor bookId={bookId} chapterId={selected} />
+      )}
+    </section>
+  );
 }
 
 export default function BookWorkspace() {
@@ -53,7 +89,12 @@ function Workspace({ bookId }: WorkspaceProps) {
   const [selectedChapter, setSelectedChapter] = useState<string | null>(null);
   const [taskActive, setTaskActive] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const { book, error, loading, retry } = useBook(bookId, view === "tasks" && taskActive);
+  const { book, error, notFound, loading, retry } = useBook(
+    bookId,
+    view === "tasks" && taskActive,
+    undefined,
+    markBookDraftsMissing
+  );
 
   const exportBook = async (format: "txt" | "epub") => {
     if (!book || exporting) return;
@@ -79,6 +120,18 @@ function Workspace({ bookId }: WorkspaceProps) {
       }
     />
   ) : null;
+
+  if (notFound) {
+    return (
+      <div className="nf-boot">
+        <Space direction="vertical" size="large" style={{ width: "min(760px, 92vw)" }}>
+          {failure}
+          <Button onClick={() => navigate(paths.home)}>返回书架</Button>
+          <MissingBookDrafts bookId={bookId} />
+        </Space>
+      </div>
+    );
+  }
 
   if (!book) {
     return (

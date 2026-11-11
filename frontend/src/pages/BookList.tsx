@@ -32,6 +32,11 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : "请求失败";
 }
 
+function draftBookId(key: string): string | undefined {
+  const [bookId, chapterId] = key.split(":", 2);
+  return bookId && chapterId ? bookId : undefined;
+}
+
 export default function BookList() {
   const [books, setBooks] = useState<Book[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -44,14 +49,37 @@ export default function BookList() {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const { pending: submitting, run } = usePendingAction();
+  const chapterDrafts = useAppStore((state) => state.chapterDrafts);
+  const missingDraftBooks = new Map<string, string>();
+  if (books && !loading && !loadError) {
+    const availableBooks = new Set(books.map(({ id }) => id));
+    for (const [key, draft] of Object.entries(chapterDrafts)) {
+      const bookId = draftBookId(key);
+      if (
+        draft?.verification === "missing" &&
+        bookId &&
+        !availableBooks.has(bookId) &&
+        !missingDraftBooks.has(bookId)
+      ) {
+        missingDraftBooks.set(bookId, draft.title || bookId);
+      }
+    }
+  }
 
   const load = useCallback(() => {
     listRequest.current?.abort();
     const request = new AbortController();
     listRequest.current = request;
+    const knownDraftKeys = Object.keys(useAppStore.getState().chapterDrafts);
     void api.listBooks(request.signal).then(
       (data) => {
         if (request.signal.aborted) return;
+        const availableBooks = new Set(data.map(({ id }) => id));
+        const missingDraftKeys = knownDraftKeys.filter((key) => {
+          const bookId = draftBookId(key);
+          return bookId !== undefined && !availableBooks.has(bookId);
+        });
+        useAppStore.getState().markChapterDraftsMissing(missingDraftKeys);
         setBooks(data);
         setLoadError(null);
         setLoading(false);
@@ -165,6 +193,22 @@ export default function BookList() {
             <Button aria-label="重新加载书架" loading={loading} onClick={reload}>
               重新加载书架
             </Button>
+          }
+        />
+      )}
+      {missingDraftBooks.size > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message="有未保存的正文草稿"
+          description={
+            <Space wrap>
+              {[...missingDraftBooks].map(([bookId, title]) => (
+                <Button key={bookId} onClick={() => navigate(paths.book(bookId))}>
+                  找回草稿：{title}
+                </Button>
+              ))}
+            </Space>
           }
         />
       )}

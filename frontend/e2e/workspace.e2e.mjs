@@ -19,6 +19,26 @@ async function login(page, runtime, { checkWrongPassword = false } = {}) {
   await expect(page.getByRole("heading", { name: "我的小说" })).toBeVisible();
 }
 
+async function holdChapterSaveResponse(page, contentUrl) {
+  const release = Promise.withResolvers();
+  let submittedStatus;
+  const delaySaveConfirmation = async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const saved = await route.fetch();
+    submittedStatus = saved.status();
+    await release.promise;
+    await route.fulfill({ response: saved });
+  };
+  await page.route(contentUrl, delaySaveConfirmation);
+  return {
+    committed: () => expect.poll(() => submittedStatus).toBe(200),
+    release: async () => {
+      release.resolve();
+      await page.unroute(contentUrl, delaySaveConfirmation);
+    },
+  };
+}
+
 test("登录后创建并编辑书稿，删卷保留章节，按需打开编辑器并导出", async ({
   page,
   context,
@@ -275,28 +295,8 @@ test("保存中切换页面、正文冲突和远端删章后可恢复本地草�
   const contentUrl = `${runtime.origin}/api/chapters/${chapter.id}/content`;
   await selectFirst();
 
-  async function holdSaveResponse() {
-    const release = Promise.withResolvers();
-    let submittedStatus;
-    const delaySaveConfirmation = async (route) => {
-      if (route.request().method() !== "PUT") return route.fallback();
-      const saved = await route.fetch();
-      submittedStatus = saved.status();
-      await release.promise;
-      await route.fulfill({ response: saved });
-    };
-    await page.route(contentUrl, delaySaveConfirmation);
-    return {
-      committed: () => expect.poll(() => submittedStatus).toBe(200),
-      release: async () => {
-        release.resolve();
-        await page.unroute(contentUrl, delaySaveConfirmation);
-      },
-    };
-  }
-
   await test.step("保存已提交但响应未返回时，保留改回原文的编辑", async () => {
-    const save = await holdSaveResponse();
+    const save = await holdChapterSaveResponse(page, contentUrl);
     try {
       await body.fill("保存中的第一稿");
       await page.getByRole("button", { name: /保\s*存$/ }).click();
@@ -345,7 +345,7 @@ test("保存中切换页面、正文冲突和远端删章后可恢复本地草�
     await page.getByRole("dialog").getByRole("button", { name: "替换并重新加载" }).click();
     await expect(body).toHaveValue("另一窗口保存的新稿");
     await body.fill("作者未保存的续写");
-    const save = await holdSaveResponse();
+    const save = await holdChapterSaveResponse(page, contentUrl);
     const recovered = page.getByRole("textbox", { name: "本地正文草稿" });
     try {
       await page.getByRole("button", { name: /保\s*存$/ }).click();
@@ -394,6 +394,121 @@ test("保存中切换页面、正文冲突和远端删章后可恢复本地草�
     await expect(tree.getByText("待恢复的正文草稿", { exact: true })).toBeHidden();
     await expect.poll(allowsLeaving).toBe(true);
   });
+});
+
+test("另一窗口删书后可从书架找回、复制并明确丢弃本地草稿", async ({ page, context, runtime }) => {
+  await login(page, runtime);
+  const title = "远端删除草稿测试书";
+  const chapterTitle = "等待恢复的合成章节";
+  const draft = "这是远端删除书籍时尚未保存的正文。";
+  const post = (path, data) =>
+    context.request.post(`${runtime.origin}/api${path}`, {
+      headers: { Origin: runtime.origin },
+      data,
+    });
+  const created = await post("/books", { title });
+  await expect(created).toBeOK();
+  const book = await created.json();
+  const added = await post("/chapters", { book_id: book.id, title: chapterTitle });
+  await expect(added).toBeOK();
+  const chapter = await added.json();
+  const contentUrl = `${runtime.origin}/api/chapters/${chapter.id}/content`;
+
+  await page.reload();
+  await page.getByRole("heading", { name: title }).click();
+  await page.locator(".nf-catalog").getByText(chapterTitle, { exact: true }).click();
+  await page.getByPlaceholder(/点击“生成正文”/).fill(draft);
+  await expect(page.getByText("未保存草稿", { exact: true })).toBeVisible();
+
+  const findDraft = page.getByRole("button", { name: new RegExp(`找回草稿.*${chapterTitle}`) });
+  const viewDraft = page.getByRole("button", { name: new RegExp(`查看草稿.*${chapterTitle}`) });
+  const recovered = page.getByRole("textbox", { name: "本地正文草稿" });
+  const save = await holdChapterSaveResponse(page, contentUrl);
+  try {
+    await page.getByRole("button", { name: /保\s*存$/ }).click();
+    await save.committed();
+    const otherPage = await context.newPage();
+    const errors = [];
+    otherPage.on("pageerror", (error) => errors.push(error.message));
+    try {
+      await otherPage.route("**/*", (route) =>
+        new URL(route.request().url()).origin === runtime.origin
+          ? route.continue()
+          : route.abort("blockedbyclient")
+      );
+      await otherPage.goto(runtime.origin);
+      await otherPage
+        .locator(".nf-book-card")
+        .filter({ has: otherPage.getByRole("heading", { name: title }) })
+        .getByRole("img", { name: "delete" })
+        .click();
+      const [deleted] = await Promise.all([
+        otherPage.waitForResponse(
+          (response) =>
+            response.url() === `${runtime.origin}/api/books/${book.id}` &&
+            response.request().method() === "DELETE"
+        ),
+        otherPage.getByRole("button", { name: /^(?:OK|确\s*定)$/ }).click(),
+      ]);
+      expect(deleted.ok()).toBe(true);
+      await expect(otherPage.getByRole("heading", { name: title })).toBeHidden();
+      expect(errors).toEqual([]);
+    } finally {
+      await otherPage.close();
+    }
+
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "我的小说" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: title })).toBeHidden();
+    await expect(findDraft).toBeVisible();
+    const confirmation = page.waitForResponse(
+      (response) => response.url() === contentUrl && response.request().method() === "PUT"
+    );
+    await save.release();
+    await (await confirmation).finished();
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve))
+        )
+    );
+    await expect(findDraft).toBeVisible();
+  } finally {
+    await save.release();
+  }
+  await findDraft.click();
+  await expect(page.getByText("本窗口的正文草稿", { exact: true })).toBeVisible();
+  await viewDraft.click();
+  await expect(recovered).toHaveValue(draft);
+
+  await page.goBack();
+  await expect(findDraft).toBeVisible();
+  await page.goForward();
+  await viewDraft.click();
+  await expect(recovered).toHaveValue(draft);
+  await expect(recovered).not.toBeEditable();
+  const allowsLeaving = () =>
+    page.evaluate(() =>
+      globalThis.dispatchEvent(new globalThis.Event("beforeunload", { cancelable: true }))
+    );
+  expect(await allowsLeaving()).toBe(false);
+
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByRole("button", { name: "复制正文" }).click();
+  await expect(page.getByText("已复制正文", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => globalThis.navigator.clipboard.readText())).toBe(draft);
+
+  const discard = page.getByRole("button", { name: "丢弃本地草稿" });
+  await discard.click();
+  await page.getByRole("dialog").getByRole("button", { name: "保留草稿" }).click();
+  await expect(recovered).toHaveValue(draft);
+  await discard.click();
+  await page.getByRole("dialog").getByRole("button", { name: "丢弃草稿" }).click();
+  await expect(recovered).toBeHidden();
+  await expect.poll(allowsLeaving).toBe(true);
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "我的小说" })).toBeVisible();
+  await expect(findDraft).toBeHidden();
 });
 
 test("轨迹向前翻页保持阅读位置，接收新事件并在任务结束后补拉", async ({ page, runtime }) => {
