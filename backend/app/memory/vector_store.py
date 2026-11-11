@@ -6,6 +6,8 @@ from typing import Any
 
 import chromadb
 from chromadb.api import ClientAPI
+from chromadb.api.models.Collection import Collection
+from chromadb.config import Settings as ChromaSettings
 from chromadb.errors import NotFoundError
 
 from ..config import settings
@@ -43,11 +45,20 @@ def _repair_collection_config(path: str) -> None:
 @lru_cache
 def _client() -> ClientAPI:
     _repair_collection_config(settings.chroma_dir)
-    return chromadb.PersistentClient(path=settings.chroma_dir)
+    return chromadb.PersistentClient(
+        path=settings.chroma_dir,
+        settings=ChromaSettings(chroma_api_impl="chromadb.api.rust.RustBindingsAPI"),
+    )
 
 
-def _collection(book_id: str):
-    return _client().get_or_create_collection(name=f"book_{book_id}")
+def _collection(book_id: str, *, create: bool = False) -> Collection:
+    # Always supply numerical vectors to Chroma. Opening a legacy collection
+    # with None does not erase its saved embedding configuration.
+    client = _client()
+    name = f"book_{book_id}"
+    if create:
+        return client.get_or_create_collection(name=name, embedding_function=None)
+    return client.get_collection(name=name, embedding_function=None)
 
 
 def upsert(
@@ -59,7 +70,7 @@ def upsert(
 ) -> None:
     if not embedding:
         return
-    _collection(book_id).upsert(
+    _collection(book_id, create=True).upsert(
         ids=[doc_id],
         embeddings=[embedding],
         documents=[document],
@@ -76,7 +87,7 @@ def query(
     if not embedding:
         return []
     try:
-        coll = _client().get_collection(name=f"book_{book_id}")
+        coll = _collection(book_id)
     except NotFoundError:
         return []
     count = coll.count()
@@ -94,7 +105,7 @@ def query(
 
 def delete_source(book_id: str, source_type: str, source_id: str) -> None:
     try:
-        coll = _client().get_collection(name=f"book_{book_id}")
+        coll = _collection(book_id)
     except NotFoundError:
         return
     coll.delete(
@@ -117,7 +128,7 @@ def list_book_ids() -> list[str]:
 
 def existing_ids(book_id: str) -> set[str]:
     try:
-        coll = _client().get_collection(name=f"book_{book_id}")
+        coll = _collection(book_id)
     except NotFoundError:
         return set()
     return set(coll.get(include=[])["ids"])

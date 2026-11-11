@@ -67,6 +67,8 @@ DASHSCOPE_API_KEY=sk-你的百炼APIKey
 
 已知限制与后续工作见 [待优化问题清单](docs/optimization-backlog.md)。清单只保留未解决项，修复并验证后删除对应条目。
 
+接手开发时可先读 [维护指南与模块边界](docs/architecture.md),了解生成、事务、记忆同步和前端草稿分别由哪个模块负责。
+
 ### 1. 启动后端
 
 ```bash
