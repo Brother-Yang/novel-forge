@@ -1,21 +1,61 @@
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const BASE = API_BASE;
 
+const unauthorizedListeners = new Set<() => void>();
+const responseSessions = new WeakMap<Response, number>();
+let sessionVersion = 0;
+
+export function onUnauthorized(listener: () => void): () => void {
+  unauthorizedListeners.add(listener);
+  return () => unauthorizedListeners.delete(listener);
+}
+
+export function markSessionChanged(): void {
+  sessionVersion += 1;
+}
+
+export async function fetchWithSession(url: string, options: RequestInit = {}): Promise<Response> {
+  const version = sessionVersion;
+  const response = await fetch(url, { ...options, credentials: "include" });
+  responseSessions.set(response, version);
+  return response;
+}
+
+export async function requireOk(
+  res: Response,
+  reportUnauthorized = true,
+  readErrorBody = true
+): Promise<void> {
+  if (res.ok) return;
+  if (res.status === 401 && reportUnauthorized && responseSessions.get(res) === sessionVersion) {
+    for (const listener of unauthorizedListeners) listener();
+  }
+  if (!readErrorBody) throw new Error(`生成请求失败（HTTP ${res.status}）`);
+  const text = await res.text();
+  let detail = text;
+  try {
+    const body: unknown = JSON.parse(text);
+    if (body && typeof body === "object" && "detail" in body && typeof body.detail === "string") {
+      detail = body.detail;
+    }
+  } catch {
+    // A reverse proxy can return a plain-text error.
+  }
+  throw new Error(`${res.status}: ${detail || "请求失败"}`);
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchWithSession(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
-  }
+  await requireOk(res, path !== "/auth/login");
   if (res.status === 204) return undefined as T;
   return res.json();
 }
 
 export const http = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) }),
   patch: <T>(path: string, body?: unknown) =>
@@ -50,17 +90,22 @@ export async function sseFetch(path: string, body: unknown, handlers: SSEHandler
 
   try {
     handlers.signal?.throwIfAborted();
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await fetchWithSession(`${BASE}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify(body ?? {}),
       signal: handlers.signal,
     });
+    const contentType = res.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase();
+    if (!res.ok && contentType !== "application/json") {
+      // Do not wait for an error response that keeps streaming indefinitely.
+      reader = res.body?.getReader();
+      await requireOk(res, true, false);
+    }
+    await requireOk(res);
     reader = res.body?.getReader();
-    if (!res.ok || !reader) throw new Error(`SSE ${res.status}`);
-    if (
-      res.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== "text/event-stream"
-    ) {
+    if (!reader) throw new Error("生成连接没有响应正文");
+    if (contentType !== "text/event-stream") {
       throw new Error("SSE 响应类型错误");
     }
     handlers.signal?.addEventListener("abort", cancelReader, { once: true });

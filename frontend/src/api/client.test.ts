@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { http, sseFetch } from "./client";
+import { http, onUnauthorized, sseFetch } from "./client";
 
 function mockFetch(response: Partial<Response> & { jsonBody?: unknown; textBody?: string }) {
   const res = {
@@ -49,6 +49,22 @@ describe("http", () => {
     const data = await http.del("/books/1");
     expect(data).toBeUndefined();
   });
+
+  it("保护接口 401 触发会话失效，登录失败仅返回提示", async () => {
+    const expired = vi.fn();
+    const unsubscribe = onUnauthorized(expired);
+    try {
+      mockFetch({ ok: false, status: 401, textBody: '{"detail":"访问密码不正确"}' });
+      await expect(http.post("/auth/login", { password: "wrong" })).rejects.toThrow(
+        "访问密码不正确"
+      );
+      expect(expired).not.toHaveBeenCalled();
+      await expect(http.get("/books")).rejects.toThrow("401");
+      expect(expired).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
+  });
 });
 
 const encoder = new TextEncoder();
@@ -86,6 +102,26 @@ async function consume(chunks: (string | Uint8Array)[], close = true) {
 }
 
 describe("sseFetch", () => {
+  it("流式生成的 HTTP 限额错误展示后端信息并携带会话", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response('{"detail":"生成请求已达到本时段限额"}', {
+          status: 429,
+          headers: { "Content-Type": "application/json" },
+        })
+      )
+    );
+    const onError = vi.fn();
+    const onEvent = vi.fn();
+    await sseFetch("/generate/chapter", {}, { onEvent, onError });
+    expect(onError).toHaveBeenCalledWith(new Error("429: 生成请求已达到本时段限额"));
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/generate/chapter",
+      expect.objectContaining({ credentials: "include" })
+    );
+  });
   it.each(["\n", "\r", "\r\n"])(
     "在 %j 换行及每个字节边界正确分发多行 UTF-8 data",
     async (newline) => {

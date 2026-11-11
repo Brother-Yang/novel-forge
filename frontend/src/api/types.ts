@@ -29,6 +29,16 @@ export interface Chapter {
   word_count: number;
 }
 
+export interface ChapterContent {
+  chapter_id: string;
+  body: string;
+}
+
+export interface ChapterContentSaved extends ChapterContent {
+  status: string;
+  word_count: number;
+}
+
 export interface TreeChapter {
   id: string;
   title: string;
@@ -56,6 +66,14 @@ export interface Character {
   order_index: number;
   md_content: string;
   state_json: string;
+  derived_state?: CharacterState;
+}
+
+export interface CharacterState {
+  location?: string;
+  condition?: string;
+  goal?: string;
+  relationship?: string;
 }
 
 export interface Worldbuilding {
@@ -72,6 +90,7 @@ export interface PlotThread {
   name: string;
   status: string;
   description: string;
+  derived_status?: "active" | "closed" | null;
 }
 
 export interface GenerationTask {
@@ -99,4 +118,33 @@ export interface AgentTraceEntry {
   tool_name: string | null;
   payload: string;
   created_at: string;
+}
+
+export interface AgentTracePageEntry extends AgentTraceEntry {
+  sequence: number;
+}
+
+export interface AgentTracePage {
+  entries: AgentTracePageEntry[];
+  has_more: boolean;
+}
+
+export interface MemorySyncItem {
+  id: string;
+  source_type: "worldbuilding" | "chapter_summary" | "volume_summary" | "chapter_facts";
+  source_id: string;
+  status: "pending" | "running" | "error";
+  attempts: number;
+  error: string;
+  updated_at: string;
+}
+
+export interface MemoryStatus {
+  pending: number;
+  running: number;
+  failed: number;
+  missing: number;
+  ready: number;
+  total: number;
+  items: MemorySyncItem[];
 }

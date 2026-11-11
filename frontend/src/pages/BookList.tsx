@@ -1,5 +1,17 @@
-import { useEffect, useState } from "react";
-import { App, Button, Form, Input, InputNumber, Modal, Popconfirm, Space, Typography } from "antd";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  App,
+  Button,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Popconfirm,
+  Space,
+  Spin,
+  Typography,
+} from "antd";
 import {
   PlusOutlined,
   DeleteOutlined,
@@ -10,6 +22,8 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Book } from "../api/types";
 import BrandMark from "../components/BrandMark";
+import AuthSignOut from "../components/AuthSignOut";
+import { usePendingAction } from "../hooks/usePendingAction";
 import { paths } from "../router/paths";
 
 function errMessage(err: unknown): string {
@@ -17,54 +31,92 @@ function errMessage(err: unknown): string {
 }
 
 export default function BookList() {
-  const [books, setBooks] = useState<Book[]>([]);
+  const [books, setBooks] = useState<Book[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const listRequest = useRef<AbortController | null>(null);
   const [emptyOpen, setEmptyOpen] = useState(false);
   const [novelOpen, setNovelOpen] = useState(false);
   const [emptyForm] = Form.useForm();
   const [novelForm] = Form.useForm();
   const navigate = useNavigate();
   const { message } = App.useApp();
+  const { pending: submitting, run } = usePendingAction();
 
-  const load = () =>
-    api
-      .listBooks()
-      .then(setBooks)
-      .catch((err: unknown) => message.error(errMessage(err)));
+  const load = useCallback(() => {
+    listRequest.current?.abort();
+    const request = new AbortController();
+    listRequest.current = request;
+    void api.listBooks(request.signal).then(
+      (data) => {
+        if (request.signal.aborted) return;
+        setBooks(data);
+        setLoadError(null);
+        setLoading(false);
+      },
+      (err: unknown) => {
+        if (request.signal.aborted) return;
+        setLoadError(errMessage(err));
+        setLoading(false);
+      }
+    );
+  }, []);
   useEffect(() => {
     load();
-    // 仅在进入列表页时拉一次;message 来自 antd context,不必加入依赖。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => {
+      listRequest.current?.abort();
+      listRequest.current = null;
+    };
+  }, [load]);
 
-  const onCreateEmpty = async () => {
-    try {
-      const values = await emptyForm.validateFields();
-      await api.createBook(values);
-      setEmptyOpen(false);
-      emptyForm.resetFields();
-      message.success("已创建");
-      load();
-    } catch (err) {
-      if (err && typeof err === "object" && "errorFields" in err) return;
-      message.error(errMessage(err));
-    }
+  const reload = () => {
+    setLoading(true);
+    load();
   };
 
-  const onCreateNovel = async () => {
-    try {
-      const values = await novelForm.validateFields();
-      const result = await api.startNovelGeneration({
-        brief: values.brief,
-        target_words: values.target_words,
-      });
-      setNovelOpen(false);
-      novelForm.resetFields();
-      message.success("已开始自动生成");
-      navigate(paths.bookTasks(result.book.id));
-    } catch (err) {
-      if (err && typeof err === "object" && "errorFields" in err) return;
-      message.error(errMessage(err));
-    }
+  const onCreateEmpty = () =>
+    run(async (isCurrent) => {
+      try {
+        const values = await emptyForm.validateFields();
+        if (!isCurrent()) return;
+        await api.createBook(values);
+        if (!isCurrent()) return;
+        setEmptyOpen(false);
+        emptyForm.resetFields();
+        message.success("已创建");
+        reload();
+      } catch (err) {
+        if (err && typeof err === "object" && "errorFields" in err) return;
+        if (isCurrent()) message.error(errMessage(err));
+      }
+    });
+
+  const onCreateNovel = () =>
+    run(async (isCurrent) => {
+      try {
+        const values = await novelForm.validateFields();
+        if (!isCurrent()) return;
+        const result = await api.startNovelGeneration({
+          brief: values.brief,
+          target_words: values.target_words,
+        });
+        if (!isCurrent()) return;
+        setNovelOpen(false);
+        novelForm.resetFields();
+        message.success("已开始自动生成");
+        navigate(paths.bookTasks(result.book.id));
+      } catch (err) {
+        if (err && typeof err === "object" && "errorFields" in err) return;
+        if (isCurrent()) message.error(errMessage(err));
+      }
+    });
+
+  const modalBusy = {
+    confirmLoading: submitting,
+    cancelButtonProps: { disabled: submitting },
+    closable: !submitting,
+    keyboard: !submitting,
+    maskClosable: !submitting,
   };
 
   return (
@@ -90,6 +142,7 @@ export default function BookList() {
           >
             AI 自主创作
           </Button>
+          <AuthSignOut />
         </Space>
       </header>
 
@@ -100,7 +153,26 @@ export default function BookList() {
         </p>
       </section>
 
-      {books.length === 0 ? (
+      {loadError && (
+        <Alert
+          type="error"
+          showIcon
+          message={`书架加载失败：${loadError}`}
+          action={
+            <Button aria-label="重新加载书架" loading={loading} onClick={reload}>
+              重新加载书架
+            </Button>
+          }
+        />
+      )}
+      {books === null ? (
+        !loadError && (
+          <div className="nf-empty" role="status">
+            <Spin size="small" />
+            <Typography.Text type="secondary">正在加载书架…</Typography.Text>
+          </div>
+        )
+      ) : books.length === 0 ? (
         <div className="nf-empty">
           <span className="nf-empty__glyph">空</span>
           <Typography.Text type="secondary">
@@ -132,9 +204,9 @@ export default function BookList() {
                     e?.stopPropagation();
                     try {
                       await api.deleteBook(b.id);
-                      load();
+                      if (listRequest.current) reload();
                     } catch (err) {
-                      message.error(errMessage(err));
+                      if (listRequest.current) message.error(errMessage(err));
                     }
                   }}
                 >
@@ -155,6 +227,7 @@ export default function BookList() {
       )}
 
       <Modal
+        {...modalBusy}
         title="一句话出书"
         open={novelOpen}
         onOk={onCreateNovel}
@@ -180,6 +253,7 @@ export default function BookList() {
       </Modal>
 
       <Modal
+        {...modalBusy}
         title="新建空书"
         open={emptyOpen}
         onOk={onCreateEmpty}

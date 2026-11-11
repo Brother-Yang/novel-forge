@@ -1,20 +1,14 @@
-import { useEffect, useRef, useState } from "react";
-import { App, Button, Collapse, Input, InputNumber, Progress, Space, Tag, Typography } from "antd";
-import {
-  ArrowLeftOutlined,
-  BulbOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  SendOutlined,
-  ToolOutlined,
-  WarningOutlined,
-} from "@ant-design/icons";
+import { useEffect, useState } from "react";
+import { App, Button, Input, InputNumber, Progress, Space, Tag, Typography } from "antd";
+import { ArrowLeftOutlined, SendOutlined } from "@ant-design/icons";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import type { AgentTraceEntry, Book, GenerationTask } from "../api/types";
+import type { NovelGenerationResult } from "../api/types";
+import AgentTrace, { SystemNote } from "../components/AgentTrace";
 import BrandMark from "../components/BrandMark";
-import { TASK_STATUS_TAG, taskStageLabel } from "../constants/taskStatus";
-import { usePolling } from "../hooks/usePolling";
+import { isTaskActive, TASK_STATUS_TAG, taskStageLabel } from "../constants/taskStatus";
+import { useBook } from "../hooks/useBook";
+import { usePendingAction } from "../hooks/usePendingAction";
 import { paths } from "../router/paths";
 import { startAgentWithFallback } from "../utils/agentFallback";
 
@@ -22,251 +16,169 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : "请求失败";
 }
 
-function tryParseJson(text: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+export default function AgentChat() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const taskId = searchParams.get("taskId");
+  const [started, setStarted] = useState<NovelGenerationResult>();
+  const [draft, setDraft] = useState({ brief: "", targetWords: 100000 });
+
+  return taskId ? (
+    <AgentSession
+      key={taskId}
+      taskId={taskId}
+      initialResult={started?.task.id === taskId ? started : undefined}
+    />
+  ) : (
+    <AgentComposer
+      draft={draft}
+      onDraftChange={setDraft}
+      onStarted={(result) => {
+        setStarted(result);
+        setSearchParams({ bookId: result.book.id, taskId: result.task.id });
+      }}
+    />
+  );
 }
 
-function decisionArgs(payload: string): string {
-  const idx = payload.indexOf("(");
-  if (idx === -1) return "";
-  const parsed = tryParseJson(payload.slice(idx + 1, payload.lastIndexOf(")")));
-  return parsed
-    ? JSON.stringify(parsed, null, 2)
-    : payload.slice(idx + 1, payload.lastIndexOf(")"));
+interface AgentComposerProps {
+  draft: { brief: string; targetWords: number };
+  onDraftChange: (draft: AgentComposerProps["draft"]) => void;
+  onStarted: (result: NovelGenerationResult) => void;
 }
 
-function observationOk(payload: string): boolean {
-  const parsed = tryParseJson(payload);
-  return parsed?.ok !== false;
-}
+function AgentComposer({ draft, onDraftChange, onStarted }: AgentComposerProps) {
+  const navigate = useNavigate();
+  const { message } = App.useApp();
+  const { brief, targetWords } = draft;
+  const { pending: submitting, run } = usePendingAction();
 
-function observationSummary(payload: string): string {
-  const parsed = tryParseJson(payload);
-  if (!parsed) return payload.slice(0, 60);
-  if (typeof parsed.error === "string") return parsed.error;
-  if (typeof parsed.summary === "string") return parsed.summary;
-  return parsed.ok === false ? "执行失败" : "执行成功";
-}
-
-function SystemNote({ text, danger }: { text: string; danger?: boolean }) {
-  return <div className={`nf-note${danger ? " nf-note--danger" : ""}`}>—— {text} ——</div>;
-}
-
-function TraceBubble({ entry }: { entry: AgentTraceEntry }) {
-  if (entry.kind === "log") return <SystemNote text={entry.payload} />;
-
-  if (entry.kind === "thought") {
-    return (
-      <div className="nf-bubble nf-bubble--thought">
-        <Space size={6} style={{ marginBottom: 2 }}>
-          <BulbOutlined />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            思考
-          </Typography.Text>
-        </Space>
-        <div>{entry.payload}</div>
-      </div>
-    );
-  }
-
-  if (entry.kind === "decision") {
-    return (
-      <div className="nf-bubble nf-bubble--decision">
-        <Space size={6} style={{ marginBottom: 4 }}>
-          <ToolOutlined style={{ color: "#c23b22" }} />
-          <Typography.Text strong>调用工具:{entry.tool_name ?? "unknown"}</Typography.Text>
-        </Space>
-        <pre>{decisionArgs(entry.payload)}</pre>
-      </div>
-    );
-  }
-
-  if (entry.kind === "observation") {
-    const ok = observationOk(entry.payload);
-    return (
-      <div className="nf-obs">
-        <Collapse
-          size="small"
-          ghost
-          items={[
-            {
-              key: "o",
-              label: (
-                <Space size={6}>
-                  {ok ? (
-                    <CheckCircleOutlined style={{ color: "#5a7d4e" }} />
-                  ) : (
-                    <CloseCircleOutlined style={{ color: "#c23b22" }} />
-                  )}
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {observationSummary(entry.payload)}
-                  </Typography.Text>
-                </Space>
-              ),
-              children: (
-                <pre>{JSON.stringify(tryParseJson(entry.payload) ?? entry.payload, null, 2)}</pre>
-              ),
-            },
-          ]}
-        />
-      </div>
-    );
-  }
+  const onSubmit = () => {
+    const text = brief.trim();
+    if (!text) return;
+    void run(async (isCurrent) => {
+      try {
+        const { result, usedFallback } = await startAgentWithFallback(
+          () => api.startAgentGeneration({ brief: text, target_words: targetWords }),
+          () => api.startNovelGeneration({ brief: text, target_words: targetWords })
+        );
+        if (!isCurrent()) return;
+        if (usedFallback) {
+          message.info("当前模型不支持自主决策,已自动切换为固定流程生成");
+        }
+        onStarted(result);
+      } catch (err) {
+        if (isCurrent()) message.error(errMessage(err));
+      }
+    });
+  };
 
   return (
-    <div className="nf-bubble nf-bubble--error">
-      <Space size={6}>
-        <WarningOutlined style={{ color: "#c23b22" }} />
-        <Typography.Text type="danger">{entry.payload}</Typography.Text>
-      </Space>
+    <div className="nf-page nf-atelier">
+      <div className="nf-atelier__nav">
+        <Button
+          className="nf-ghost"
+          icon={<ArrowLeftOutlined />}
+          type="text"
+          onClick={() => navigate(paths.home)}
+        />
+        <BrandMark compact onClick={() => navigate(paths.home)} />
+      </div>
+      <div className="nf-atelier__stage">
+        <h1>AI 自主创作</h1>
+        <Typography.Paragraph>
+          你只用说故事从哪起。设定、大纲、正文，它自己写完。
+        </Typography.Paragraph>
+        <div className="nf-composer">
+          <Input.TextArea
+            autoSize={{ minRows: 3, maxRows: 6 }}
+            placeholder="例如:少年林逸在灵气复苏之夜觉醒上古血脉,从宗门杂役一步步踏上与妖族争锋的路。"
+            value={brief}
+            onChange={(e) => onDraftChange({ ...draft, brief: e.target.value })}
+            variant="borderless"
+            onPressEnter={(e) => {
+              if (e.shiftKey || e.nativeEvent.isComposing) return;
+              e.preventDefault();
+              onSubmit();
+            }}
+          />
+          <div className="nf-composer__bar">
+            <Space>
+              <Typography.Text type="secondary">目标字数</Typography.Text>
+              <InputNumber
+                min={1000}
+                step={10000}
+                value={targetWords}
+                onChange={(v) => onDraftChange({ ...draft, targetWords: v ?? 100000 })}
+              />
+            </Space>
+            <Button
+              type="primary"
+              shape="circle"
+              size="large"
+              icon={<SendOutlined />}
+              loading={submitting}
+              disabled={submitting || !brief.trim()}
+              onClick={onSubmit}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-export default function AgentChat() {
+interface AgentSessionProps {
+  taskId: string;
+  initialResult?: NovelGenerationResult;
+}
+
+function AgentSession({ taskId, initialResult }: AgentSessionProps) {
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const { message } = App.useApp();
-
-  const [bookId, setBookId] = useState<string | null>(searchParams.get("bookId"));
-  const [taskId, setTaskId] = useState<string | null>(searchParams.get("taskId"));
-  const [book, setBook] = useState<Book | null>(null);
-  const [task, setTask] = useState<GenerationTask | null>(null);
-  const [trace, setTrace] = useState<AgentTraceEntry[]>([]);
-
-  const [brief, setBrief] = useState("");
-  const [targetWords, setTargetWords] = useState(100000);
-  const [submitting, setSubmitting] = useState(false);
-
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [task, setTask] = useState(initialResult?.task);
+  const [taskError, setTaskError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
-    if (!bookId) return;
-    api
-      .getBook(bookId)
-      .then(setBook)
-      .catch(() => {});
-  }, [bookId]);
+    const request = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const loadProgress = () => {
-    if (!taskId) return;
-    api
-      .getTask(taskId)
-      .then((t) => {
-        setTask(t);
-        if (!bookId) setBookId(t.book_id);
-      })
-      .catch((err: unknown) => message.error(errMessage(err)));
-    api
-      .getTaskTrace(taskId)
-      .then(setTrace)
-      .catch(() => {});
-    const id = bookId ?? searchParams.get("bookId");
-    if (id) {
-      api
-        .getBook(id)
-        .then(setBook)
-        .catch(() => {});
-    }
-  };
-
-  const running = task ? task.status === "running" || task.status === "pending" : taskId !== null;
-  usePolling(loadProgress, 2500, taskId !== null && running);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [trace, task?.status]);
-
-  const onSubmit = async () => {
-    const text = brief.trim();
-    if (!text) return;
-    setSubmitting(true);
-    try {
-      const { result, usedFallback } = await startAgentWithFallback(
-        () => api.startAgentGeneration({ brief: text, target_words: targetWords }),
-        () => api.startNovelGeneration({ brief: text, target_words: targetWords })
-      );
-      if (usedFallback) {
-        message.info("当前模型不支持自主决策,已自动切换为固定流程生成");
+    async function loadProgress() {
+      let running = true;
+      try {
+        const updatedTask = await api.getTask(taskId, request.signal);
+        if (request.signal.aborted) return;
+        setTask(updatedTask);
+        setTaskError(null);
+        running = isTaskActive(updatedTask.status);
+      } catch (error) {
+        if (request.signal.aborted) return;
+        setTaskError(errMessage(error));
       }
-      setBook(result.book);
-      setBookId(result.book.id);
-      setTaskId(result.task.id);
-      setTask(result.task);
-      setSearchParams({ bookId: result.book.id, taskId: result.task.id });
-    } catch (err) {
-      message.error(errMessage(err));
-    } finally {
-      setSubmitting(false);
+      if (running && !request.signal.aborted) timer = setTimeout(loadProgress, 2500);
     }
-  };
 
-  if (!taskId) {
-    return (
-      <div className="nf-page nf-atelier">
-        <div className="nf-atelier__nav">
-          <Button
-            className="nf-ghost"
-            icon={<ArrowLeftOutlined />}
-            type="text"
-            onClick={() => navigate(paths.home)}
-          />
-          <BrandMark compact onClick={() => navigate(paths.home)} />
-        </div>
-        <div className="nf-atelier__stage">
-          <h1>AI 自主创作</h1>
-          <Typography.Paragraph>
-            你只用说故事从哪起。设定、大纲、正文，它自己写完。
-          </Typography.Paragraph>
-          <div className="nf-composer">
-            <Input.TextArea
-              autoSize={{ minRows: 3, maxRows: 6 }}
-              placeholder="例如:少年林逸在灵气复苏之夜觉醒上古血脉,从宗门杂役一步步踏上与妖族争锋的路。"
-              value={brief}
-              onChange={(e) => setBrief(e.target.value)}
-              variant="borderless"
-              onPressEnter={(e) => {
-                if (!e.shiftKey) {
-                  e.preventDefault();
-                  onSubmit();
-                }
-              }}
-            />
-            <div className="nf-composer__bar">
-              <Space>
-                <Typography.Text type="secondary">目标字数</Typography.Text>
-                <InputNumber
-                  min={1000}
-                  step={10000}
-                  value={targetWords}
-                  onChange={(v) => setTargetWords(v ?? 100000)}
-                />
-              </Space>
-              <Button
-                type="primary"
-                shape="circle"
-                size="large"
-                icon={<SendOutlined />}
-                loading={submitting}
-                disabled={!brief.trim()}
-                onClick={onSubmit}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+    void loadProgress();
+    return () => {
+      request.abort();
+      clearTimeout(timer);
+    };
+  }, [taskId, retryCount]);
 
+  const bookId = task?.book_id;
+  const running = isTaskActive(task?.status);
+  const {
+    book,
+    error: bookError,
+    loading: bookLoading,
+    retry: retryBook,
+  } = useBook(bookId, running, initialResult?.book);
   const statusTag = task ? TASK_STATUS_TAG[task.status] : undefined;
-  const isAgentTask = task?.type === "agent";
+  const endNote =
+    task?.status === "done" ? (
+      <SystemNote text="创作完成" />
+    ) : task?.status === "error" ? (
+      <SystemNote danger text={`生成失败:${task.error}`} />
+    ) : null;
 
   return (
     <div className="nf-session">
@@ -296,28 +208,45 @@ export default function AgentChat() {
         )}
       </div>
 
-      <div ref={scrollRef} className="nf-session__body">
-        <div className="nf-trace">
-          {isAgentTask ? (
-            <>
-              {trace.length === 0 && (
-                <Typography.Text type="secondary">AI 正在思考第一步...</Typography.Text>
-              )}
-              {trace.map((entry) => (
-                <TraceBubble key={entry.id} entry={entry} />
-              ))}
-            </>
-          ) : (
-            task && (
+      {bookError && (
+        <div className="nf-trace__footer">
+          <span role="alert">加载书籍失败：{bookError}</span>
+          <Button aria-label="重试加载书籍" loading={bookLoading} onClick={retryBook}>
+            重试加载书籍
+          </Button>
+        </div>
+      )}
+      {taskError && (
+        <div className="nf-trace__footer">
+          <span role="alert">加载任务失败：{taskError}</span>
+          <Button
+            onClick={() => {
+              setTaskError(null);
+              setRetryCount((count) => count + 1);
+            }}
+          >
+            重试加载任务
+          </Button>
+        </div>
+      )}
+      {task?.type === "agent" ? (
+        <AgentTrace taskId={taskId} running={running}>
+          {endNote}
+        </AgentTrace>
+      ) : (
+        <div className="nf-session__body">
+          <div className="nf-trace">
+            {task ? (
               <SystemNote
                 text={`按固定流程生成中... ${taskStageLabel(task.checkpoint_json) || ""} ${task.progress}%`}
               />
-            )
-          )}
-          {task?.status === "done" && <SystemNote text="创作完成" />}
-          {task?.status === "error" && <SystemNote danger text={`生成失败:${task.error}`} />}
+            ) : (
+              !taskError && <span role="status">正在加载任务…</span>
+            )}
+            {endNote}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

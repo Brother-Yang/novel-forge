@@ -1,20 +1,22 @@
-import { useEffect, useState } from "react";
-import { Layout, Menu, Button, Spin, Dropdown, Alert } from "antd";
+import { useState } from "react";
+import { Layout, Menu, Button, Spin, Dropdown, Alert, App } from "antd";
 import {
   ArrowLeftOutlined,
   BookOutlined,
   DownloadOutlined,
   GlobalOutlined,
   RobotOutlined,
+  NodeIndexOutlined,
   TeamOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import type { Book } from "../api/types";
 import CatalogTree from "../components/CatalogTree";
 import ChapterEditor from "../components/ChapterEditor";
 import AsyncContent from "../components/AsyncContent";
+import AuthSignOut from "../components/AuthSignOut";
+import { useBook } from "../hooks/useBook";
 import { paths } from "../router/paths";
 import { downloadFile } from "../utils/download";
 
@@ -22,8 +24,9 @@ const { Sider, Content, Header } = Layout;
 const loadCharacters = () => import("../components/CharacterPanel");
 const loadWorldbuilding = () => import("../components/WorldbuildingPanel");
 const loadTasks = () => import("../components/TaskPanel");
+const loadPlotThreads = () => import("../components/PlotThreadPanel");
 
-type View = "chapters" | "characters" | "world" | "tasks";
+type View = "chapters" | "characters" | "world" | "threads" | "tasks";
 
 export default function BookWorkspace() {
   const { bookId } = useParams();
@@ -36,48 +39,28 @@ interface WorkspaceProps {
 }
 
 function Workspace({ bookId }: WorkspaceProps) {
+  const { message } = App.useApp();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const fromTask = searchParams.get("fromTask");
-  const [book, setBook] = useState<Book | null>(null);
   const [view, setView] = useState<View>(
     searchParams.get("view") === "tasks" ? "tasks" : "chapters"
   );
   const [selectedChapter, setSelectedChapter] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [retry, setRetry] = useState(0);
+  const [taskActive, setTaskActive] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const { book, error, loading, retry } = useBook(bookId, view === "tasks" && taskActive);
 
-  useEffect(() => {
-    let active = true;
-    let pending = false;
-    const load = async () => {
-      if (pending) return;
-      pending = true;
-      setLoading(true);
-      try {
-        const data = await api.getBook(bookId);
-        if (!active) return;
-        setBook(data);
-        setError(null);
-      } catch (err: unknown) {
-        if (active) setError(err instanceof Error ? err.message : "书籍加载失败");
-      } finally {
-        pending = false;
-        if (active) setLoading(false);
-      }
-    };
-    void load();
-    const timer = view === "tasks" ? setInterval(() => void load(), 4000) : undefined;
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [bookId, view, retry]);
-
-  const exportBook = (format: "txt" | "epub") => {
-    if (!bookId) return;
-    downloadFile(api.exportUrl(bookId, format));
+  const exportBook = async (format: "txt" | "epub") => {
+    if (!book || exporting) return;
+    setExporting(true);
+    try {
+      await downloadFile(api.exportUrl(bookId, format), `${book.title}.${format}`);
+    } catch (err) {
+      void message.error(err instanceof Error ? err.message : "导出失败，请重试");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const failure = error ? (
@@ -86,7 +69,7 @@ function Workspace({ bookId }: WorkspaceProps) {
       showIcon
       message={error}
       action={
-        <Button loading={loading} onClick={() => setRetry((value) => value + 1)}>
+        <Button aria-label="重新加载" loading={loading} onClick={retry}>
           重新加载
         </Button>
       }
@@ -133,13 +116,16 @@ function Workspace({ bookId }: WorkspaceProps) {
               { key: "txt", label: "导出 TXT" },
               { key: "epub", label: "导出 EPUB" },
             ],
-            onClick: ({ key }) => exportBook(key as "txt" | "epub"),
+            onClick: ({ key }) => {
+              if (key === "txt" || key === "epub") void exportBook(key);
+            },
           }}
         >
-          <Button className="nf-ghost" icon={<DownloadOutlined />}>
+          <Button className="nf-ghost" icon={<DownloadOutlined />} loading={exporting}>
             导出
           </Button>
         </Dropdown>
+        <AuthSignOut />
       </Header>
       {failure}
       <Layout>
@@ -153,6 +139,7 @@ function Workspace({ bookId }: WorkspaceProps) {
               { key: "chapters", icon: <BookOutlined />, label: "章节" },
               { key: "characters", icon: <TeamOutlined />, label: "人物" },
               { key: "world", icon: <GlobalOutlined />, label: "设定" },
+              { key: "threads", icon: <NodeIndexOutlined />, label: "剧情" },
               { key: "tasks", icon: <ThunderboltOutlined />, label: "生成" },
             ]}
           />
@@ -196,8 +183,16 @@ function Workspace({ bookId }: WorkspaceProps) {
             <AsyncContent
               key="tasks"
               load={loadTasks}
-              componentProps={{ bookId }}
+              componentProps={{ bookId, onGenerationActivityChange: setTaskActive }}
               label="生成面板"
+            />
+          )}
+          {view === "threads" && (
+            <AsyncContent
+              key="threads"
+              load={loadPlotThreads}
+              componentProps={{ bookId }}
+              label="剧情面板"
             />
           )}
         </Content>

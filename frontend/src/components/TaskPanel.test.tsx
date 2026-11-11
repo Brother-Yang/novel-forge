@@ -1,13 +1,14 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import TaskPanel from "./TaskPanel";
 
 vi.mock("../api", () => ({
   api: {
     listTasks: vi.fn(),
+    getMemoryStatus: vi.fn(),
     getTree: vi.fn(),
     startNovelFromBook: vi.fn(),
     startAgentFromBook: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock("../api/client", () => ({
 }));
 
 import { api } from "../api";
+import { sseFetch } from "../api/client";
 
 function renderPanel() {
   return render(
@@ -44,6 +46,75 @@ function renderPanel() {
 }
 
 describe("TaskPanel", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(api.getTree).mockResolvedValue({ volumes: [], loose_chapters: [] });
+    vi.mocked(api.listTasks).mockResolvedValue([]);
+    vi.mocked(api.getMemoryStatus).mockResolvedValue({
+      pending: 0,
+      running: 0,
+      failed: 0,
+      missing: 0,
+      ready: 0,
+      total: 0,
+      items: [],
+    });
+  });
+
+  it("提交期间防止重复启动，失败后恢复按钮并显示错误", async () => {
+    let reject!: (error: Error) => void;
+    vi.mocked(api.startNovelFromBook).mockReturnValue(
+      new Promise((_resolve, no) => {
+        reject = no;
+      })
+    );
+    renderPanel();
+    const button = screen.getByRole("button", { name: /一键全自动生成/ });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(api.startNovelFromBook).toHaveBeenCalledTimes(1);
+    expect(button).toBeDisabled();
+    await act(async () => {
+      reject(new Error("任务启动失败"));
+    });
+    expect(await screen.findByText("任务启动失败")).toBeInTheDocument();
+    expect(button).toBeEnabled();
+  });
+
+  it("手工生成互斥且限制日志长度，离开面板时中止 SSE", async () => {
+    vi.mocked(sseFetch).mockReturnValue(new Promise(() => {}));
+    const view = renderPanel();
+    const user = userEvent.setup();
+    await user.click(screen.getByText("手工分层（生成后维护）"));
+    const generate = await screen.findByRole("button", { name: /1. 生成世界观/ });
+    await waitFor(() => expect(generate).toBeEnabled());
+    await user.click(generate);
+    expect(sseFetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: /2. 生成人物/ })).toBeDisabled();
+    const handlers = vi.mocked(sseFetch).mock.calls[0][2];
+    act(() => handlers.onEvent?.("token", "正文".repeat(30_000)));
+    expect(view.container.querySelector(".nf-log")?.textContent?.length).toBe(50_000);
+    view.unmount();
+    expect(handlers.signal?.aborted).toBe(true);
+    act(() => handlers.onEvent?.("error", "过期响应"));
+    expect(screen.queryByText(/过期响应/)).not.toBeInTheDocument();
+  });
+
+  it("手工阶段错误会恢复按钮并允许重试", async () => {
+    vi.mocked(sseFetch).mockReturnValue(new Promise(() => {}));
+    renderPanel();
+    const user = userEvent.setup();
+    await user.click(screen.getByText("手工分层（生成后维护）"));
+    const generate = await screen.findByRole("button", { name: /1. 生成世界观/ });
+    await waitFor(() => expect(generate).toBeEnabled());
+    await user.click(generate);
+    act(() => vi.mocked(sseFetch).mock.calls[0][2].onError?.(new Error("连接中断")));
+    expect(screen.getByText(/错误:连接中断/)).toBeInTheDocument();
+    await waitFor(() => expect(generate).toBeEnabled());
+    await user.click(generate);
+    expect(sseFetch).toHaveBeenCalledTimes(2);
+  });
   it("点击一键全自动生成会调用 from-book 接口", async () => {
     vi.mocked(api.getTree).mockResolvedValue({ volumes: [], loose_chapters: [] });
     vi.mocked(api.listTasks).mockResolvedValue([]);

@@ -788,6 +788,11 @@ button.nf-brand {
   padding: 28px 24px 16px;
 }
 
+.nf-session__body--trace {
+  position: relative;
+  overflow-anchor: none;
+}
+
 .nf-session__body .ant-typography {
   color: var(--nf-mist) !important;
 }
@@ -807,6 +812,24 @@ button.nf-brand {
 .nf-trace {
   max-width: 720px;
   margin: 0 auto;
+}
+
+.nf-trace__history,
+.nf-trace__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.nf-trace__history {
+  margin-bottom: 16px;
+}
+
+.nf-trace__footer {
+  padding: 12px 24px;
+  border-top: 1px solid rgba(196, 165, 116, 0.18);
 }
 
 .nf-note {

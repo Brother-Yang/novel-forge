@@ -15,7 +15,7 @@
   - Node:用 `pnpm add <pkg>`(不加版本号)让包管理器解析最新版本,不要手写旧版本字符串。
 - **升级已有依赖时,同样升级到最新稳定版**,除非会引入已知的破坏性变更且当前代码无法适配——此时要明确告知用户版本被锁定的原因。
 - **依赖必须可复现**:
-  - 后端:`backend/requirements.txt` 中避免大范围的 `>=`,改为锁定当前实际验证通过的具体版本(`==`);新增/升级依赖后重新生成锁定版本(如用 `pip freeze` 或 `uv pip compile` 产出)。
+  - 后端:直接依赖维护在 `backend/requirements.in` / `requirements-dev.in`,使用 `uv pip compile --python-version 3.13 --universal --no-annotate` 生成对应 `.txt` 锁文件,锁定直接和传递依赖的具体版本。新增/升级后重新生成并验证,不要手改生成的锁文件。
   - 前端:提交 `pnpm-lock.yaml`,不要手动编辑锁文件。
 - 修改依赖后必须验证:后端跑一次 `python tests/e2e_offline.py`,前端跑一次 `pnpm build`,确认新版本没有破坏现有功能。
 
@@ -52,7 +52,7 @@
 
 ## 三、其他工程规范建议
 
-- **CI**:目前仍没有 `.github/workflows`,新增/修改代码后如条件允许,建议补充 GitHub Actions 跑 `pnpm lint && pnpm test && pnpm build`(前端)与 `pytest` / `e2e_offline.py`(后端),作为合并前的门禁。
+- **CI**:`.github/workflows/quality.yml` 在 push / pull request 时检查前端 lint、格式、测试和构建,以及后端依赖一致性、Ruff、basedpyright、pytest 和离线 E2E。修改后先通过对应本地检查。CI 不配置模型密钥、不运行真实模型评估;相关操作见 `docs/testing.md`。
 - **Lint/格式化**:前端已有 ESLint(`eslint.config.js`)+ Prettier(`.prettierrc.json`)配置,新增代码前跑 `pnpm lint` / `pnpm format:check`,不要绕开或再改动这套配置。
 - **Git 提交**:每次改动只做与需求直接相关的最小变更,不顺手"优化"未涉及的代码;提交信息说明改动原因而非罗列改了什么文件。
 - **文档同步**:目录结构、启动方式、环境变量发生变化时,同步更新根目录 `README.md`,避免文档与实际结构脱节。

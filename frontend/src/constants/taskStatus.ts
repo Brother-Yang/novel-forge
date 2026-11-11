@@ -7,6 +7,10 @@ export const TASK_STATUS_TAG: Record<string, { color: string; text: string }> = 
   error: { color: "error", text: "错误" },
 };
 
+export function isTaskActive(status: string | undefined): boolean {
+  return status === "pending" || status === "running";
+}
+
 export const TASK_TYPE_LABEL: Record<string, string> = {
   novel: "全书自动生成",
   book: "全书正文生成",

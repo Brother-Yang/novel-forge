@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   App,
+  Alert,
   Button,
   Card,
   Collapse,
@@ -16,46 +17,67 @@ import { RobotOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { api, sseEndpoints } from "../api";
 import { sseFetch } from "../api/client";
-import type { BookTree, GenerationTask } from "../api/types";
 import { paths } from "../router/paths";
 import { useAppStore } from "../store";
 import { startAgentWithFallback } from "../utils/agentFallback";
-import { TASK_STATUS_TAG, TASK_TYPE_LABEL, taskStageLabel } from "../constants/taskStatus";
+import {
+  isTaskActive,
+  TASK_STATUS_TAG,
+  TASK_TYPE_LABEL,
+  taskStageLabel,
+} from "../constants/taskStatus";
+import MemoryPanel from "./MemoryPanel";
+import { useTaskPanelData } from "../hooks/useTaskPanelData";
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : "请求失败";
 }
 
-export default function TaskPanel({ bookId }: { bookId: string }) {
+interface TaskPanelProps {
+  bookId: string;
+  onGenerationActivityChange?: (active: boolean) => void;
+}
+
+export default function TaskPanel(props: TaskPanelProps) {
+  return <BookTaskPanel key={props.bookId} {...props} />;
+}
+
+function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
   const [log, setLog] = useState("");
   const [stage, setStage] = useState<string | null>(null);
-  const [tree, setTree] = useState<BookTree | null>(null);
   const [volumeId, setVolumeId] = useState<string | undefined>();
-  const [tasks, setTasks] = useState<GenerationTask[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const operationPending = useRef(false);
+  const active = useRef(true);
+  const abortStream = useRef<AbortController | null>(null);
+  const {
+    tasks,
+    tree,
+    tasksError,
+    treeError,
+    tasksLoaded,
+    refreshTasks: loadTasks,
+    refreshTree: loadTree,
+  } = useTaskPanelData(bookId);
   const logRef = useRef<HTMLDivElement>(null);
   const { message } = App.useApp();
   const navigate = useNavigate();
   const refreshTree = useAppStore((s) => s.refreshTree);
-
-  const loadTasks = () =>
-    api
-      .listTasks(bookId)
-      .then((data) => setTasks(Array.isArray(data) ? data : []))
-      .catch((err: unknown) => message.error(errMessage(err)));
-  const loadTree = () =>
-    api
-      .getTree(bookId)
-      .then(setTree)
-      .catch((err: unknown) => message.error(errMessage(err)));
+  const taskActive = tasks.some((task) => isTaskActive(task.status));
 
   useEffect(() => {
-    loadTree();
-    loadTasks();
-    const t = setInterval(loadTasks, 2500);
-    return () => clearInterval(t);
-    // message 来自 antd context,轮询只跟 bookId 走。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookId]);
+    if (!taskActive || !onGenerationActivityChange) return;
+    onGenerationActivityChange(true);
+    return () => onGenerationActivityChange(false);
+  }, [taskActive, onGenerationActivityChange]);
+
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+      abortStream.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     const el = logRef.current;
@@ -63,82 +85,124 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
     el.scrollTop = el.scrollHeight;
   }, [log]);
 
-  const busy = tasks.some((t) => t.status === "running" || t.status === "paused");
+  const busy =
+    !tasksLoaded ||
+    submitting ||
+    stage !== null ||
+    taskActive ||
+    tasks.some((task) => task.status === "paused");
+
+  const appendLog = (text: string) => setLog((previous) => (previous + text).slice(-50_000));
+  const endStage = () => {
+    operationPending.current = false;
+    abortStream.current = null;
+    setStage(null);
+    loadTasks();
+  };
 
   const runStage = (name: string, path: string, body: unknown) => {
+    if (busy || operationPending.current) return;
+    operationPending.current = true;
     setStage(name);
     setLog(`【${name}】开始...\n`);
-    sseFetch(path, body, {
+    const controller = new AbortController();
+    abortStream.current = controller;
+    void sseFetch(path, body, {
+      signal: controller.signal,
       onEvent: (event, data) => {
-        if (event === "token") setLog((p) => p + data);
-        else if (event === "log") setLog((p) => p + `\n${data}\n`);
+        if (!active.current) return;
+        if (event === "token") appendLog(data);
+        else if (event === "log") appendLog(`\n${data}\n`);
         else if (event === "done") {
-          setLog((p) => p + `\n【${name}】完成。\n`);
-          setStage(null);
+          appendLog(`\n【${name}】完成。\n`);
+          endStage();
           refreshTree();
           loadTree();
         } else if (event === "error") {
-          setLog((p) => p + `\n错误:${data}\n`);
-          setStage(null);
+          appendLog(`\n错误:${data}\n`);
+          endStage();
         }
       },
       onError: (err) => {
-        setLog((p) => p + `\n错误:${err instanceof Error ? err.message : String(err)}\n`);
-        setStage(null);
+        if (!active.current) return;
+        appendLog(`\n错误:${errMessage(err)}\n`);
+        endStage();
       },
     });
   };
 
-  const startNovel = async () => {
+  const submit = async (action: () => Promise<void>, controlTask = false) => {
+    if ((!controlTask && busy) || operationPending.current) return;
+    operationPending.current = true;
+    setSubmitting(true);
     try {
-      await api.startNovelFromBook(bookId);
-      message.success("已启动全书自动生成");
-      loadTasks();
+      await action();
     } catch (err) {
-      message.error(errMessage(err));
+      if (active.current) message.error(errMessage(err));
+    } finally {
+      if (active.current) {
+        operationPending.current = false;
+        setSubmitting(false);
+      }
     }
+  };
+
+  const startNovel = async () => {
+    await api.startNovelFromBook(bookId);
+    if (!active.current) return;
+    message.success("已启动全书自动生成");
+    loadTasks();
   };
 
   const startAgent = async () => {
-    try {
-      const { result: task, usedFallback } = await startAgentWithFallback(
-        () => api.startAgentFromBook(bookId),
-        () => api.startNovelFromBook(bookId)
-      );
-      if (usedFallback) {
-        message.info("当前模型不支持自主决策,已自动切换为固定流程生成");
-      } else {
-        message.success("已启动 AI 自主创作");
-      }
-      loadTasks();
-      navigate(paths.agentChatFor(bookId, task.id));
-    } catch (err) {
-      message.error(errMessage(err));
+    const { result: task, usedFallback } = await startAgentWithFallback(
+      () => api.startAgentFromBook(bookId),
+      () => api.startNovelFromBook(bookId)
+    );
+    if (!active.current) return;
+    if (usedFallback) {
+      message.info("当前模型不支持自主决策,已自动切换为固定流程生成");
+    } else {
+      message.success("已启动 AI 自主创作");
     }
+    loadTasks();
+    navigate(paths.agentChatFor(bookId, task.id));
   };
 
   const startBatch = async () => {
-    try {
-      await api.startBookGeneration(bookId);
-      message.success("已启动全书批量生成正文");
-      loadTasks();
-    } catch (err) {
-      message.error(errMessage(err));
-    }
+    await api.startBookGeneration(bookId);
+    if (!active.current) return;
+    message.success("已启动全书批量生成正文");
+    loadTasks();
   };
 
   return (
     <div className="nf-tasks">
+      <MemoryPanel bookId={bookId} />
+      {tasksError && (
+        <Alert
+          type="error"
+          message={tasksError}
+          action={<Button onClick={loadTasks}>重试任务列表</Button>}
+        />
+      )}
+      {treeError && (
+        <Alert
+          type="error"
+          message={treeError}
+          action={<Button onClick={loadTree}>重试卷目录</Button>}
+        />
+      )}
       <Card title="一键全自动生成" style={{ marginBottom: 16 }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
           按世界观 → 人物 → 大纲 → 章纲 →
-          正文自动跑完全书。已有设定/人物/卷/章会跳过,中断后可继续或重试。
+          正文自动跑完全书。完整阶段会保留，缺失内容会补齐；中断后可继续或重试。
         </Typography.Paragraph>
         <Space>
-          <Button type="primary" disabled={busy} onClick={startNovel}>
+          <Button type="primary" disabled={busy} onClick={() => void submit(startNovel)}>
             一键全自动生成
           </Button>
-          <Button disabled={busy} icon={<RobotOutlined />} onClick={startAgent}>
+          <Button disabled={busy} icon={<RobotOutlined />} onClick={() => void submit(startAgent)}>
             AI 自主创作(对话查看进度)
           </Button>
         </Space>
@@ -205,7 +269,7 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
                   >
                     4. 生成本卷章节大纲
                   </Button>
-                  <Button disabled={busy} onClick={startBatch}>
+                  <Button disabled={busy} onClick={() => void submit(startBatch)}>
                     5. 全书批量生成正文(后台任务)
                   </Button>
                 </Space>
@@ -215,7 +279,7 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
         ]}
       />
 
-      <Card title="实时日志" style={{ marginBottom: 16 }}>
+      <Card title="实时日志" extra="保留最近 50,000 字符" style={{ marginBottom: 16 }}>
         <div ref={logRef} className="nf-log">
           {log || "等待任务..."}
         </div>
@@ -245,11 +309,12 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
                     <Button
                       key="p"
                       size="small"
+                      disabled={submitting || stage !== null}
                       onClick={() =>
-                        api
-                          .pauseTask(t.id)
-                          .then(loadTasks)
-                          .catch((err: unknown) => message.error(errMessage(err)))
+                        void submit(async () => {
+                          await api.pauseTask(t.id);
+                          if (active.current) loadTasks();
+                        }, true)
                       }
                     >
                       暂停
@@ -259,11 +324,12 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
                     <Button
                       key="r"
                       size="small"
+                      disabled={submitting || stage !== null}
                       onClick={() =>
-                        api
-                          .resumeTask(t.id)
-                          .then(loadTasks)
-                          .catch((err: unknown) => message.error(errMessage(err)))
+                        void submit(async () => {
+                          await api.resumeTask(t.id);
+                          if (active.current) loadTasks();
+                        }, true)
                       }
                     >
                       继续
@@ -273,11 +339,12 @@ export default function TaskPanel({ bookId }: { bookId: string }) {
                     <Button
                       key="rt"
                       size="small"
+                      disabled={submitting || stage !== null}
                       onClick={() =>
-                        api
-                          .retryTask(t.id)
-                          .then(loadTasks)
-                          .catch((err: unknown) => message.error(errMessage(err)))
+                        void submit(async () => {
+                          await api.retryTask(t.id);
+                          if (active.current) loadTasks();
+                        }, true)
                       }
                     >
                       重试

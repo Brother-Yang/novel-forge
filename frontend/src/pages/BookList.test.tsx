@@ -1,8 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Book } from "../api/types";
 import BookList from "./BookList";
 
@@ -17,6 +17,16 @@ vi.mock("../api", () => ({
 
 import { api } from "../api";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
 function renderWithProviders() {
   return render(
     <ConfigProvider>
@@ -30,6 +40,8 @@ function renderWithProviders() {
 }
 
 describe("BookList", () => {
+  beforeEach(() => vi.resetAllMocks());
+
   it("没有书籍时展示空状态提示", async () => {
     vi.mocked(api.listBooks).mockResolvedValue([]);
     renderWithProviders();
@@ -112,5 +124,87 @@ describe("BookList", () => {
       brief: "一个少年觉醒血脉的故事",
       target_words: 100000,
     });
+  });
+
+  it("首次失败显示书架重试入口，成功空列表才展示空状态", async () => {
+    const first = deferred<Book[]>();
+    vi.mocked(api.listBooks).mockReturnValueOnce(first.promise).mockResolvedValueOnce([]);
+    renderWithProviders();
+    expect(screen.getByRole("status")).toHaveTextContent("正在加载书架");
+    expect(screen.queryByText(/还没有书籍/)).not.toBeInTheDocument();
+    await act(async () => {
+      first.reject(new Error("服务暂不可用"));
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("服务暂不可用");
+    expect(screen.queryByText(/还没有书籍/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新加载书架" }));
+    expect(await screen.findByText(/还没有书籍/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("新建空书只提交一次，迟到的书架请求不会覆盖新结果", async () => {
+    const stale = deferred<Book[]>();
+    const create = deferred<Book>();
+    const book: Book = {
+      id: "new-book",
+      title: "新建书稿",
+      intro: "",
+      brief: "",
+      genre: "",
+      tone: "",
+      target_words: 100000,
+      key_elements: "[]",
+      created_at: "2026-01-01T00:00:00Z",
+    };
+    vi.mocked(api.listBooks).mockReturnValueOnce(stale.promise).mockResolvedValueOnce([book]);
+    vi.mocked(api.createBook).mockReturnValue(create.promise);
+    const user = userEvent.setup();
+    renderWithProviders();
+    await user.click(screen.getByRole("button", { name: /新建空书/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(/书名/), book.title);
+    const confirm = within(dialog).getByRole("button", { name: /创\s*建/ });
+    await act(async () => {
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+    });
+    expect(api.createBook).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      create.resolve(book);
+    });
+    expect(await screen.findByText(book.title)).toBeInTheDocument();
+    const [staleSignal] = vi.mocked(api.listBooks).mock.calls[0];
+    expect(staleSignal?.aborted).toBe(true);
+    await act(async () => {
+      stale.resolve([]);
+    });
+    expect(screen.getByText(book.title)).toBeInTheDocument();
+  });
+
+  it("一句话出书提交期间屏蔽重复确认，失败可用原输入重试", async () => {
+    const first = deferred<Awaited<ReturnType<typeof api.startNovelGeneration>>>();
+    vi.mocked(api.listBooks).mockResolvedValue([]);
+    vi.mocked(api.startNovelGeneration)
+      .mockReturnValueOnce(first.promise)
+      .mockRejectedValueOnce(new Error("仍未恢复"));
+    const user = userEvent.setup();
+    renderWithProviders();
+    await user.click(screen.getByRole("button", { name: /一句话出书/ }));
+    const dialog = await screen.findByRole("dialog");
+    const idea = within(dialog).getByLabelText(/故事想法/);
+    await user.type(idea, "重试仍要保留的故事");
+    const confirm = within(dialog).getByRole("button", { name: "开始生成" });
+    await act(async () => {
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+    });
+    expect(api.startNovelGeneration).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      first.reject(new Error("暂时无法生成"));
+    });
+    expect(await screen.findByText("暂时无法生成")).toBeVisible();
+    expect(idea).toHaveValue("重试仍要保留的故事");
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.startNovelGeneration).toHaveBeenCalledTimes(2));
   });
 });

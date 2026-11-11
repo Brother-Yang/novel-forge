@@ -1,0 +1,9 @@
+allowBuilds:
+  esbuild: true
+
+# ESLint/typescript-eslint still constrain minimatch 10; 11.0.7 fixes GHSA-g3hv-75wg-m249.
+minimumReleaseAgeExclude:
+  - minimatch@11.0.7
+
+overrides:
+  minimatch: 11.0.7

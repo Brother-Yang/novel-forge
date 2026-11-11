@@ -1,7 +1,7 @@
 import { App } from "antd";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Chapter } from "../api/types";
+import type { Chapter, ChapterContentSaved } from "../api/types";
 import { api } from "../api";
 import { sseFetch } from "../api/client";
 import ChapterEditor from "./ChapterEditor";
@@ -45,7 +45,12 @@ beforeEach(() => {
   vi.mocked(api.getChapter).mockResolvedValue(chapter);
   vi.mocked(api.getContent).mockResolvedValue({ chapter_id: "a", body: "原正文" });
   vi.mocked(api.updateChapter).mockResolvedValue(chapter);
-  vi.mocked(api.saveContent).mockResolvedValue(undefined);
+  vi.mocked(api.saveContent).mockResolvedValue({
+    chapter_id: "a",
+    body: "原正文",
+    status: "done",
+    word_count: 3,
+  });
 });
 
 describe("ChapterEditor 编辑安全", () => {
@@ -82,7 +87,7 @@ describe("ChapterEditor 编辑安全", () => {
   });
 
   it("正文保存期间保留继续输入的草稿并阻止生成覆盖，失败可重试", async () => {
-    const pending = deferred<unknown>();
+    const pending = deferred<ChapterContentSaved>();
     vi.mocked(api.saveContent).mockReturnValueOnce(pending.promise);
     render(editor());
     const body = await screen.findByPlaceholderText(bodyPlaceholder);
@@ -170,5 +175,65 @@ describe("ChapterEditor 编辑安全", () => {
     expect(await screen.findByText("正文加载失败")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /保存$/ })).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText(bodyPlaceholder)).not.toBeInTheDocument();
+  });
+
+  it("加载失败可就地重试，并取消旧请求", async () => {
+    vi.mocked(api.getContent)
+      .mockRejectedValueOnce(new Error("正文暂不可用"))
+      .mockResolvedValue({ chapter_id: "a", body: "重试后原稿" });
+    const view = render(editor());
+    expect(await screen.findByText("正文暂不可用")).toBeInTheDocument();
+    const firstSignal = vi.mocked(api.getContent).mock.calls[0][1];
+    expect(firstSignal?.aborted).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "重新加载章节" }));
+    expect(await screen.findByPlaceholderText(bodyPlaceholder)).toHaveValue("重试后原稿");
+    const currentSignal = vi.mocked(api.getContent).mock.calls[1][1];
+    expect(currentSignal?.aborted).toBe(false);
+    view.unmount();
+    expect(currentSignal?.aborted).toBe(true);
+  });
+
+  it.each([
+    { body: "保存的新正文", status: "done", label: "已完成", word_count: 6 },
+    { body: "", status: "outline", label: "已有大纲", word_count: 0 },
+  ])("保存正文后使用服务端状态 $status，保留后续本地草稿", async (saved) => {
+    const pending = deferred<ChapterContentSaved>();
+    vi.mocked(api.saveContent).mockReturnValueOnce(pending.promise);
+    render(editor());
+    const body = await screen.findByPlaceholderText(bodyPlaceholder);
+    fireEvent.change(body, { target: { value: saved.body } });
+    fireEvent.click(screen.getByRole("button", { name: /保存$/ }));
+    fireEvent.change(body, { target: { value: "保存期间的新草稿" } });
+    await act(async () => pending.resolve({ chapter_id: "a", ...saved }));
+    expect(screen.getByText(saved.label)).toBeInTheDocument();
+    expect(body).toHaveValue("保存期间的新草稿");
+    expect(api.getChapter).toHaveBeenCalledTimes(1);
+  });
+
+  it("生成结束的旧状态请求不能覆盖后续手工保存", async () => {
+    const oldStatus = deferred<Chapter>();
+    const stream = deferred<void>();
+    vi.mocked(api.getChapter).mockResolvedValueOnce(chapter).mockReturnValueOnce(oldStatus.promise);
+    vi.mocked(sseFetch).mockReturnValueOnce(stream.promise);
+    vi.mocked(api.saveContent).mockResolvedValueOnce({
+      chapter_id: "a",
+      body: "",
+      status: "outline",
+      word_count: 0,
+    });
+    render(editor());
+    const body = await screen.findByPlaceholderText(bodyPlaceholder);
+    fireEvent.click(screen.getByRole("button", { name: /生成正文/ }));
+    await act(async () => {
+      vi.mocked(sseFetch).mock.calls[0][2].onEvent("done", "ok");
+      stream.resolve();
+    });
+    fireEvent.change(body, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存$/ }));
+    expect(await screen.findByText("已有大纲")).toBeInTheDocument();
+    await act(async () => oldStatus.resolve({ ...chapter, status: "done", word_count: 3000 }));
+    expect(screen.getByText("已有大纲")).toBeInTheDocument();
+    expect(screen.queryByText("已完成")).not.toBeInTheDocument();
+    expect(body).toHaveValue("");
   });
 });

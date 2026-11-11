@@ -22,16 +22,29 @@ describe("按需内容加载", () => {
   });
 
   it("下载模块失败后可重试，重新执行加载而非使用失败缓存", async () => {
-    // React 会记录已被边界捕获的异常;这里专门验证它的用户恢复流程。
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    // 只拦截此用例故意制造、随后被 ErrorBoundary 恢复的错误。
+    const failure = new Error("网络中断");
+    const ignoreExpectedError = (event: ErrorEvent) => {
+      if (event.error === failure) event.preventDefault();
+    };
+    const originalError = console.error;
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      if (args.includes(failure) || String(args[0]).includes("The above error occurred")) return;
+      originalError(...args);
+    });
+    window.addEventListener("error", ignoreExpectedError);
     const load = vi
       .fn()
-      .mockRejectedValueOnce(new Error("网络中断"))
+      .mockRejectedValueOnce(failure)
       .mockResolvedValueOnce({ default: () => <div>编辑器已恢复</div> });
-    render(<AsyncContent load={load} componentProps={{}} label="编辑器" />);
-    expect(await screen.findByText("编辑器加载失败")).toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole("button", { name: "重试加载" }));
-    expect(await screen.findByText("编辑器已恢复")).toBeInTheDocument();
-    expect(load).toHaveBeenCalledTimes(2);
+    try {
+      render(<AsyncContent load={load} componentProps={{}} label="编辑器" />);
+      expect(await screen.findByText("编辑器加载失败")).toBeInTheDocument();
+      await userEvent.setup().click(screen.getByRole("button", { name: "重试加载" }));
+      expect(await screen.findByText("编辑器已恢复")).toBeInTheDocument();
+      expect(load).toHaveBeenCalledTimes(2);
+    } finally {
+      window.removeEventListener("error", ignoreExpectedError);
+    }
   });
 });

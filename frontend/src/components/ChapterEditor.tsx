@@ -14,11 +14,15 @@ interface Props {
 
 type MetaField = "title" | "outline";
 
-export default function ChapterEditor({ chapterId }: Props) {
-  const [editingId, setEditingId] = useState(chapterId);
+export default function ChapterEditor({ bookId, chapterId }: Props) {
+  return <ChapterDraft key={`${bookId}:${chapterId ?? "none"}`} chapterId={chapterId} />;
+}
+
+function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [body, setBody] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [generating, setGenerating] = useState(false);
   const [savingBody, setSavingBody] = useState(false);
   const [savingFields, setSavingFields] = useState<MetaField[]>([]);
@@ -26,58 +30,60 @@ export default function ChapterEditor({ chapterId }: Props) {
   const bodySave = useRef(false);
   const metaSaves = useRef(new Set<MetaField>());
   const abortRef = useRef<AbortController | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   const generationVersion = useRef(0);
   const { message } = App.useApp();
   const refreshTree = useAppStore((s) => s.refreshTree);
 
-  if (editingId !== chapterId) {
-    setEditingId(chapterId);
-    setChapter(null);
-    setBody("");
-    setLoadFailed(false);
-    setGenerating(false);
-    setSavingBody(false);
-    setSavingFields([]);
-  }
-
   useEffect(() => {
     const owner = ++scope.current;
+    const request = new AbortController();
+    requestRef.current = request;
     const pendingMetadata = metaSaves.current;
     if (chapterId) {
       // 两部分均成功后才开放编辑，避免把尚未读取的正文当成空稿提交。
-      void Promise.all([api.getChapter(chapterId), api.getContent(chapterId)])
+      void Promise.all([
+        api.getChapter(chapterId, request.signal),
+        api.getContent(chapterId, request.signal),
+      ])
         .then(([data, content]) => {
-          if (scope.current !== owner) return;
+          if (scope.current !== owner || request.signal.aborted) return;
           setChapter(data);
           setBody(content.body);
           setLoadFailed(false);
         })
         .catch((err: unknown) => {
-          if (scope.current !== owner) return;
+          if (scope.current !== owner || request.signal.aborted) return;
+          request.abort();
           setLoadFailed(true);
           message.error(err instanceof Error ? err.message : "章节加载失败");
         });
     }
     return () => {
       scope.current += 1;
+      request.abort();
       abortRef.current?.abort();
       abortRef.current = null;
       bodySave.current = false;
       pendingMetadata.clear();
     };
-  }, [chapterId, message]);
+  }, [chapterId, message, loadAttempt]);
 
   if (!chapterId || chapter?.id !== chapterId) {
     return (
       <div className="nf-empty nf-empty--fill">
         <span className="nf-empty__glyph">卷</span>
-        <p>
-          {!chapterId
-            ? "从左侧选择一个章节"
-            : loadFailed
-              ? "章节加载失败，请重新选择章节重试"
-              : "正在加载章节..."}
-        </p>
+        <p>{!chapterId ? "从左侧选择一个章节" : loadFailed ? "章节加载失败" : "正在加载章节..."}</p>
+        {chapterId && loadFailed && (
+          <Button
+            onClick={() => {
+              setLoadFailed(false);
+              setLoadAttempt((value) => value + 1);
+            }}
+          >
+            重新加载章节
+          </Button>
+        )}
       </div>
     );
   }
@@ -105,11 +111,18 @@ export default function ChapterEditor({ chapterId }: Props) {
   const saveBody = async () => {
     if (bodySave.current || abortRef.current) return;
     const owner = scope.current;
+    generationVersion.current += 1;
     bodySave.current = true;
     setSavingBody(true);
     try {
-      await api.saveContent(chapter.id, body);
+      const saved = await api.saveContent(chapter.id, body);
       if (scope.current !== owner) return;
+      // 保存确认只更新服务端元信息,保留请求期间继续输入的草稿。
+      setChapter((draft) =>
+        draft?.id === saved.chapter_id
+          ? { ...draft, status: saved.status, word_count: saved.word_count }
+          : draft
+      );
       message.success("已保存正文");
       refreshTree();
     } catch (err: unknown) {
@@ -151,7 +164,7 @@ export default function ChapterEditor({ chapterId }: Props) {
             finish();
             refreshTree();
             void api
-              .getChapter(chapter.id)
+              .getChapter(chapter.id, requestRef.current?.signal)
               .then((updated) => {
                 if (scope.current !== owner || generationVersion.current !== version) return;
                 // 生成只改变状态、字数；标题和大纲仍由本地编辑状态拥有。

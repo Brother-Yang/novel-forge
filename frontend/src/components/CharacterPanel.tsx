@@ -1,6 +1,7 @@
 import { Button, Input, Popconfirm, Space } from "antd";
 import { PlusOutlined, DeleteOutlined, SaveOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import MarkdownEditor from "./MarkdownEditor";
+import CharacterFacts from "./CharacterFacts";
 import { api, sseEndpoints } from "../api";
 import type { Character } from "../api/types";
 import { useMarkdownCardPanel } from "../hooks/useMarkdownCardPanel";
@@ -89,6 +90,7 @@ export default function CharacterPanel({ bookId }: { bookId: string }) {
                 保存人物卡
               </Button>
             </Space>
+            <CharacterFacts state={current.derived_state} />
             <MarkdownEditor
               value={md}
               onChange={(v) => setMd(v ?? "")}

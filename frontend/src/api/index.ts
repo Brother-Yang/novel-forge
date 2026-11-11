@@ -1,11 +1,14 @@
 import { API_BASE, http } from "./client";
 import type {
-  AgentTraceEntry,
+  AgentTracePage,
   Book,
   BookTree,
   Chapter,
+  ChapterContent,
+  ChapterContentSaved,
   Character,
   GenerationTask,
+  MemoryStatus,
   NovelGenerationResult,
   PlotThread,
   Volume,
@@ -14,13 +17,15 @@ import type {
 
 export const api = {
   // books
-  listBooks: () => http.get<Book[]>("/books"),
-  getBook: (id: string) => http.get<Book>(`/books/${id}`),
+  listBooks: (signal?: AbortSignal) => http.get<Book[]>("/books", signal),
+  getBook: (id: string, signal?: AbortSignal) => http.get<Book>(`/books/${id}`, signal),
   createBook: (b: Partial<Book>) => http.post<Book>("/books", b),
   updateBook: (id: string, b: Partial<Book>) => http.patch<Book>(`/books/${id}`, b),
   deleteBook: (id: string) => http.del(`/books/${id}`),
-  getTree: (id: string) => http.get<BookTree>(`/books/${id}/tree`),
+  getTree: (id: string, signal?: AbortSignal) => http.get<BookTree>(`/books/${id}/tree`, signal),
   listPlotThreads: (id: string) => http.get<PlotThread[]>(`/books/${id}/plot_threads`),
+  getMemoryStatus: (bookId: string) => http.get<MemoryStatus>(`/books/${bookId}/memory/status`),
+  repairMemory: (bookId: string) => http.post<MemoryStatus>(`/books/${bookId}/memory/repair`),
 
   // volumes
   createVolume: (v: Partial<Volume>) => http.post<Volume>("/volumes", v),
@@ -28,15 +33,16 @@ export const api = {
   deleteVolume: (id: string) => http.del(`/volumes/${id}`),
 
   // chapters
-  getChapter: (id: string) => http.get<Chapter>(`/chapters/${id}`),
+  getChapter: (id: string, signal?: AbortSignal) => http.get<Chapter>(`/chapters/${id}`, signal),
   createChapter: (c: Partial<Chapter>) => http.post<Chapter>("/chapters", c),
   updateChapter: (id: string, c: Partial<Chapter>) => http.patch<Chapter>(`/chapters/${id}`, c),
   deleteChapter: (id: string) => http.del(`/chapters/${id}`),
   reorderChapters: (items: { id: string; order_index: number; volume_id?: string | null }[]) =>
     http.post("/chapters/reorder", { items }),
-  getContent: (id: string) =>
-    http.get<{ chapter_id: string; body: string }>(`/chapters/${id}/content`),
-  saveContent: (id: string, body: string) => http.put(`/chapters/${id}/content`, { body }),
+  getContent: (id: string, signal?: AbortSignal) =>
+    http.get<ChapterContent>(`/chapters/${id}/content`, signal),
+  saveContent: (id: string, body: string) =>
+    http.put<ChapterContentSaved>(`/chapters/${id}/content`, { body }),
 
   // characters
   listCharacters: (bookId: string) => http.get<Character[]>(`/books/${bookId}/characters`),
@@ -54,8 +60,9 @@ export const api = {
   deleteWorldbuilding: (id: string) => http.del(`/worldbuilding/${id}`),
 
   // tasks
-  listTasks: (bookId: string) => http.get<GenerationTask[]>(`/books/${bookId}/tasks`),
-  getTask: (id: string) => http.get<GenerationTask>(`/tasks/${id}`),
+  listTasks: (bookId: string, signal?: AbortSignal) =>
+    http.get<GenerationTask[]>(`/books/${bookId}/tasks`, signal),
+  getTask: (id: string, signal?: AbortSignal) => http.get<GenerationTask>(`/tasks/${id}`, signal),
   pauseTask: (id: string) => http.post(`/tasks/${id}/pause`),
   resumeTask: (id: string) => http.post(`/tasks/${id}/resume`),
   retryTask: (id: string) => http.post(`/tasks/${id}/retry`),
@@ -79,7 +86,17 @@ export const api = {
   }) => http.post<NovelGenerationResult>("/generate/agent", payload),
   startAgentFromBook: (bookId: string) =>
     http.post<GenerationTask>("/generate/agent/from-book", { book_id: bookId }),
-  getTaskTrace: (taskId: string) => http.get<AgentTraceEntry[]>(`/tasks/${taskId}/trace`),
+  getTaskTracePage: (
+    taskId: string,
+    cursor: { before?: number; after?: number },
+    signal: AbortSignal
+  ) => {
+    const query = new URLSearchParams();
+    if (cursor.before !== undefined) query.set("before", String(cursor.before));
+    if (cursor.after !== undefined) query.set("after", String(cursor.after));
+    const suffix = query.size ? `?${query}` : "";
+    return http.get<AgentTracePage>(`/tasks/${taskId}/trace/page${suffix}`, signal);
+  },
 
   exportUrl: (bookId: string, format: "txt" | "epub") =>
     `${API_BASE}/books/${bookId}/export?format=${format}`,
