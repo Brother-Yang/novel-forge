@@ -2,6 +2,7 @@
 
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from .. import models
 from .errors import GenerationError
@@ -14,14 +15,22 @@ _BODY_WHITESPACE = (
 )
 
 
+def chapter_complete_condition() -> ColumnElement[bool]:
+    """SQL predicate matching chapter_is_complete, including an absent body."""
+    return and_(
+        models.Chapter.status == "done",
+        func.coalesce(func.trim(models.ChapterContent.body, _BODY_WHITESPACE), "")
+        != "",
+    )
+
+
 def chapter_counts(db: Session, book_id: str) -> tuple[int, int]:
     """只返回总数与实际完成数,避免每条轨迹将全书正文读入内存。"""
-    complete = and_(
-        models.Chapter.status == "done",
-        func.length(func.trim(models.ChapterContent.body, _BODY_WHITESPACE)) > 0,
-    )
     total, done = db.execute(
-        select(func.count(models.Chapter.id), func.count(case((complete, 1))))
+        select(
+            func.count(models.Chapter.id),
+            func.count(case((chapter_complete_condition(), 1))),
+        )
         .outerjoin(models.ChapterContent)
         .where(models.Chapter.book_id == book_id)
     ).one()

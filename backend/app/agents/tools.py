@@ -23,7 +23,7 @@ from ..llm import get_llm
 from ..llm.retry import call_with_retry
 from . import pipeline, planner, prompts, stages
 from .completion import chapter_is_complete, require_book_complete
-from .state import BookNotFound, load_state
+from .state import CHAPTER_WINDOW_LIMIT, BookNotFound, load_state
 
 
 class ToolError(Exception):
@@ -73,10 +73,13 @@ def _require_str(value: object, field: str) -> str:
 
 # ---------- 状态感知 ----------
 async def tool_get_book_state(
-    db: Session, book_id: str, _args: dict[str, object]
+    db: Session, book_id: str, args: dict[str, object]
 ) -> dict[str, object]:
+    offset = args.get("chapter_offset", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ToolError("chapter_offset 必须是非负整数")
     try:
-        state = load_state(db, book_id)
+        state = load_state(db, book_id, chapter_offset=offset)
     except BookNotFound:
         raise ToolError("书籍不存在") from None
     return state.to_dict()
@@ -313,10 +316,20 @@ registry.register(
     Tool(
         name="get_book_state",
         description=(
-            "查询当前书籍的创作进度:设定/人物/卷/章/字数/剧情线程状态。"
-            + "建议每次决策前先调用了解现状。"
+            f"查询全书创作进度和最多 {CHAPTER_WINDOW_LIMIT} 条章节。窗口优先显示未完成章，"
+            "可从 chapter_window.next_offset 继续翻页。写入后用空参数重新获取最早待写章。"
         ),
-        parameters={"type": "object", "properties": {}, "required": []},
+        parameters={
+            "type": "object",
+            "properties": {
+                "chapter_offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "可选，从当前 chapter_window.next_offset 继续。省略时从最新窗口开头读取。",
+                },
+            },
+            "required": [],
+        },
         handler=tool_get_book_state,
         read_only=True,
     )
@@ -386,13 +399,13 @@ registry.register(
 registry.register(
     Tool(
         name="write_chapter",
-        description="为指定章节生成/重写正文;该章须已有细纲。",
+        description="为指定章节生成或重写正文。归卷章应先准备细纲，未归卷章可按前情写作。",
         parameters={
             "type": "object",
             "properties": {
                 "chapter_id": {
                     "type": "string",
-                    "description": "目标章节 id,来自 get_book_state 返回的 volumes[].chapters[].id,不能凭空编造",
+                    "description": "目标章节 id，来自 get_book_state 的 volumes[].chapters、loose_chapters 或 final_chapter",
                 },
                 "words": {"type": "integer", "description": "目标字数,1000-6000"},
                 "is_ending": {

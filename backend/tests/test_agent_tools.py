@@ -183,10 +183,21 @@ async def test_get_book_state_aggregates_progress(db):
     db.commit()
     db.refresh(volume)
     chapter1 = models.Chapter(
-        book_id=book.id, volume_id=volume.id, title="第1章", status="done", word_count=1000, order_index=0
+        book_id=book.id,
+        volume_id=volume.id,
+        title="第1章",
+        status="done",
+        word_count=1000,
+        order_index=0,
     )
+    chapter1.content = models.ChapterContent(body="已经保存的正文")
     chapter2 = models.Chapter(
-        book_id=book.id, volume_id=volume.id, title="第2章", status="outline", word_count=0, order_index=1
+        book_id=book.id,
+        volume_id=volume.id,
+        title="第2章",
+        status="outline",
+        word_count=0,
+        order_index=1,
     )
     db.add(chapter1)
     db.add(chapter2)
@@ -206,12 +217,42 @@ async def test_get_book_state_aggregates_progress(db):
             "chapter_count": 2,
             "chapters_done": 1,
             "chapters": [
-                {"id": chapter1.id, "title": "第1章", "order_index": 0, "status": "done"},
-                {"id": chapter2.id, "title": "第2章", "order_index": 1, "status": "outline"},
+                {
+                    "id": chapter1.id,
+                    "title": "第1章",
+                    "order_index": 0,
+                    "status": "done",
+                    "complete": True,
+                },
+                {
+                    "id": chapter2.id,
+                    "title": "第2章",
+                    "order_index": 1,
+                    "status": "outline",
+                    "complete": False,
+                },
             ],
         }
     ]
     assert state["open_plot_threads"] == [{"name": "线程A", "status": "open"}]
+    page = await tools.tool_get_book_state(db, book.id, {"chapter_offset": 1})
+    assert page["chapter_window"] == {
+        "offset": 1,
+        "limit": 32,
+        "total": 2,
+        "next_offset": None,
+        "truncated": True,
+        "order": "pending_first",
+    }
+    volumes = page["volumes"]
+    assert isinstance(volumes, list)
+    assert [row["id"] for row in volumes[0]["chapters"]] == [chapter1.id]
+
+
+async def test_get_book_state_rejects_invalid_chapter_offset(db):
+    book = _book(db)
+    with pytest.raises(tools.ToolError, match="非负整数"):
+        await tools.tool_get_book_state(db, book.id, {"chapter_offset": -1})
 
 
 async def test_get_book_state_missing_book_raises(db):
