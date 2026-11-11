@@ -5,12 +5,13 @@ import re
 import tempfile
 import uuid
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 from starlette.types import Receive, Scope, Send
 
@@ -18,6 +19,7 @@ from .. import models
 from ..database import get_db
 
 router = APIRouter()
+_CHAPTER_BATCH_SIZE = 32
 _INVALID_XML_TEXT = re.compile(
     r"[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]"
 )
@@ -42,55 +44,67 @@ class _ExportFileResponse(FileResponse):
             self.directory.cleanup()
 
 
-def _ordered_chapters(
-    db: Session, book_id: str
-) -> Iterator[tuple[str | None, models.Chapter]]:
-    """按卷顺序、卷内章顺序产出 (卷标题或None, 章);未归卷章节置于最后。"""
-    volumes = db.scalars(
-        select(models.Volume)
-        .where(models.Volume.book_id == book_id)
-        .order_by(models.Volume.order_index)
-    ).all()
-    for vol in volumes:
-        chapters = db.scalars(
-            select(models.Chapter)
-            .where(
-                models.Chapter.book_id == book_id,
-                models.Chapter.volume_id == vol.id,
-            )
-            .order_by(models.Chapter.order_index)
-        ).all()
-        for ch in chapters:
-            yield vol.title, ch
-    loose = db.scalars(
-        select(models.Chapter)
-        .where(
-            models.Chapter.book_id == book_id,
-            models.Chapter.volume_id.is_(None),
+@dataclass(frozen=True)
+class _ExportChapter:
+    volume_id: str | None
+    volume_title: str | None
+    title: str
+    body: str
+
+
+def _chapter_bodies(db: Session, chapter_ids: Sequence[str]) -> dict[str, str]:
+    statement = select(
+        models.ChapterContent.chapter_id, models.ChapterContent.body
+    ).where(models.ChapterContent.chapter_id.in_(chapter_ids))
+    with db.execute(statement) as result:
+        return {chapter_id: body for chapter_id, body in result.tuples()}
+
+
+def _ordered_chapters(db: Session, book_id: str) -> Iterator[_ExportChapter]:
+    """Read the ordered catalog and load at most one batch of bodies at a time."""
+    chapter, volume = models.Chapter, models.Volume
+    statement = (
+        select(chapter.id, chapter.title, volume.id, volume.title)
+        .select_from(chapter)
+        .outerjoin(
+            volume, and_(chapter.volume_id == volume.id, volume.book_id == book_id)
         )
-        .order_by(models.Chapter.order_index)
-    ).all()
-    for ch in loose:
-        yield None, ch
-
-
-def _body(db: Session, chapter_id: str) -> str:
-    content = db.get(models.ChapterContent, chapter_id)
-    return content.body if content else ""
+        .where(
+            chapter.book_id == book_id,
+            or_(chapter.volume_id.is_(None), volume.id.is_not(None)),
+        )
+        .order_by(
+            chapter.volume_id.is_(None),
+            volume.order_index,
+            volume.id,
+            chapter.order_index,
+            chapter.id,
+        )
+        .execution_options(yield_per=_CHAPTER_BATCH_SIZE)
+    )
+    # Keep the sort input small. Joining prose into this query would put it in
+    # SQLite's sort buffer even if the application fetched rows in batches.
+    with db.execute(statement) as result:
+        for rows in result.tuples().partitions(_CHAPTER_BATCH_SIZE):
+            bodies = _chapter_bodies(db, [chapter_id for chapter_id, _, _, _ in rows])
+            for chapter_id, title, volume_id, volume_title in rows:
+                yield _ExportChapter(
+                    volume_id, volume_title, title, bodies.get(chapter_id, "")
+                )
+            del bodies  # Drop this batch before loading the next one.
 
 
 def _export_txt(db: Session, book: models.Book) -> Iterator[str]:
     yield f"《{book.title}》\n"
     if book.intro:
         yield f"\n{book.intro}\n"
-    last_volume: str | None = "\0"
-    for volume_title, ch in _ordered_chapters(db, book.id):
-        if volume_title != last_volume:
-            last_volume = volume_title
-            if volume_title:
-                yield f"\n\n{'=' * 20}\n{volume_title}\n{'=' * 20}\n"
-        body = _body(db, ch.id)
-        yield f"\n\n{ch.title}\n\n{body}\n"
+    last_volume_id: str | None = None
+    for chapter in _ordered_chapters(db, book.id):
+        if chapter.volume_id != last_volume_id:
+            last_volume_id = chapter.volume_id
+            if chapter.volume_title:
+                yield f"\n\n{'=' * 20}\n{chapter.volume_title}\n{'=' * 20}\n"
+        yield f"\n\n{chapter.title}\n\n{chapter.body}\n"
 
 
 def _xml_text(value: str) -> str:
@@ -136,10 +150,10 @@ def _build_epub(db: Session, book: models.Book, path: Path) -> None:
             "  </rootfiles>\n</container>",
         )
 
-        for i, (_vol, ch) in enumerate(_ordered_chapters(db, book.id), start=1):
+        for i, chapter in enumerate(_ordered_chapters(db, book.id), start=1):
             item_id = f"chap{i}"
             href = f"{item_id}.xhtml"
-            zf.writestr(f"OEBPS/{href}", _xhtml(ch.title, _body(db, ch.id)))
+            zf.writestr(f"OEBPS/{href}", _xhtml(chapter.title, chapter.body))
             manifest_items.append(
                 f'<item id="{item_id}" href="{href}" '
                 'media-type="application/xhtml+xml"/>'
@@ -147,7 +161,7 @@ def _build_epub(db: Session, book: models.Book, path: Path) -> None:
             spine_items.append(f'<itemref idref="{item_id}"/>')
             nav_points.append(
                 f'<navPoint id="nav{i}" playOrder="{i}">'
-                f"<navLabel><text>{html.escape(_xml_text(ch.title))}</text></navLabel>"
+                f"<navLabel><text>{html.escape(_xml_text(chapter.title))}</text></navLabel>"
                 f'<content src="{href}"/></navPoint>'
             )
 

@@ -1,7 +1,7 @@
 """以落库正文验证章节/全书完成情况,供工具和任务恢复共用。"""
 
 from sqlalchemy import and_, case, func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from .. import models
@@ -45,32 +45,41 @@ def chapter_is_complete(chapter: models.Chapter) -> bool:
     )
 
 
-def book_chapters(db: Session, book_id: str) -> list[models.Chapter]:
-    return list(
-        db.scalars(
-            select(models.Chapter)
-            .where(models.Chapter.book_id == book_id)
-            .options(selectinload(models.Chapter.content))
-            .order_by(models.Chapter.order_index, models.Chapter.id)
-        )
-    )
+def chapter_completion_queue(db: Session, book_id: str) -> tuple[int, list[str]]:
+    """Return the total and the pending chapter IDs in narrative order."""
+    total = 0
+    pending: list[str] = []
+    for chapter_id, complete in db.execute(
+        select(models.Chapter.id, chapter_complete_condition())
+        .outerjoin(models.ChapterContent)
+        .where(models.Chapter.book_id == book_id)
+        .order_by(models.Chapter.order_index, models.Chapter.id)
+    ):
+        total += 1
+        if not complete:
+            pending.append(chapter_id)
+    return total, pending
 
 
 def require_book_complete(db: Session, book_id: str) -> None:
     """不能仅凭模型结束信号或 done 元数据宣布完成。"""
-    if db.get(models.Book, book_id) is None:
+    if db.scalar(select(models.Book.id).where(models.Book.id == book_id)) is None:
         raise GenerationError("书籍不存在")
-    chapters = book_chapters(db, book_id)
-    if not chapters:
+    total, done = chapter_counts(db, book_id)
+    if not total:
         raise GenerationError("全书尚无已完成的非空章节正文,请先生成章节")
-    pending = [chapter for chapter in chapters if not chapter_is_complete(chapter)]
-    if pending:
-        raise GenerationError(
-            f"仍有 {len(pending)} 章未完成或正文为空,请继续生成后重试"
-        )
-    populated_volumes = {chapter.volume_id for chapter in chapters}
-    volume_ids = db.scalars(
-        select(models.Volume.id).where(models.Volume.book_id == book_id)
+    if pending := total - done:
+        raise GenerationError(f"仍有 {pending} 章未完成或正文为空,请继续生成后重试")
+    populated_volumes = select(models.Chapter.volume_id).where(
+        models.Chapter.book_id == book_id, models.Chapter.volume_id.is_not(None)
     )
-    if any(volume_id not in populated_volumes for volume_id in volume_ids):
+    empty_volume = db.scalar(
+        select(models.Volume.id)
+        .where(
+            models.Volume.book_id == book_id,
+            models.Volume.id.not_in(populated_volumes),
+        )
+        .limit(1)
+    )
+    if empty_volume is not None:
         raise GenerationError("仍有卷未生成章节,请继续生成后重试")

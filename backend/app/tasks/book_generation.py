@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..agents import observability, pipeline
 from ..agents.completion import (
-    book_chapters,
+    chapter_completion_queue,
     chapter_is_complete,
     require_book_complete,
 )
@@ -157,7 +157,8 @@ def ensure_running(db: Session, task: models.GenerationTask) -> None:
 
 
 def _pending_chapters(db: Session, book_id: str) -> list[str]:
-    return [c.id for c in book_chapters(db, book_id) if not chapter_is_complete(c)]
+    _, pending = chapter_completion_queue(db, book_id)
+    return pending
 
 
 def reset_empty_drafts(db: Session, book_id: str) -> None:
@@ -255,9 +256,7 @@ async def run_chapter_bodies(
 ) -> None:
     task_id, book_id = task.id, task.book_id
     reset_empty_drafts(db, task.book_id)
-    chapters = book_chapters(db, task.book_id)
-    pending = [c.id for c in chapters if not chapter_is_complete(c)]
-    total = len(chapters)
+    total, pending = chapter_completion_queue(db, book_id)
     done_count = total - len(pending)
     span = max(0, progress_hi - progress_lo)
 

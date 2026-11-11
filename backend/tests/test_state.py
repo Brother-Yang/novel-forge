@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.agents.completion import (
+    chapter_completion_queue,
     chapter_counts,
     chapter_is_complete,
     require_book_complete,
@@ -165,6 +166,14 @@ def test_state_counts_match_body_completion_even_for_legacy_metadata(
         == chapter_counts(db, book.id)
         == (5, 1)
     )
+    assert chapter_completion_queue(db, book.id) == (
+        5,
+        [
+            chapter.id
+            for chapter, complete in zip(rows, expected, strict=True)
+            if not complete
+        ],
+    )
     assert (snapshot.loose_chapters_total, snapshot.loose_chapters_done) == (5, 1)
 
 
@@ -208,6 +217,7 @@ def test_state_windows_800_chapters_and_keeps_deleted_volumes_chapters_accessibl
         _connection: object, _cursor: object, statement: str, *_args: object
     ) -> None:
         assert "chapters.outline" not in statement, statement
+        assert "SELECT chapter_content." not in statement, statement
 
     bind = db.get_bind()
 
@@ -226,6 +236,12 @@ def test_state_windows_800_chapters_and_keeps_deleted_volumes_chapters_accessibl
     assert first.final_chapter is not None and first.final_chapter.id == ending_id
     assert _visible_orders(first) == set(range(760, 760 + CHAPTER_WINDOW_LIMIT))
     assert len(json.dumps(first.to_dict(), ensure_ascii=False).encode()) < 20_000
+    expected_pending = [chapter.id for chapter in chapters[760:]]
+    event.listen(bind, "before_cursor_execute", check_projection)
+    try:
+        assert chapter_completion_queue(db, book_id) == (800, expected_pending)
+    finally:
+        event.remove(bind, "before_cursor_execute", check_projection)
 
     visited: set[int] = set()
     snapshot = first
@@ -257,4 +273,9 @@ def test_state_windows_800_chapters_and_keeps_deleted_volumes_chapters_accessibl
     assert completed.final_chapter is not None and completed.final_chapter.complete
     assert completed.final_chapter.id == ending_id
 
-    require_book_complete(db, book_id)
+    event.listen(bind, "before_cursor_execute", check_projection)
+    try:
+        require_book_complete(db, book_id)
+        assert chapter_completion_queue(db, book_id) == (800, [])
+    finally:
+        event.remove(bind, "before_cursor_execute", check_projection)

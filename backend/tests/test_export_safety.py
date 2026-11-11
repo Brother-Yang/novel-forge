@@ -1,13 +1,14 @@
 import io
+import math
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session
 from starlette.types import Message, Scope
 
@@ -164,12 +165,13 @@ async def test_export_uses_one_snapshot_during_concurrent_edit(
         book_id, first_id, second_id = book.id, first.id, second.id
         db.commit()
 
-    original_body = export._body
+    monkeypatch.setattr(export, "_CHAPTER_BATCH_SIZE", 1)
+    original_bodies = export._chapter_bodies
     saved = False
 
-    def read_body(db: Session, chapter_id: str) -> str:
+    def read_bodies(db: Session, chapter_ids: Sequence[str]) -> dict[str, str]:
         nonlocal saved
-        if chapter_id == first_id:
+        if first_id in chapter_ids:
             with Session(engine) as editor:
                 chapter = editor.get(models.Chapter, second_id)
                 assert chapter is not None and chapter.content is not None
@@ -177,9 +179,9 @@ async def test_export_uses_one_snapshot_during_concurrent_edit(
                 chapter.content.body = "新次章正文"
                 editor.commit()
             saved = True
-        return original_body(db, chapter_id)
+        return original_bodies(db, chapter_ids)
 
-    monkeypatch.setattr(export, "_body", read_body)
+    monkeypatch.setattr(export, "_chapter_bodies", read_bodies)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=_export_app(engine)), base_url="http://test"
@@ -199,5 +201,102 @@ async def test_export_uses_one_snapshot_during_concurrent_edit(
             assert (
                 chapter.title == "新次章标题" and chapter.content.body == "新次章正文"
             )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("format_", ["txt", "epub"])
+async def test_large_export_batches_bodies_and_orders_tied_chapters(
+    tmp_path: Path, format_: str
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'large-export.db'}")
+    Base.metadata.create_all(engine)
+    expected_titles = [
+        f"章-{volume_number:02d}-{chapter_number:02d}"
+        for volume_number in range(40)
+        for chapter_number in range(20)
+    ] + ["章-未归卷-A", "章-未归卷-Z"]
+    with Session(engine) as db:
+        book = models.Book(id="large-book", title="长篇书稿")
+        # Insert higher IDs first to ensure ties cannot rely on insertion order.
+        for volume_number in reversed(range(40)):
+            volume = models.Volume(
+                id=f"volume-{volume_number:02d}",
+                book=book,
+                title="同名卷" if volume_number < 2 else f"第{volume_number + 1}卷",
+                order_index=volume_number // 2,
+            )
+            for chapter_number in reversed(range(20)):
+                chapter_key = f"{volume_number:02d}-{chapter_number:02d}"
+                db.add(
+                    models.Chapter(
+                        id=f"chapter-{chapter_key}",
+                        book=book,
+                        volume=volume,
+                        title=f"章-{chapter_key}",
+                        order_index=chapter_number // 2,
+                        content=models.ChapterContent(body=f"正文-{chapter_key}"),
+                    )
+                )
+        for name in ("Z", "A"):
+            db.add(
+                models.Chapter(
+                    id=f"loose-{name}",
+                    book=book,
+                    title=f"章-未归卷-{name}",
+                    order_index=0,
+                )
+            )
+        db.commit()
+
+    selects: list[str] = []
+    body_batches: list[int] = []
+
+    def count_selects(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if statement.lstrip().startswith("SELECT"):
+            selects.append(statement)
+            if "FROM chapter_content" in statement:
+                assert isinstance(parameters, tuple)
+                body_batches.append(len(parameters))
+
+    event.listen(engine, "before_cursor_execute", count_selects)
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=_export_app(engine)), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/books/large-book/export?format={format_}")
+        assert response.status_code == 200
+        if format_ == "txt":
+            lines = response.text.splitlines()
+            assert [line for line in lines if line.startswith("章-")] == expected_titles
+            assert lines.count("同名卷") == 2
+            assert "正文-00-00" in lines and "正文-39-19" in lines
+        else:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                namespace = {"x": "http://www.w3.org/1999/xhtml"}
+                chapter_names = [
+                    name for name in archive.namelist() if name.endswith(".xhtml")
+                ]
+                titles = [
+                    ElementTree.fromstring(archive.read(name)).findtext(
+                        ".//x:h2", namespaces=namespace
+                    )
+                    for name in chapter_names
+                ]
+                assert titles == expected_titles
+                assert "正文-00-00" in archive.read(chapter_names[0]).decode()
+                assert "正文-39-19" in archive.read(chapter_names[-3]).decode()
+        assert 0 < max(body_batches) <= export._CHAPTER_BATCH_SIZE
+        assert sum(body_batches) == len(expected_titles)
+        assert len(selects) <= 2 + math.ceil(
+            len(expected_titles) / export._CHAPTER_BATCH_SIZE
+        )
     finally:
         engine.dispose()
