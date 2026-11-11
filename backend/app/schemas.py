@@ -26,7 +26,19 @@ class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class PatchModel(BaseModel):
+class RequestModel(BaseModel):
+    @field_validator("*", mode="after")
+    @classmethod
+    def require_utf8_text(cls, value: object) -> object:
+        if isinstance(value, str):
+            try:
+                _ = value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError("必须是有效的 Unicode 文本") from None
+        return value
+
+
+class PatchModel(RequestModel):
     """Omitted fields stay unchanged; only explicitly nullable fields accept null."""
 
     nullable_fields: ClassVar[frozenset[str]] = frozenset()
@@ -40,7 +52,7 @@ class PatchModel(BaseModel):
 
 
 # ---------- Book ----------
-class BookCreate(BaseModel):
+class BookCreate(RequestModel):
     title: str
     intro: str = ""
     brief: str = ""
@@ -81,7 +93,7 @@ class BookOut(ORMModel):
 
 
 # ---------- Volume ----------
-class VolumeCreate(BaseModel):
+class VolumeCreate(RequestModel):
     book_id: str
     title: str
     order_index: OrderIndex = 0
@@ -103,7 +115,7 @@ class VolumeOut(ORMModel):
 
 
 # ---------- Chapter ----------
-class ChapterCreate(BaseModel):
+class ChapterCreate(RequestModel):
     book_id: str
     volume_id: str | None = None
     title: str
@@ -143,18 +155,18 @@ class ChapterContentSaved(ChapterContentOut):
     word_count: int
 
 
-class ChapterContentUpdate(BaseModel):
+class ChapterContentUpdate(RequestModel):
     body: str
     expected_version: str | None = None
 
 
-class ReorderItem(BaseModel):
+class ReorderItem(RequestModel):
     id: str
     order_index: OrderIndex
     volume_id: str | None = None
 
 
-class ReorderRequest(BaseModel):
+class ReorderRequest(RequestModel):
     items: list[ReorderItem]
 
 
@@ -180,7 +192,7 @@ class BookTree(BaseModel):
 
 
 # ---------- Character ----------
-class CharacterCreate(BaseModel):
+class CharacterCreate(RequestModel):
     book_id: str
     name: str
     md_content: str = ""
@@ -205,7 +217,7 @@ class CharacterOut(ORMModel):
 
 
 # ---------- Worldbuilding ----------
-class WorldbuildingCreate(BaseModel):
+class WorldbuildingCreate(RequestModel):
     book_id: str
     category: str = "general"
     title: str
@@ -269,36 +281,36 @@ class AgentTracePageOut(BaseModel):
 
 
 # ---------- Generate 请求 ----------
-class GenerateWorldbuildingReq(BaseModel):
+class GenerateWorldbuildingReq(RequestModel):
     book_id: str
 
 
-class GenerateCharactersReq(BaseModel):
+class GenerateCharactersReq(RequestModel):
     book_id: str
     count: int = Field(default=5, ge=1, le=CHARACTERS_PER_GENERATION_MAX)
 
 
-class GenerateOutlineReq(BaseModel):
+class GenerateOutlineReq(RequestModel):
     book_id: str
     volume_count: int = Field(default=3, ge=1, le=NOVEL_VOLUME_MAX)
 
 
-class GenerateChapterOutlinesReq(BaseModel):
+class GenerateChapterOutlinesReq(RequestModel):
     volume_id: str
     chapter_count: int = Field(default=10, ge=1, le=NOVEL_CHAPTERS_PER_VOLUME_MAX)
 
 
-class GenerateChapterReq(BaseModel):
+class GenerateChapterReq(RequestModel):
     chapter_id: str
     words: int = Field(default=2000, ge=1, le=CHAPTER_GENERATION_WORDS_MAX)
     expected_version: str | None = None
 
 
-class GenerateBookReq(BaseModel):
+class GenerateBookReq(RequestModel):
     book_id: str
 
 
-class GenerateNovelReq(BaseModel):
+class GenerateNovelReq(RequestModel):
     brief: str
     title: str | None = None
     genre: str = ""
@@ -311,7 +323,7 @@ class GenerateNovelReq(BaseModel):
     )
 
 
-class GenerateNovelFromBookReq(BaseModel):
+class GenerateNovelFromBookReq(RequestModel):
     book_id: str
 
 
@@ -320,7 +332,7 @@ class NovelGenerationOut(BaseModel):
     task: GenerationTaskOut
 
 
-class GenerateAgentReq(BaseModel):
+class GenerateAgentReq(RequestModel):
     brief: str
     title: str | None = None
     genre: str = ""
@@ -333,5 +345,5 @@ class GenerateAgentReq(BaseModel):
     )
 
 
-class GenerateAgentFromBookReq(BaseModel):
+class GenerateAgentFromBookReq(RequestModel):
     book_id: str

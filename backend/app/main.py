@@ -2,8 +2,10 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .api import auth
 from .config import Settings, settings
@@ -12,6 +14,10 @@ from .limits import WindowBudget
 from .memory import sync
 from .runtime import single_process_resources, validate_runtime_settings
 from .tasks import book_generation
+
+
+def _validation_text(value: object) -> str:
+    return str(value).encode("utf-8", errors="replace").decode("utf-8")
 
 
 @asynccontextmanager
@@ -54,6 +60,25 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["Content-Disposition", "Retry-After"],
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # Raw validation inputs may contain manuscript text, credentials or
+        # values that cannot be serialized in a JSON response.
+        details = [
+            {
+                "loc": [
+                    part if isinstance(part, int) else _validation_text(part)
+                    for part in error["loc"]
+                ],
+                "msg": _validation_text(error["msg"]),
+                "type": _validation_text(error["type"]),
+            }
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": details})
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
