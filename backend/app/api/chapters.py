@@ -173,6 +173,8 @@ def update_chapter_content(
             raise HTTPException(404, "章节不存在")
         current_body = chapter.content.body if chapter.content else ""
         require_content_version(current_body, payload.expected_version)
+        if current_body != payload.body:
+            chapter.revision_approved = False
         if chapter.content:
             chapter.content.body = payload.body
         else:

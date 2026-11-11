@@ -6,6 +6,9 @@ pipeline 生成函数打桩,保证测试离线、快速、不依赖网络。
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -35,11 +38,6 @@ def _book(db: Session, **kwargs: object) -> models.Book:
 
 def _forbid_llm() -> None:
     raise AssertionError("完整阶段不应调用模型")
-
-
-async def _must_not_be_called(*args: object, **kwargs: object):
-    raise AssertionError("已存在数据时不应再次调用生成流程")
-    yield  # pragma: no cover  # 保持异步生成器签名,不会被执行到
 
 
 # ---------- 只有完整结构才幂等跳过 ----------
@@ -142,7 +140,7 @@ async def test_write_chapter_blocks_rewriting_done_chapter_without_approval(db, 
     db.add(chapter)
     db.commit()
     db.refresh(chapter)
-    monkeypatch.setattr(pipeline, "gen_chapter_body", _must_not_be_called)
+    monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
 
     with pytest.raises(tools.ToolError, match="review_content"):
         await tools.tool_write_chapter(db, book.id, {"chapter_id": chapter.id, "words": 2000})
@@ -158,21 +156,27 @@ async def test_write_chapter_allows_rewrite_once_after_revision_approved(db, mon
     db.commit()
     db.refresh(chapter)
 
-    async def _fake_gen_chapter_body(db, chapter_id, words, is_ending=None):
-        ch = db.get(models.Chapter, chapter_id)
-        ch.status = "done"
-        ch.word_count = 999
-        db.commit()
-        yield ("log", "已重写")
-        yield ("done", "")
+    class FakeModel:
+        async def chat_stream(self, prompt: str, *, system: str) -> AsyncIterator[str]:
+            yield "重新生成的正文"
 
-    monkeypatch.setattr(pipeline, "gen_chapter_body", _fake_gen_chapter_body)
+    monkeypatch.setattr(pipeline, "get_llm", FakeModel)
+    monkeypatch.setattr(
+        pipeline.memory, "build_chapter_context", AsyncMock(return_value="")
+    )
+    monkeypatch.setattr(
+        pipeline.memory_sync, "process_chapter_memory", AsyncMock(return_value=True)
+    )
 
     result = await tools.tool_write_chapter(db, book.id, {"chapter_id": chapter.id, "words": 2000})
     assert result["ok"] is True
     db.refresh(chapter)
     # 消费一次批准后立即复位,不能无限期重写
     assert chapter.revision_approved is False
+    content = chapter.content
+    assert content is not None and content.body == "重新生成的正文"
+    with pytest.raises(tools.ToolError, match="review_content"):
+        await tools.tool_write_chapter(db, book.id, {"chapter_id": chapter.id})
 
 
 # ---------- 状态感知:聚合结果应反映真实数据库状态 ----------

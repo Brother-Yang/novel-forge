@@ -17,12 +17,14 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import models, schemas
 from ..config import settings
 from ..llm import get_llm
 from ..llm.retry import call_with_retry
-from . import pipeline, planner, prompts, stages
-from .completion import chapter_is_complete, require_book_complete
+from . import chapter_writes, pipeline, planner, prompts, stages
+from .chapter_versions import content_version
+from .completion import require_book_complete
+from .errors import GenerationError
 from .state import CHAPTER_WINDOW_LIMIT, BookNotFound, load_state
 
 
@@ -97,7 +99,7 @@ async def tool_write_worldbuilding(
 async def tool_create_characters(
     db: Session, book_id: str, args: dict[str, object]
 ) -> dict[str, object]:
-    count = _clamp_int(args.get("count"), 5, 3, 8)
+    count = _clamp_int(args.get("count"), 5, 3, planner.CHARACTER_MAX)
     return await _consume_pipeline(
         pipeline.gen_characters(db, book_id, count, recovery=stages.Recovery())
     )
@@ -140,21 +142,13 @@ async def tool_write_chapter(
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter or chapter.book_id != book_id:
         raise ToolError(f"chapter_id={chapter_id} 不存在或不属于本书")
-    if chapter_is_complete(chapter):
-        # 高风险操作护栏:覆盖已完成正文会丢弃已有内容,自动拦截而非直接执行。
-        # 只有 review_content 刚对这一章给出 needs_revision=true 时才放行一次。
-        if not chapter.revision_approved:
-            raise ToolError(
-                "该章节正文已完成,直接覆盖会丢弃已有内容;请先调用 review_content "
-                + "评审该章节(target_type=chapter),只有返回 needs_revision=true 后才允许重写。"
-            )
-        chapter.revision_approved = False
-        db.commit()
-    words = _clamp_int(args.get("words"), 2500, 1000, 6000)
+    words = _clamp_int(args.get("words"), 2500, 1000, schemas.CHAPTER_GENERATION_WORDS_MAX)
     is_ending_raw = args.get("is_ending")
     is_ending = bool(is_ending_raw) if is_ending_raw is not None else None
     result = await _consume_pipeline(
-        pipeline.gen_chapter_body(db, chapter_id, words, is_ending=is_ending)
+        pipeline.gen_chapter_body(
+            db, chapter_id, words, is_ending=is_ending, require_revision_approval=True
+        )
     )
     db.refresh(chapter)
     return {
@@ -219,6 +213,8 @@ async def tool_review_content(
     label, text = _load_review_target(db, book_id, target_type, args.get("target_id"))
     if not text.strip():
         return {"needs_revision": True, "feedback": f"{label}内容为空,需要先生成内容"}
+    reviewed_version = content_version(text) if target_type == "chapter" else None
+    db.rollback()
     llm = get_llm()
     raw = await call_with_retry(
         lambda: llm.chat(
@@ -229,13 +225,17 @@ async def tool_review_content(
         base_delay=settings.llm_retry_base_delay,
     )
     result = _parse_review(raw)
-    if target_type == "chapter" and result.get("needs_revision"):
-        chapter = db.get(
-            models.Chapter, _require_str(args.get("target_id"), "target_id")
-        )
-        if chapter and chapter.book_id == book_id and chapter.status == "done":
-            chapter.revision_approved = True
-            db.commit()
+    if reviewed_version is not None:
+        try:
+            chapter_writes.set_revision_approval(
+                db,
+                book_id,
+                _require_str(args.get("target_id"), "target_id"),
+                reviewed_version,
+                approved=result.get("needs_revision") is True,
+            )
+        except GenerationError as exc:
+            raise ToolError(str(exc)) from exc
     return result
 
 
@@ -348,7 +348,12 @@ registry.register(
         description="生成主要人物(仅在尚未生成人物时调用一次)。",
         parameters={
             "type": "object",
-            "properties": {"count": {"type": "integer", "description": "人物数量,3-8"}},
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "description": f"人物数量,3-{planner.CHARACTER_MAX}",
+                }
+            },
             "required": ["count"],
         },
         handler=tool_create_characters,
@@ -407,7 +412,10 @@ registry.register(
                     "type": "string",
                     "description": "目标章节 id，来自 get_book_state 的 volumes[].chapters、loose_chapters 或 final_chapter",
                 },
-                "words": {"type": "integer", "description": "目标字数,1000-6000"},
+                "words": {
+                    "type": "integer",
+                    "description": f"目标字数,1000-{schemas.CHAPTER_GENERATION_WORDS_MAX}",
+                },
                 "is_ending": {
                     "type": "boolean",
                     "description": (

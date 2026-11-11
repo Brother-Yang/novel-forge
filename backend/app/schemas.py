@@ -8,6 +8,9 @@ NOVEL_VOLUME_MAX = 40
 NOVEL_CHAPTERS_PER_VOLUME_MAX = 20
 NOVEL_WORDS_PER_CHAPTER_MIN = 2000
 NOVEL_WORDS_PER_CHAPTER_MAX = 4000
+# 手工重写允许比自动规划更长的单章，与 Agent 写章工具上限一致。
+CHAPTER_GENERATION_WORDS_MAX = 6000
+CHARACTERS_PER_GENERATION_MAX = 8
 NOVEL_TARGET_WORDS_MAX = (
     NOVEL_VOLUME_MAX * NOVEL_CHAPTERS_PER_VOLUME_MAX * NOVEL_WORDS_PER_CHAPTER_MAX
 )
@@ -252,7 +255,7 @@ class GenerateWorldbuildingReq(BaseModel):
 
 class GenerateCharactersReq(BaseModel):
     book_id: str
-    count: int = 5
+    count: int = Field(default=5, ge=1, le=CHARACTERS_PER_GENERATION_MAX)
 
 
 class GenerateOutlineReq(BaseModel):
@@ -267,7 +270,7 @@ class GenerateChapterOutlinesReq(BaseModel):
 
 class GenerateChapterReq(BaseModel):
     chapter_id: str
-    words: int = 2000
+    words: int = Field(default=2000, ge=1, le=CHAPTER_GENERATION_WORDS_MAX)
     expected_version: str | None = None
 
 

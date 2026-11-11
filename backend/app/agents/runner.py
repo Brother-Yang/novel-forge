@@ -45,7 +45,9 @@ Event = tuple[str, str]
 
 
 def _review_key(args: dict[str, object]) -> str:
-    return f"{args.get('target_type')}:{args.get('target_id')}"
+    target_id = args.get("target_id")
+    normalized_id = str(target_id).strip() if target_id is not None else ""
+    return f"{args.get('target_type') or ''}:{normalized_id}"
 
 
 async def run(
@@ -138,10 +140,21 @@ async def run(
                 f"{call.name}({json.dumps(call.arguments, ensure_ascii=False)})",
             )
 
+            review_key = (
+                _review_key(call.arguments) if call.name == review_tool else None
+            )
             try:
-                observation: dict[str, object] = await tool_registry.dispatch(
-                    db, book_id, call.name, call.arguments
-                )
+                if (
+                    review_key is not None
+                    and rewrite_counts.get(review_key, 0) >= limits.max_rewrites
+                ):
+                    # The review tool may persist an approval. Enforce the
+                    # budget before it runs, even if the model ignores feedback.
+                    observation: dict[str, object] = {"needs_revision": True}
+                else:
+                    observation = await tool_registry.dispatch(
+                        db, book_id, call.name, call.arguments
+                    )
             except ToolError as exc:
                 observation = {"ok": False, "error": redact_secrets(str(exc))}
             except Exception as exc:  # noqa: BLE001 - isolate plugin/tool failures
@@ -154,10 +167,9 @@ async def run(
                     return
                 observation = {"ok": False, "error": public_failure(exc)}
 
-            if call.name == review_tool and observation.get("needs_revision"):
-                key = _review_key(call.arguments)
+            if review_key is not None and observation.get("needs_revision"):
                 observation = apply_rewrite_limit(
-                    observation, rewrite_counts, key, limits
+                    observation, rewrite_counts, review_key, limits
                 )
 
             logs = observation.get("logs")

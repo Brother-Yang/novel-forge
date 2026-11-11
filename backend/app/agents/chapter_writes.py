@@ -2,16 +2,20 @@
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .. import models
 from ..memory import sync as memory_sync
-from .chapter_versions import require_content_version
+from .chapter_versions import ChapterContentConflict, require_content_version
 from .completion import chapter_is_complete
 from .errors import GenerationError
 
 DELETED_DURING_GENERATION = "生成期间章节已删除，请刷新目录"
+REVIEW_REQUIRED = (
+    "该章节正文已完成，请先调用 review_content 评审该章。"
+    "只有返回 needs_revision=true 后才允许重写一次。"
+)
 
 
 @dataclass(frozen=True)
@@ -51,8 +55,49 @@ def _lock_chapter(db: Session, chapter_id: str) -> models.Chapter | None:
     return db.get(models.Chapter, chapter_id)
 
 
+def clear_book_revision_approvals(db: Session, book_id: str) -> None:
+    """An approval from a prior Agent run cannot authorize a new run."""
+    db.execute(
+        update(models.Chapter)
+        .where(
+            models.Chapter.book_id == book_id,
+            models.Chapter.revision_approved.is_(True),
+        )
+        .values(revision_approved=False)
+    )
+    db.commit()
+
+
+def set_revision_approval(
+    db: Session,
+    book_id: str,
+    chapter_id: str,
+    reviewed_version: str,
+    *,
+    approved: bool,
+) -> None:
+    try:
+        chapter = _lock_chapter(db, chapter_id)
+        if chapter is None or chapter.book_id != book_id:
+            raise GenerationError("评审期间章节已删除，请刷新目录")
+        body = chapter.content.body if chapter.content else ""
+        require_content_version(body, reviewed_version)
+        chapter.revision_approved = approved and chapter_is_complete(chapter)
+        db.commit()
+    except ChapterContentConflict:
+        db.rollback()
+        raise GenerationError("评审期间正文已修改，请重新评审当前正文") from None
+    except Exception:
+        db.rollback()
+        raise
+
+
 def begin_draft(
-    db: Session, chapter_id: str, *, expected_version: str | None = None
+    db: Session,
+    chapter_id: str,
+    *,
+    expected_version: str | None = None,
+    require_revision_approval: bool = False,
 ) -> tuple[models.Chapter, DraftSnapshot, str]:
     """Capture the inputs and mark an unfinished chapter drafting."""
     try:
@@ -68,8 +113,12 @@ def begin_draft(
             raise GenerationError("书籍不存在")
         # A rewrite keeps the last complete body published until a replacement
         # is ready. Failed or cancelled attempts must not make it pending again.
-        if not chapter_is_complete(chapter):
+        if chapter_is_complete(chapter):
+            if require_revision_approval and not chapter.revision_approved:
+                raise GenerationError(REVIEW_REQUIRED)
+        else:
             chapter.status = "drafting"
+        chapter.revision_approved = False
         expected = _snapshot(chapter)
         db.commit()
     except Exception:

@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import settings
 from ..llm import get_llm, supports_tool_calling
-from . import context, planner, runner, tools
+from . import book_plans, chapter_writes, context, planner, runner, tools
 from .guardrails import GuardrailLimits
 
 Event = tuple[str, str]
@@ -41,15 +41,10 @@ async def run_agent(db: Session, book_id: str) -> AsyncIterator[Event]:
         yield ("error", "当前 LLM 后端不支持自主决策(function calling),请改用「一句话出书」固定流程")
         return
 
+    chapter_writes.clear_book_revision_approvals(db, book_id)
     if planner.is_placeholder_title(book.title, book.brief):
-        plan = await planner.plan_novel(
-            book.brief or book.intro,
-            title="",
-            genre=book.genre,
-            tone=book.tone,
-            target_words=book.target_words,
-        )
-        planner.apply_plan_to_book(book, plan)
+        expected, plan = await book_plans.prepare(db, book)
+        book = book_plans.stage_if_current(db, expected, plan)
         db.commit()
 
     limits = GuardrailLimits(

@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..agents import pipeline, planner, stages
+from ..agents import book_plans, pipeline, planner, stages
 from ..agents.errors import GenerationError
 from . import book_generation as runtime
 
@@ -50,19 +50,9 @@ async def _ensure_plan(db: Session, task: models.GenerationTask) -> planner.Nove
     runtime.ensure_running(db, task)
     runtime.merge_checkpoint(task, stage="planner")
     db.commit()
-    brief = book.brief or book.intro
-    user_title = (
-        "" if planner.is_placeholder_title(book.title, book.brief) else book.title
-    )
-    plan = await planner.plan_novel(
-        brief,
-        title=user_title,
-        genre=book.genre,
-        tone=book.tone,
-        target_words=book.target_words,
-    )
+    expected, plan = await book_plans.prepare(db, book)
+    _ = book_plans.stage_if_current(db, expected, plan)
     runtime.ensure_running(db, task)
-    planner.apply_plan_to_book(book, plan)
     runtime.merge_checkpoint(task, stage="planner", **plan.to_checkpoint())
     task.progress = PROGRESS["planner"]
     db.commit()

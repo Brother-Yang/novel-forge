@@ -527,10 +527,14 @@ async def gen_chapter_body(
     is_ending: bool | None = None,
     *,
     expected_version: str | None = None,
+    require_revision_approval: bool = False,
 ) -> AsyncIterator[Event]:
     try:
         chapter, expected, book_title = chapter_writes.begin_draft(
-            db, chapter_id, expected_version=expected_version
+            db,
+            chapter_id,
+            expected_version=expected_version,
+            require_revision_approval=require_revision_approval,
         )
     except ChapterContentConflict:
         yield ("content_conflict", "")

@@ -4,12 +4,16 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.agents import pipeline, planner, stages, tools
+from app.api.generate import router as generation_router
+from app.database import get_db
 from app.db_base import Base
 
 
@@ -52,6 +56,49 @@ def test_request_accepts_max_volumes_and_rejects_unbounded_chapter_batch() -> No
     assert schemas.BookUpdate().target_words is None
 
 
+@pytest.mark.parametrize(
+    "path,payload",
+    [
+        ("/generate/characters", {"book_id": "book", "count": count})
+        for count in (0, -1, schemas.CHARACTERS_PER_GENERATION_MAX + 1, 10**12)
+    ]
+    + [
+        ("/generate/chapter", {"chapter_id": "chapter", "words": words})
+        for words in (0, -1, schemas.CHAPTER_GENERATION_WORDS_MAX + 1, 10**12)
+    ],
+)
+async def test_manual_generation_rejects_invalid_capacity_before_generation(
+    path: str, payload: dict[str, object], db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = FastAPI()
+    app.include_router(generation_router)
+    app.dependency_overrides[get_db] = lambda: db
+
+    def unexpected_model_call(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("invalid capacity reached model generation")
+
+    monkeypatch.setattr(pipeline, "gen_characters", unexpected_model_call)
+    monkeypatch.setattr(pipeline, "gen_chapter_body", unexpected_model_call)
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://test"
+    ) as client:
+        response = await client.post(path, json=payload)
+    assert response.status_code == 422
+
+
+def test_manual_generation_keeps_defaults_and_accepts_short_or_maximum_requests() -> (
+    None
+):
+    assert schemas.GenerateCharactersReq(book_id="book").count == 5
+    assert schemas.GenerateChapterReq(chapter_id="chapter").words == 2000
+    for count in (1, schemas.CHARACTERS_PER_GENERATION_MAX):
+        assert schemas.GenerateCharactersReq(book_id="book", count=count).count == count
+    for words in (1, schemas.CHAPTER_GENERATION_WORDS_MAX):
+        assert (
+            schemas.GenerateChapterReq(chapter_id="chapter", words=words).words == words
+        )
+
+
 @pytest.fixture
 def db(tmp_path: Path) -> Iterator[Session]:
     engine = create_engine(f"sqlite:///{tmp_path}/scale.db")
@@ -70,7 +117,11 @@ async def test_outline_tool_passes_all_long_plan_volumes(
     received: list[int] = []
 
     async def outline(
-        _db: Session, _book_id: str, volume_count: int, *, recovery: stages.Recovery,
+        _db: Session,
+        _book_id: str,
+        volume_count: int,
+        *,
+        recovery: stages.Recovery,
     ) -> AsyncIterator[tuple[str, str]]:
         received.append(volume_count)
         yield "done", ""
@@ -102,7 +153,11 @@ async def test_chapter_tool_requires_bounded_batch_and_keeps_volume(
     received: list[int] = []
 
     async def chapters(
-        _db: Session, _volume_id: str, chapter_count: int, *, recovery: stages.Recovery,
+        _db: Session,
+        _volume_id: str,
+        chapter_count: int,
+        *,
+        recovery: stages.Recovery,
     ) -> AsyncIterator[tuple[str, str]]:
         received.append(chapter_count)
         yield "done", ""
