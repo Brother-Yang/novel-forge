@@ -86,6 +86,39 @@ describe("ChapterEditor 编辑安全", () => {
     );
   });
 
+  it("生成带上打开的正文版本，冲突后保留本地草稿并提供恢复入口", async () => {
+    const stream = deferred<void>();
+    vi.mocked(sseFetch).mockReturnValueOnce(stream.promise);
+    render(editor());
+    const body = await screen.findByPlaceholderText(bodyPlaceholder);
+    fireEvent.change(body, { target: { value: "未保存的作者草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: /生成正文/ }));
+    const [path, payload, handlers] = vi.mocked(sseFetch).mock.calls[0];
+    expect(path).toBe("/generate/chapter");
+    expect(payload).toEqual({ chapter_id: "a", expected_version: originalVersion });
+    await act(async () => {
+      handlers.onEvent("content_conflict", "");
+      handlers.onEvent("error", "章节正文已在其他窗口更新，请重新加载后生成");
+      stream.resolve();
+    });
+    expect(body).toHaveValue("未保存的作者草稿");
+    expect(screen.getByRole("button", { name: /生成正文/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /保存$/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新加载正文" })).toBeEnabled();
+  });
+
+  it("书籍正有生成任务时保留草稿并允许重试", async () => {
+    vi.mocked(sseFetch).mockRejectedValueOnce(new ApiError(409, "书籍正有任务运行"));
+    render(editor());
+    const body = await screen.findByPlaceholderText(bodyPlaceholder);
+    fireEvent.change(body, { target: { value: "未保存的作者草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: /生成正文/ }));
+    expect(await screen.findByText("书籍正有任务运行")).toBeInTheDocument();
+    expect(body).toHaveValue("未保存的作者草稿");
+    expect(screen.getByRole("button", { name: /生成正文/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /保存$/ })).toBeEnabled();
+  });
+
   it("只有收到已保存结束事件后，生成预览才成为编辑稿", async () => {
     const stream = deferred<void>();
     vi.mocked(sseFetch).mockReturnValueOnce(stream.promise);

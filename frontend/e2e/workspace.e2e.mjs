@@ -89,7 +89,10 @@ test("登录后创建并编辑书稿，删卷保留章节，按需打开编辑�
   await test.step("人物卡按需加载 Markdown，剧情面板可以打开", async () => {
     expect(assets).toHaveLength(0);
     await page.getByRole("menuitem", { name: /人物/ }).click();
-    await page.getByRole("button", { name: /新增/ }).click();
+    await page
+      .locator(".nf-card-panel")
+      .getByRole("button", { name: /新\s*增/ })
+      .click();
     const markdown = page.locator(".w-md-editor textarea");
     await markdown.fill("# 合成人物\n\n```python\nprint('test')\n```");
     expect(assets.length).toBeGreaterThan(0);
@@ -197,6 +200,20 @@ test("两个窗口编辑同一章时保留冲突草稿，确认恢复后才能�
     const [merged] = await Promise.all([contentSave(otherPage), save(otherPage).click()]);
     expect(merged.status()).toBe(200);
     expect((await merged.json()).body).toBe("两个窗口手工合并后的正文");
+
+    await test.step("旧窗口请求生成时保留两份草稿", async () => {
+      await body(page).fill("第一个窗口尚未保存的续写");
+      const generate = editor(page).getByRole("button", { name: "生成正文" });
+      await generate.click();
+      await expect(
+        page.getByText("服务器正文已有新版本，本地草稿已保留", { exact: true })
+      ).toBeVisible();
+      await expect(generate).toBeDisabled();
+      await expect(body(page)).toHaveValue("第一个窗口尚未保存的续写");
+      expect((await (await context.request.get(contentUrl)).json()).body).toBe(
+        "两个窗口手工合并后的正文"
+      );
+    });
     expect(errors).toEqual([]);
   } finally {
     await otherPage.close();

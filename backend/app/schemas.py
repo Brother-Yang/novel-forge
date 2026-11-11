@@ -268,6 +268,7 @@ class GenerateChapterOutlinesReq(BaseModel):
 class GenerateChapterReq(BaseModel):
     chapter_id: str
     words: int = 2000
+    expected_version: str | None = None
 
 
 class GenerateBookReq(BaseModel):

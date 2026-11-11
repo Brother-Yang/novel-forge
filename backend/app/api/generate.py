@@ -185,7 +185,12 @@ async def generate_chapter(
         db,
         chapter.book_id,
         "chapter",
-        pipeline.gen_chapter_body(db, payload.chapter_id, payload.words),
+        pipeline.gen_chapter_body(
+            db,
+            payload.chapter_id,
+            payload.words,
+            expected_version=payload.expected_version,
+        ),
         chapter_id=chapter.id,
     )
 

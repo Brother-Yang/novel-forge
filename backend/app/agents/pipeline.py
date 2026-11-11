@@ -21,6 +21,7 @@ from ..llm import get_llm
 from ..memory import context as memory
 from ..memory import sync as memory_sync
 from . import chapter_plans, chapter_writes, planner, prompts, stages
+from .chapter_versions import ChapterContentConflict
 from .errors import GenerationError
 
 logger = logging.getLogger(__name__)
@@ -520,10 +521,21 @@ async def gen_chapter_outlines(
 
 # ---------- 5+6. 章节正文 + 一致性回写 ----------
 async def gen_chapter_body(
-    db: Session, chapter_id: str, words: int = 2000, is_ending: bool | None = None
+    db: Session,
+    chapter_id: str,
+    words: int = 2000,
+    is_ending: bool | None = None,
+    *,
+    expected_version: str | None = None,
 ) -> AsyncIterator[Event]:
     try:
-        chapter, expected, book_title = chapter_writes.begin_draft(db, chapter_id)
+        chapter, expected, book_title = chapter_writes.begin_draft(
+            db, chapter_id, expected_version=expected_version
+        )
+    except ChapterContentConflict:
+        yield ("content_conflict", "")
+        yield ("error", "章节正文已在其他窗口更新，请重新加载后生成")
+        return
     except GenerationError as exc:
         yield ("error", str(exc))
         return

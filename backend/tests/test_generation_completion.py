@@ -164,7 +164,7 @@ async def test_decision_budget_exhaustion_persists_error_and_can_retry(
 
 @pytest.mark.parametrize("output", ["", " \n\t\u3000"])
 @pytest.mark.parametrize("old_body", [None, "已有正文应当保留"])
-async def test_blank_body_never_replaces_content_or_marks_done(
+async def test_blank_generation_preserves_existing_body_and_completion(
     db: Session, monkeypatch: pytest.MonkeyPatch, output: str, old_body: str | None
 ) -> None:
     book, chapter = seed(db, body=old_body, status="done" if old_body else "outline")
@@ -176,15 +176,75 @@ async def test_blank_body_never_replaces_content_or_marks_done(
     db.refresh(chapter)
     assert any(ev == "error" for ev, _ in events)
     assert not any(ev == "done" for ev, _ in events)
-    assert chapter.status == "outline"
+    assert chapter.status == ("done" if old_body else "outline")
     assert chapter.word_count == original_count
     assert (chapter.content.body if chapter.content else None) == old_body
+    assert book_generation._pending_chapters(db, book.id) == (
+        [] if old_body else [chapter.id]
+    )
     use_llm(monkeypatch, ScriptedLLM(body="重试后的有效正文"))
-    await tools.tool_write_chapter(db, book.id, {"chapter_id": chapter.id})
+    retried = [event async for event in pipeline.gen_chapter_body(db, chapter.id)]
+    assert retried[-1] == ("done", "")
     db.refresh(chapter)
     assert chapter_is_complete(chapter)
     assert chapter.content is not None
     assert chapter.content.body == "重试后的有效正文"
+
+
+@pytest.mark.parametrize("interruption", ["model_error", "cancel"])
+async def test_interrupted_rewrite_does_not_make_background_task_regenerate_chapter(
+    db: Session, monkeypatch: pytest.MonkeyPatch, interruption: str
+) -> None:
+    original_body = "已经完成的正文"
+    book, chapter = seed(db, body=original_body, status="done")
+    chapter_id = chapter.id
+    entered, release = asyncio.Event(), asyncio.Event()
+    model_calls = 0
+
+    class InterruptedModel:
+        async def chat_stream(
+            self, _prompt: str, system: str = ""
+        ) -> AsyncIterator[str]:
+            nonlocal model_calls
+            model_calls += 1
+            yield "尚未生成完的新正文"
+            entered.set()
+            await release.wait()
+            raise RuntimeError("测试模型失败")
+
+    async def collect() -> list[pipeline.Event]:
+        return [event async for event in pipeline.gen_chapter_body(db, chapter_id)]
+
+    monkeypatch.setattr(pipeline, "get_llm", InterruptedModel)
+    rewrite = asyncio.create_task(collect())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        with Session(db.get_bind()) as reader:
+            active = reader.get(models.Chapter, chapter_id)
+            assert active is not None and chapter_is_complete(active)
+        if interruption == "cancel":
+            rewrite.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await rewrite
+        else:
+            release.set()
+            with pytest.raises(RuntimeError, match="测试模型失败"):
+                await asyncio.wait_for(rewrite, 2)
+    finally:
+        if not rewrite.done():
+            rewrite.cancel()
+            await asyncio.gather(rewrite, return_exceptions=True)
+
+    db.refresh(chapter)
+    assert chapter_is_complete(chapter)
+    assert chapter.word_count == len(original_body)
+    assert chapter.content is not None and chapter.content.body == original_body
+    assert not list(db.scalars(select(models.MemorySyncJob)))
+
+    task = task_for(db, book, "book")
+    await book_generation.run_chapter_bodies(db, task)
+    assert (task.status, task.progress) == ("done", 100)
+    assert model_calls == 1
 
 
 @pytest.mark.parametrize("output", ["模型生成的正文", " \n\t\u3000"])
@@ -244,7 +304,7 @@ async def test_chapter_generation_preserves_concurrent_author_changes(
     try:
         with Session(db.get_bind()) as editor:
             active = editor.get(models.Chapter, chapter_id)
-            assert active is not None and active.status == "drafting"
+            assert active is not None and chapter_is_complete(active)
             if change == "save":
                 chapter_api.update_chapter_content(
                     chapter_id,

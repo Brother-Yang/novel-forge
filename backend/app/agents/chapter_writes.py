@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..memory import sync as memory_sync
+from .chapter_versions import require_content_version
+from .completion import chapter_is_complete
 from .errors import GenerationError
 
 DELETED_DURING_GENERATION = "生成期间章节已删除，请刷新目录"
@@ -50,19 +52,24 @@ def _lock_chapter(db: Session, chapter_id: str) -> models.Chapter | None:
 
 
 def begin_draft(
-    db: Session, chapter_id: str
+    db: Session, chapter_id: str, *, expected_version: str | None = None
 ) -> tuple[models.Chapter, DraftSnapshot, str]:
-    """Capture the inputs and mark the chapter drafting before calling the model."""
+    """Capture the inputs and mark an unfinished chapter drafting."""
     try:
         chapter = _lock_chapter(db, chapter_id)
         if chapter is None:
             raise GenerationError("章节不存在")
+        current_body = chapter.content.body if chapter.content else ""
+        require_content_version(current_body, expected_version)
         book_title = db.scalar(
             select(models.Book.title).where(models.Book.id == chapter.book_id)
         )
         if book_title is None:
             raise GenerationError("书籍不存在")
-        chapter.status = "drafting"
+        # A rewrite keeps the last complete body published until a replacement
+        # is ready. Failed or cancelled attempts must not make it pending again.
+        if not chapter_is_complete(chapter):
+            chapter.status = "drafting"
         expected = _snapshot(chapter)
         db.commit()
     except Exception:
@@ -87,8 +94,8 @@ def save_result(db: Session, expected: DraftSnapshot, body: str) -> models.Chapt
             chapter.word_count = len(body)
             chapter.status = "done"
             memory_sync.enqueue_chapter(db, chapter)
-        else:
-            # Empty output preserves old text and leaves the chapter retryable.
+        elif not chapter_is_complete(chapter):
+            # Empty output leaves an unfinished chapter retryable.
             chapter.status = "outline"
         db.commit()
     except Exception:

@@ -221,9 +221,10 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
     setGenerationPreview(null);
     start(
       sseEndpoints.chapter,
-      { chapter_id: chapter.id },
+      { chapter_id: chapter.id, expected_version: contentVersion },
       {
         onEvent: (event, data) => {
+          if (event === "content_conflict") setContentConflict(true);
           if (event !== "token") return;
           generatedBody += data;
           // 流中的文本只是预览；服务端确认落库后才替换编辑草稿。

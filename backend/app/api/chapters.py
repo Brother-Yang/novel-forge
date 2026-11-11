@@ -1,10 +1,13 @@
-from hashlib import sha256
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..agents.chapter_versions import (
+    ChapterContentConflict,
+    content_version,
+    require_content_version,
+)
 from ..database import get_db
 from ..memory import sync as memory_sync
 
@@ -141,10 +144,6 @@ def reorder_chapters(payload: schemas.ReorderRequest, db: Session = Depends(get_
     return {"ok": True}
 
 
-def _content_version(body: str) -> str:
-    return sha256(body.encode("utf-8")).hexdigest()
-
-
 @router.get("/chapters/{chapter_id}/content", response_model=schemas.ChapterContentOut)
 def get_chapter_content(chapter_id: str, db: Session = Depends(get_db)):
     chapter = db.get(models.Chapter, chapter_id)
@@ -152,7 +151,7 @@ def get_chapter_content(chapter_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "章节不存在")
     body = chapter.content.body if chapter.content else ""
     return schemas.ChapterContentOut(
-        chapter_id=chapter_id, body=body, version=_content_version(body)
+        chapter_id=chapter_id, body=body, version=content_version(body)
     )
 
 
@@ -173,11 +172,7 @@ def update_chapter_content(
         if not chapter:
             raise HTTPException(404, "章节不存在")
         current_body = chapter.content.body if chapter.content else ""
-        if (
-            payload.expected_version is not None
-            and payload.expected_version != _content_version(current_body)
-        ):
-            raise HTTPException(409, "章节正文已在其他窗口更新，请重新加载后保存")
+        require_content_version(current_body, payload.expected_version)
         if chapter.content:
             chapter.content.body = payload.body
         else:
@@ -192,11 +187,14 @@ def update_chapter_content(
         saved = schemas.ChapterContentSaved(
             chapter_id=chapter_id,
             body=payload.body,
-            version=_content_version(payload.body),
+            version=content_version(payload.body),
             status=chapter.status,
             word_count=chapter.word_count,
         )
         db.commit()
+    except ChapterContentConflict as exc:
+        db.rollback()
+        raise HTTPException(409, "章节正文已在其他窗口更新，请重新加载后保存") from exc
     except Exception:
         db.rollback()
         raise
