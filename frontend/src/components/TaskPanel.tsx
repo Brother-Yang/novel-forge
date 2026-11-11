@@ -16,11 +16,13 @@ import {
 import { RobotOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import { api, sseEndpoints } from "../api";
+import type { GenerationTask } from "../api/types";
 import { paths } from "../router/paths";
 import { useAppStore } from "../store";
 import { startAgentWithFallback } from "../utils/agentFallback";
 import {
   isTaskActive,
+  TASK_START_ERROR,
   TASK_STATUS_TAG,
   TASK_TYPE_LABEL,
   taskStageLabel,
@@ -133,10 +135,16 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
     }
   };
 
+  const reportStartFailure = (task: GenerationTask): boolean => {
+    if (task.status !== "error") return false;
+    message.error(task.error || TASK_START_ERROR);
+    return true;
+  };
+
   const startNovel = async () => {
-    await api.startNovelFromBook(bookId);
+    const task = await api.startNovelFromBook(bookId);
     if (!active.current) return;
-    message.success("已启动全书自动生成");
+    if (!reportStartFailure(task)) message.success("已启动全书自动生成");
     await loadTasks();
   };
 
@@ -146,6 +154,10 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
       () => api.startNovelFromBook(bookId)
     );
     if (!active.current) return;
+    if (reportStartFailure(task)) {
+      await loadTasks();
+      return;
+    }
     if (usedFallback) {
       message.info("当前模型不支持自主决策,已自动切换为固定流程生成");
     } else {
@@ -155,9 +167,9 @@ function BookTaskPanel({ bookId, onGenerationActivityChange }: TaskPanelProps) {
   };
 
   const startBatch = async () => {
-    await api.startBookGeneration(bookId);
+    const task = await api.startBookGeneration(bookId);
     if (!active.current) return;
-    message.success("已启动全书批量生成正文");
+    if (!reportStartFailure(task)) message.success("已启动全书批量生成正文");
     await loadTasks();
   };
 

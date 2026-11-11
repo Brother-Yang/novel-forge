@@ -7,6 +7,8 @@ export const TASK_STATUS_TAG: Record<string, { color: string; text: string }> = 
   error: { color: "error", text: "错误" },
 };
 
+export const TASK_START_ERROR = "生成任务启动失败，请在任务面板重试";
+
 export function isTaskActive(status: string | undefined): boolean {
   return status === "pending" || status === "running";
 }

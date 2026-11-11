@@ -121,6 +121,39 @@ describe("TaskPanel", () => {
     await waitFor(() => expect(start).toBeEnabled());
   });
 
+  it.each([
+    { name: /一键全自动生成/, start: "startNovelFromBook", type: "novel", manual: false },
+    { name: /AI 自主创作/, start: "startAgentFromBook", type: "agent", manual: false },
+    { name: /全书批量生成正文/, start: "startBookGeneration", type: "book", manual: true },
+  ] as const)(
+    "$start 返回已保存的错误任务时显示失败和重试入口",
+    async ({ name, start, type, manual }) => {
+      const task: GenerationTask = {
+        id: "failed-task",
+        book_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        type,
+        target_id: null,
+        status: "error",
+        progress: 0,
+        error: "后台暂时无法调度任务",
+        checkpoint_json: "{}",
+        created_at: "2026-01-01T00:00:00Z",
+      };
+      vi.mocked(api[start]).mockResolvedValue(task);
+      const user = userEvent.setup();
+      renderPanel();
+      if (manual) await user.click(screen.getByText("手工分层（生成后维护）"));
+      const button = await screen.findByRole("button", { name });
+      await waitFor(() => expect(button).toBeEnabled());
+      vi.mocked(api.listTasks).mockResolvedValue([task]);
+      await user.click(button);
+
+      expect(await screen.findByRole("button", { name: /^重\s*试$/ })).toBeVisible();
+      expect(screen.getAllByText(task.error)[0]).toBeVisible();
+      expect(screen.queryByText(/已启动/)).not.toBeInTheDocument();
+    }
+  );
+
   it("手工生成互斥且限制日志长度，离开面板时中止 SSE", async () => {
     vi.mocked(sseFetch).mockReturnValue(new Promise(() => {}));
     const view = renderPanel();

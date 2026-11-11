@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App as AntdApp, ConfigProvider } from "antd";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useParams, useSearchParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Book } from "../api/types";
+import { routePatterns } from "../router/paths";
 import BookList from "./BookList";
 
 vi.mock("../api", () => ({
@@ -28,11 +29,20 @@ function deferred<T>() {
 }
 
 function renderWithProviders() {
+  function BookDestination() {
+    const { bookId } = useParams();
+    const [query] = useSearchParams();
+    return <div>{`${bookId} ${query.get("view")}`}</div>;
+  }
+
   return render(
     <ConfigProvider>
       <AntdApp>
         <MemoryRouter>
-          <BookList />
+          <Routes>
+            <Route path={routePatterns.home} element={<BookList />} />
+            <Route path={routePatterns.book} element={<BookDestination />} />
+          </Routes>
         </MemoryRouter>
       </AntdApp>
     </ConfigProvider>
@@ -88,7 +98,10 @@ describe("BookList", () => {
     expect(await screen.findByText("剑起苍穹")).toBeInTheDocument();
   });
 
-  it("提交一句话出书会调用自动生成接口", async () => {
+  it.each([
+    { status: "running", error: "" },
+    { status: "error", error: "暂时无法启动生成任务" },
+  ])("一句话出书返回 $status 时进入已建书的任务页并显示结果", async ({ status, error }) => {
     vi.mocked(api.listBooks).mockResolvedValue([]);
     vi.mocked(api.startNovelGeneration).mockResolvedValue({
       book: {
@@ -107,9 +120,9 @@ describe("BookList", () => {
         book_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
         type: "novel",
         target_id: null,
-        status: "running",
+        status,
         progress: 0,
-        error: "",
+        error,
         checkpoint_json: "{}",
         created_at: "2026-01-01T00:00:00Z",
       },
@@ -124,6 +137,13 @@ describe("BookList", () => {
       brief: "一个少年觉醒血脉的故事",
       target_words: 100000,
     });
+    expect(await screen.findByText("bbbbbbbb-cccc-dddd-eeee-ffffffffffff tasks")).toBeVisible();
+    if (error) {
+      expect(await screen.findByText(error)).toBeVisible();
+      expect(screen.queryByText("已开始自动生成")).not.toBeInTheDocument();
+    } else {
+      expect(await screen.findByText("已开始自动生成")).toBeVisible();
+    }
   });
 
   it("首次失败显示书架重试入口，成功空列表才展示空状态", async () => {

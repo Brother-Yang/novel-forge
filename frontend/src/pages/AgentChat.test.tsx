@@ -4,6 +4,7 @@ import { App as AntdApp, ConfigProvider } from "antd";
 import { MemoryRouter, Route, Routes, useParams, useSearchParams } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentTracePage, AgentTracePageEntry, Book, GenerationTask } from "../api/types";
+import { routePatterns } from "../router/paths";
 import AgentChat from "./AgentChat";
 
 vi.mock("../api", () => ({
@@ -88,6 +89,40 @@ describe("AgentChat", () => {
     renderChat();
     expect(await screen.findByText("AI 自主创作")).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/少年林逸/)).toBeInTheDocument();
+  });
+
+  it("降级生成返回启动错误时进入已建书任务页", async () => {
+    vi.mocked(api.startAgentGeneration).mockRejectedValue(new Error("400: 当前模型不支持自主决策"));
+    vi.mocked(api.startNovelGeneration).mockResolvedValue({
+      book,
+      task: agentTask({ type: "novel", status: "error", error: "固定流程启动失败" }),
+    });
+
+    function BookDestination() {
+      const { bookId } = useParams();
+      const [query] = useSearchParams();
+      return <div>{`${bookId} ${query.get("view")} ${query.get("fromTask")}`}</div>;
+    }
+
+    render(
+      <ConfigProvider>
+        <AntdApp>
+          <MemoryRouter initialEntries={[routePatterns.agentChat]}>
+            <Routes>
+              <Route path={routePatterns.agentChat} element={<AgentChat />} />
+              <Route path={routePatterns.book} element={<BookDestination />} />
+            </Routes>
+          </MemoryRouter>
+        </AntdApp>
+      </ConfigProvider>
+    );
+    const user = userEvent.setup();
+    const input = screen.getByPlaceholderText(/少年林逸/);
+    await user.type(input, "一次失败但保留书稿的尝试{enter}");
+
+    expect(await screen.findByText("book-1 tasks task-1")).toBeVisible();
+    expect(await screen.findByText("固定流程启动失败")).toBeVisible();
+    expect(screen.queryByText(/已自动切换为固定流程生成/)).not.toBeInTheDocument();
   });
 
   it("输入法确认不提交，连续回车只发一次请求，失败后仍可重试", async () => {

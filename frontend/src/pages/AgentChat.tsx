@@ -6,7 +6,12 @@ import { api } from "../api";
 import type { NovelGenerationResult } from "../api/types";
 import AgentTrace, { SystemNote } from "../components/AgentTrace";
 import BrandMark from "../components/BrandMark";
-import { isTaskActive, TASK_STATUS_TAG, taskStageLabel } from "../constants/taskStatus";
+import {
+  isTaskActive,
+  TASK_START_ERROR,
+  TASK_STATUS_TAG,
+  taskStageLabel,
+} from "../constants/taskStatus";
 import { useBook } from "../hooks/useBook";
 import { usePendingAction } from "../hooks/usePendingAction";
 import { paths } from "../router/paths";
@@ -62,6 +67,11 @@ function AgentComposer({ draft, onDraftChange, onStarted }: AgentComposerProps) 
           () => api.startNovelGeneration({ brief: text, target_words: targetWords })
         );
         if (!isCurrent()) return;
+        if (result.task.status === "error") {
+          message.error(result.task.error || TASK_START_ERROR);
+          navigate(paths.bookTasks(result.book.id, result.task.id));
+          return;
+        }
         if (usedFallback) {
           message.info("当前模型不支持自主决策,已自动切换为固定流程生成");
         }

@@ -23,6 +23,7 @@ import { api } from "../api";
 import type { Book } from "../api/types";
 import BrandMark from "../components/BrandMark";
 import AuthSignOut from "../components/AuthSignOut";
+import { TASK_START_ERROR } from "../constants/taskStatus";
 import { usePendingAction } from "../hooks/usePendingAction";
 import { paths } from "../router/paths";
 
@@ -103,7 +104,8 @@ export default function BookList() {
         if (!isCurrent()) return;
         setNovelOpen(false);
         novelForm.resetFields();
-        message.success("已开始自动生成");
+        if (result.task.status === "error") message.error(result.task.error || TASK_START_ERROR);
+        else message.success("已开始自动生成");
         navigate(paths.bookTasks(result.book.id));
       } catch (err) {
         if (err && typeof err === "object" && "errorFields" in err) return;
