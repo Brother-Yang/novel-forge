@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import type { BookTree } from "../api/types";
 import CatalogTree from "./CatalogTree";
-import { useAppStore } from "../store";
+import { chapterDraftKey, useAppStore } from "../store";
 
 vi.mock("../api", () => ({
   api: {
@@ -54,6 +54,7 @@ async function openDeleteMenu(index = 0) {
 
 describe("CatalogTree 删除保护", () => {
   beforeEach(() => {
+    useAppStore.getState().clearChapterDrafts();
     vi.resetAllMocks();
     vi.mocked(api.getTree).mockResolvedValue(tree);
     vi.mocked(api.deleteVolume).mockResolvedValue({ ok: true });
@@ -100,16 +101,26 @@ describe("CatalogTree 删除保护", () => {
     await waitFor(() => expect(api.deleteVolume).toHaveBeenCalledTimes(2));
   });
 
-  it("选择章节后从目录菜单删除该章，确认后清除当前选择", async () => {
+  it("删除失败保留章节草稿，删除成功才清除草稿和当前选择", async () => {
+    const key = chapterDraftKey("book-1", "chapter-1");
+    const draft = { body: "尚未保存的正文", base: { body: "旧稿", version: "old" } };
+    useAppStore.getState().setChapterDraft(key, draft);
+    vi.mocked(api.deleteChapter).mockRejectedValueOnce(new Error("章节删除失败"));
     render(<Harness />);
     const user = userEvent.setup();
     await user.click(await screen.findByText("第一章"));
     await openDeleteMenu(1);
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(/正文和摘要/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/未保存草稿也会清除/)).toBeInTheDocument();
     expect(api.deleteChapter).not.toHaveBeenCalled();
     await user.click(within(dialog).getByRole("button", { name: "删除章节" }));
-    await waitFor(() => expect(api.deleteChapter).toHaveBeenCalledWith("chapter-1"));
+    expect(await screen.findByText("章节删除失败")).toBeInTheDocument();
+    expect(useAppStore.getState().chapterDrafts[key]).toEqual(draft);
+    const retry = within(dialog).getByRole("button", { name: /删除章节$/ });
+    await waitFor(() => expect(retry).not.toHaveClass("ant-btn-loading"));
+    await user.click(retry);
+    await waitFor(() => expect(api.deleteChapter).toHaveBeenCalledTimes(2));
+    expect(useAppStore.getState().chapterDrafts[key]).toBeUndefined();
     expect(screen.getByLabelText("当前章节")).toHaveTextContent("未选择");
   });
 

@@ -4,7 +4,7 @@ import type { TreeDataNode, TreeProps } from "antd";
 import { PlusOutlined, FileAddOutlined, MoreOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import type { BookTree } from "../api/types";
-import { useAppStore } from "../store";
+import { chapterDraftKey, useAppStore } from "../store";
 import { CHAPTER_STATUS_COLOR } from "../constants/chapterStatus";
 import { reorderCatalog, type ChapterDropTarget } from "../utils/catalogReorder";
 import { AuthSessionRevisionContext } from "./authContext";
@@ -139,16 +139,25 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
 
   const remove = async (kind: "volume" | "chapter", id: string, title: string) => {
     const isVolume = kind === "volume";
+    const draftKey = chapterDraftKey(bookId, id);
+    const hasDraft = !isVolume && useAppStore.getState().chapterDrafts[draftKey];
     await modal.confirm({
       title: `删除${isVolume ? "卷" : "章节"}《${title}》？`,
       content: isVolume
         ? "仅删除卷，卷内章节及正文会保留并移到“未归卷”。"
-        : "该章节的正文和摘要将一并删除，此操作无法撤销。",
+        : `该章节的正文和摘要将一并删除，此操作无法撤销。${hasDraft ? "本窗口的未保存草稿也会清除。" : ""}`,
       okText: isVolume ? "删除卷" : "删除章节",
       cancelText: "取消",
       okButtonProps: { danger: true },
       onOk: async () => {
-        const saved = await mutate(() => (isVolume ? api.deleteVolume(id) : api.deleteChapter(id)));
+        const saved = await mutate(async () => {
+          if (isVolume) {
+            await api.deleteVolume(id);
+          } else {
+            await api.deleteChapter(id);
+            useAppStore.getState().clearChapterDraft(bookId, id);
+          }
+        });
         if (!saved) throw new Error("目录操作未完成");
         if (!isVolume && id === selectedChapter) onSelectChapter(null);
         message.success(isVolume ? "已删除卷，章节及正文已保留" : "已删除章节");

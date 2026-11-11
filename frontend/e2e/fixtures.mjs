@@ -55,6 +55,7 @@ export const test = base.extend({
             CORS_ALLOWED_ORIGINS: `http://${loopback}`,
             ACCESS_PASSWORD: password,
             SESSION_SECRET: randomBytes(48).toString("base64url"),
+            LOGIN_ATTEMPTS_PER_WINDOW: "20",
             LLM_PROVIDER: "ollama",
             OLLAMA_BASE_URL: `http://${loopback}:1`,
             OPENAI_BASE_URL: `http://${loopback}:1`,

@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { App as AntdApp, ConfigProvider } from "antd";
+import { App as AntdApp, ConfigProvider, Dropdown, Modal, Popconfirm } from "antd";
 import { afterEach, expect, it, vi } from "vitest";
 import { http } from "../api/client";
 import { useBook } from "../hooks/useBook";
+import { useAppStore } from "../store";
 import AuthGate from "./AuthGate";
 import AuthSignOut from "./AuthSignOut";
 
@@ -14,7 +15,10 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  useAppStore.getState().clearChapterDrafts();
+});
 
 it("未经认证不挂载工作台，错误密码可重试，退出登录移除工作台", async () => {
   const fetchMock = vi
@@ -188,4 +192,105 @@ it("会话失效关闭工作区的确认弹窗，重新登录不重放旧删除"
   expect(await screen.findByLabelText("合成草稿")).toHaveValue("继续保留的草稿");
   expect(screen.queryByText("删除合成私密卷名")).not.toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([url]) => url === "/api/volumes/synthetic")).toHaveLength(1);
+});
+
+it("会话失效隐藏受控弹窗、下拉菜单和气泡确认，重登保留表单", async () => {
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(json({ enabled: true, authenticated: true }))
+    .mockResolvedValueOnce(json({ detail: "临时会话过期" }, 401))
+    .mockResolvedValueOnce(json({ ok: true }))
+    .mockResolvedValueOnce(json({ enabled: true, authenticated: true }));
+  vi.stubGlobal("fetch", fetchMock);
+  const onConfirm = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <ConfigProvider theme={{ token: { motion: false } }}>
+      <AuthGate>
+        <Dropdown open menu={{ items: [{ key: "test", label: "合成私密菜单项" }] }}>
+          <button>打开菜单</button>
+        </Dropdown>
+        <Popconfirm open title="删除合成私密书名？" onConfirm={onConfirm}>
+          <button>删除</button>
+        </Popconfirm>
+        <Modal open title="合成私密书稿" footer={null}>
+          <input aria-label="新书名称" defaultValue="尚未提交的名称" />
+        </Modal>
+      </AuthGate>
+    </ConfigProvider>
+  );
+  const form = await screen.findByLabelText("新书名称");
+  const popup = await screen.findByText("删除合成私密书名？");
+  const menu = await screen.findByText("合成私密菜单项");
+  await waitFor(() => {
+    expect(form).toBeVisible();
+    expect(popup).toBeVisible();
+    expect(menu).toBeVisible();
+  });
+
+  await act(async () => {
+    await http.get("/books").catch(() => undefined);
+  });
+  expect(await screen.findByLabelText("访问密码")).toBeVisible();
+  expect(form).not.toBeVisible();
+  expect(popup).not.toBeVisible();
+  expect(menu).not.toBeVisible();
+
+  await user.type(screen.getByLabelText("访问密码"), "synthetic");
+  await user.click(screen.getByRole("button", { name: /登\s*录$/ }));
+  await waitFor(() => expect(form).toBeVisible());
+  expect(form).toHaveValue("尚未提交的名称");
+  expect(onConfirm).not.toHaveBeenCalled();
+});
+
+it("存在未保存章节时提示离开窗口，草稿清除后不再提示", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValueOnce(json({ enabled: false, authenticated: true }))
+  );
+  render(
+    <AuthGate>
+      <p>已进入工作区</p>
+    </AuthGate>
+  );
+  await screen.findByText("已进入工作区");
+  const leave = () => window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+  expect(leave()).toBe(true);
+  act(() => {
+    useAppStore.getState().setChapterDraft("book:chapter", {
+      body: "本窗口保留的草稿",
+      base: { body: "服务器已保存的正文", version: "original" },
+    });
+  });
+  expect(leave()).toBe(false);
+  act(() => useAppStore.getState().clearChapterDrafts());
+  expect(leave()).toBe(true);
+});
+
+it("有本地草稿时可取消退出，确认退出才清除草稿", async () => {
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(json({ enabled: true, authenticated: true }))
+    .mockResolvedValueOnce(json({ ok: true }));
+  const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("confirm", confirm);
+  useAppStore.getState().setChapterDraft("book:chapter", {
+    body: "本地草稿",
+    base: { body: "原文", version: "original" },
+  });
+  const user = userEvent.setup();
+  render(
+    <AuthGate>
+      <AuthSignOut />
+    </AuthGate>
+  );
+  const logout = await screen.findByRole("button", { name: "退出登录" });
+  await user.click(logout);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(useAppStore.getState().chapterDrafts["book:chapter"]?.body).toBe("本地草稿");
+  await user.click(logout);
+  expect(await screen.findByLabelText("访问密码")).toBeVisible();
+  expect(fetchMock.mock.calls[1][0]).toBe("/api/auth/logout");
+  expect(useAppStore.getState().chapterDrafts).toEqual({});
 });

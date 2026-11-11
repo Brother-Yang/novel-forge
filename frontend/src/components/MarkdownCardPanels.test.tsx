@@ -33,6 +33,47 @@ vi.mock("./MarkdownEditor", () => ({
 beforeEach(() => vi.resetAllMocks());
 
 describe("人物与设定名称保存", () => {
+  it("派生事实随列表刷新，当前人物的编辑草稿保留", async () => {
+    const character = {
+      id: "card",
+      book_id: "book",
+      name: "原名称",
+      order_index: 0,
+      md_content: "原正文",
+      state_json: "{}",
+      derived_state: { location: "旧地点" },
+    };
+    let refresh!: (items: (typeof character)[]) => void;
+    vi.mocked(api.listCharacters)
+      .mockResolvedValueOnce([character])
+      .mockReturnValueOnce(new Promise((resolve) => (refresh = resolve)));
+    vi.mocked(api.updateCharacter).mockResolvedValue(character);
+    render(
+      <App>
+        <CharacterPanel bookId="book" />
+      </App>
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("原名称"));
+    expect(screen.getByText("旧地点")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /保存人物卡$/ }));
+    await waitFor(() => expect(api.listCharacters).toHaveBeenCalledTimes(2));
+
+    const body = screen.getByRole("textbox", { name: "卡片正文" });
+    await user.clear(body);
+    await user.type(body, "刷新时输入的正文");
+    const name = screen.getByDisplayValue("原名称");
+    await user.clear(name);
+    await user.type(name, "刷新时输入的名称");
+    await act(async () => {
+      refresh([{ ...character, derived_state: { location: "新地点" } }]);
+    });
+    expect(screen.getByText("新地点")).toBeVisible();
+    expect(screen.queryByText("旧地点")).not.toBeInTheDocument();
+    expect(body).toHaveValue("刷新时输入的正文");
+    expect(name).toHaveValue("刷新时输入的名称");
+  });
+
   it.each(["character", "world"])(
     "%s 改名后直接点击保存，慢速名称请求不阻止正文保存",
     async (kind) => {

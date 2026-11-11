@@ -220,6 +220,91 @@ test("两个窗口编辑同一章时保留冲突草稿，确认恢复后才能�
   }
 });
 
+test("会话过期时隐藏新书表单，重登保留输入并等待手动提交", async ({ page, context, runtime }) => {
+  await login(page, runtime);
+  await page.getByRole("button", { name: /新建空书/ }).click();
+  const dialog = page.getByRole("dialog");
+  const title = "会话恢复的合成书稿";
+  await dialog.getByLabel("书名").fill(title);
+  await context.clearCookies({ name: "novel_forge_session" });
+
+  let submissions = 0;
+  page.on("request", (request) => {
+    if (request.url() === `${runtime.origin}/api/books` && request.method() === "POST") {
+      submissions += 1;
+    }
+  });
+  await dialog.getByRole("button", { name: /创\s*建/ }).click();
+  await expect(page.getByText(/登录已失效/)).toBeVisible();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByLabel("书名")).toBeHidden();
+  await page.getByLabel("访问密码").fill(runtime.password);
+  await page.getByRole("button", { name: /登\s*录$/ }).click();
+  await expect(dialog.getByLabel("书名")).toHaveValue(title);
+  expect(submissions).toBe(1);
+
+  await dialog.getByRole("button", { name: /创\s*建/ }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  expect(submissions).toBe(2);
+});
+
+test("切换面板、章节和路由保留草稿，重返时检测服务器正文冲突", async ({
+  page,
+  context,
+  runtime,
+}) => {
+  await login(page, runtime);
+  const post = (path, data) =>
+    context.request.post(`${runtime.origin}/api${path}`, {
+      headers: { Origin: runtime.origin },
+      data,
+    });
+  const title = "章节草稿导航测试书";
+  const created = await post("/books", { title });
+  await expect(created).toBeOK();
+  const book = await created.json();
+  const first = await post("/chapters", { book_id: book.id, title: "有草稿的章节" });
+  await expect(first).toBeOK();
+  const chapter = await first.json();
+  await expect(
+    await post("/chapters", { book_id: book.id, title: "另一个章节", order_index: 1 })
+  ).toBeOK();
+
+  await page.reload();
+  await page.getByRole("heading", { name: title }).click();
+  const tree = page.locator(".nf-catalog");
+  const selectFirst = () => tree.getByText(/^有草稿的章节/).click();
+  const body = page.getByPlaceholder(/点击“生成正文”/);
+  await selectFirst();
+  await body.fill("作者未保存的续写");
+  await page.getByRole("menuitem", { name: /剧情/ }).click();
+  await expect(page.getByText("剧情进展", { exact: true })).toBeVisible();
+  await page.getByRole("menuitem", { name: /章节/ }).click();
+  await expect(body).toHaveValue("作者未保存的续写");
+  await tree.getByText("另一个章节", { exact: true }).click();
+  await expect(body).toHaveValue("");
+  await selectFirst();
+  await expect(body).toHaveValue("作者未保存的续写");
+
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "我的小说" })).toBeVisible();
+  await expect(
+    await context.request.put(`${runtime.origin}/api/chapters/${chapter.id}/content`, {
+      headers: { Origin: runtime.origin },
+      data: { body: "另一窗口保存的新稿" },
+    })
+  ).toBeOK();
+  await page.goForward();
+  await selectFirst();
+  await expect(body).toHaveValue("作者未保存的续写");
+  await expect(page.getByText("未保存草稿", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("服务器正文已有新版本，本地草稿已保留", { exact: true })
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /保\s*存$/ })).toBeDisabled();
+});
+
 test("轨迹向前翻页保持阅读位置，接收新事件并在任务结束后补拉", async ({ page, runtime }) => {
   await login(page, runtime);
   const database = new DatabaseSync(runtime.database);

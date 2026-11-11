@@ -166,13 +166,7 @@ function Workspace({ bookId }: WorkspaceProps) {
         )}
 
         <Content className="nf-manuscript">
-          {view === "chapters" && (
-            <ChapterEditor
-              key={selectedChapter ?? "none"}
-              bookId={bookId}
-              chapterId={selectedChapter}
-            />
-          )}
+          {view === "chapters" && <ChapterEditor bookId={bookId} chapterId={selectedChapter} />}
           {view === "characters" && (
             <AsyncContent
               key="characters"

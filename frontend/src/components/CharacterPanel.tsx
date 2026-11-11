@@ -90,7 +90,9 @@ export default function CharacterPanel({ bookId }: { bookId: string }) {
                 保存人物卡
               </Button>
             </Space>
-            <CharacterFacts state={current.derived_state} />
+            <CharacterFacts
+              state={list.find((character) => character.id === current.id)?.derived_state}
+            />
             <MarkdownEditor
               value={md}
               onChange={(v) => setMd(v ?? "")}

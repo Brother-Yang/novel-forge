@@ -26,6 +26,7 @@ import AuthSignOut from "../components/AuthSignOut";
 import { TASK_START_ERROR } from "../constants/taskStatus";
 import { usePendingAction } from "../hooks/usePendingAction";
 import { paths } from "../router/paths";
+import { useAppStore } from "../store";
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : "请求失败";
@@ -202,10 +203,12 @@ export default function BookList() {
                 <h3>{b.title}</h3>
                 <Popconfirm
                   title="删除该书籍?"
+                  description="该书在本窗口的未保存正文也会清除。"
                   onConfirm={async (e) => {
                     e?.stopPropagation();
                     try {
                       await api.deleteBook(b.id);
+                      useAppStore.getState().clearBookDrafts(b.id);
                       if (listRequest.current) reload();
                     } catch (err) {
                       if (listRequest.current) message.error(errMessage(err));

@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useParams, useSearchParams } from "react-r
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Book } from "../api/types";
 import { routePatterns } from "../router/paths";
+import { chapterDraftKey, useAppStore } from "../store";
 import BookList from "./BookList";
 
 vi.mock("../api", () => ({
@@ -50,7 +51,10 @@ function renderWithProviders() {
 }
 
 describe("BookList", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    useAppStore.getState().clearChapterDrafts();
+    vi.resetAllMocks();
+  });
 
   it("没有书籍时展示空状态提示", async () => {
     vi.mocked(api.listBooks).mockResolvedValue([]);
@@ -96,6 +100,46 @@ describe("BookList", () => {
     vi.mocked(api.listBooks).mockResolvedValue(books);
     renderWithProviders();
     expect(await screen.findByText("剑起苍穹")).toBeInTheDocument();
+  });
+
+  it.each([
+    { outcome: "失败", failed: true },
+    { outcome: "成功", failed: false },
+  ])("删除书籍$outcome 时仅按结果清除草稿", async ({ failed }) => {
+    const book: Book = {
+      id: "delete-book",
+      title: "待删除的测试书",
+      intro: "",
+      brief: "",
+      genre: "",
+      tone: "",
+      target_words: 10000,
+      key_elements: "[]",
+      created_at: "2026-01-01T00:00:00Z",
+    };
+    const removed = chapterDraftKey(book.id, "chapter-a");
+    const preserved = chapterDraftKey("other-book", "chapter-b");
+    const draft = { body: "本地草稿", base: { body: "", version: "original" } };
+    useAppStore.getState().setChapterDraft(removed, draft);
+    useAppStore.getState().setChapterDraft(preserved, draft);
+    vi.mocked(api.listBooks).mockResolvedValueOnce([book]).mockResolvedValueOnce([]);
+    if (failed) vi.mocked(api.deleteBook).mockRejectedValueOnce(new Error("无法删除测试书"));
+    else vi.mocked(api.deleteBook).mockResolvedValueOnce({ ok: true });
+    const user = userEvent.setup();
+    renderWithProviders();
+    const deleteIcon = await screen.findByRole("img", { name: "delete" });
+    await user.click(deleteIcon);
+    await user.click(await screen.findByRole("button", { name: "OK" }));
+    if (failed) {
+      expect(await screen.findByText("无法删除测试书")).toBeVisible();
+      expect(useAppStore.getState().chapterDrafts).toEqual({
+        [removed]: draft,
+        [preserved]: draft,
+      });
+    } else {
+      expect(await screen.findByText(/还没有书籍/)).toBeVisible();
+      expect(useAppStore.getState().chapterDrafts).toEqual({ [preserved]: draft });
+    }
   });
 
   it.each([

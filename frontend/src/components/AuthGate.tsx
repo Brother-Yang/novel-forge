@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Alert, Button, Modal, Spin } from "antd";
+import { Alert, App, Button, ConfigProvider, Modal, Spin } from "antd";
 import { authApi } from "../api/auth";
 import { onUnauthorized } from "../api/client";
+import { useAppStore } from "../store";
 import AsyncContent from "./AsyncContent";
 import { AuthContext, AuthSessionRevisionContext } from "./authContext";
 
@@ -22,6 +23,15 @@ export default function AuthGate({ children }: AuthGateProps) {
   const [attempt, setAttempt] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [sessionRevision, setSessionRevision] = useState(0);
+  const [popupHost, setPopupHost] = useState<HTMLDivElement | null>(null);
+  const hasDrafts = useAppStore((s) => Object.keys(s.chapterDrafts).length > 0);
+
+  useEffect(() => {
+    if (!hasDrafts) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [hasDrafts]);
 
   useEffect(() => {
     let current = true;
@@ -42,7 +52,7 @@ export default function AuthGate({ children }: AuthGateProps) {
       }
     );
     const unsubscribe = onUnauthorized(() => {
-      // Confirmation dialogs render through portals outside the hidden workspace.
+      // Pending confirmations must not become actionable again after signing in.
       Modal.destroyAll();
       setState((previous) =>
         previous.kind === "ready"
@@ -78,6 +88,12 @@ export default function AuthGate({ children }: AuthGateProps) {
   }
 
   const logout = useCallback(async () => {
+    if (
+      Object.keys(useAppStore.getState().chapterDrafts).length &&
+      !window.confirm("退出登录会清除本窗口尚未保存的章节草稿。确定退出？")
+    ) {
+      return;
+    }
     await authApi.logout();
     Modal.destroyAll();
     setState({ kind: "login" });
@@ -85,13 +101,22 @@ export default function AuthGate({ children }: AuthGateProps) {
 
   const ready = state.kind === "ready";
   const keepWorkspace = ready || (state.kind === "login" && state.keepWorkspace);
+  const discardDrafts = state.kind === "login" && !keepWorkspace;
+  useEffect(() => {
+    if (discardDrafts) useAppStore.getState().clearChapterDrafts();
+  }, [discardDrafts]);
 
   return (
     <AuthContext.Provider value={ready && state.protected ? logout : null}>
       {keepWorkspace && (
         <AuthSessionRevisionContext.Provider value={sessionRevision}>
           <div hidden={!ready} style={{ display: ready ? "contents" : "none" }}>
-            {children}
+            <div ref={setPopupHost} />
+            {popupHost && (
+              <ConfigProvider getPopupContainer={() => popupHost}>
+                <App component={false}>{children}</App>
+              </ConfigProvider>
+            )}
           </div>
         </AuthSessionRevisionContext.Provider>
       )}

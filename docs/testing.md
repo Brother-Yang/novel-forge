@@ -72,6 +72,8 @@ pnpm test:e2e
 
 浏览器回归也覆盖两个窗口编辑同一章：旧版本保存被拒绝并保留草稿，确认重新加载后才能继续保存。
 
+浏览器回归覆盖受保护访问、创作基本操作、轨迹分页、双窗口正文冲突、401 弹出层隔离，以及跨面板/章节/前进后退保留正文草稿。
+
 测试使用 `dist/` 中以 `/api` 为 API 前缀的生产构建。每次运行在独立的回环端口启动预览与后端，自动迁移临时 SQLite，并在结束时清理 SQLite、Chroma 和服务。测试使用合成书稿和会话，模型地址指向本机不可用的端口。默认使用 `backend/.venv/bin/python`，也可以通过 `NOVEL_FORGE_E2E_PYTHON` 指定已安装后端依赖的 Python 路径。
 
 失败时查看 `frontend/test-results/` 中的截图、后端日志和 `trace.zip`，可用 `pnpm exec playwright show-trace <trace.zip>` 打开。

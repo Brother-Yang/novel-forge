@@ -6,7 +6,7 @@ import { ApiError } from "../api/client";
 import type { Chapter } from "../api/types";
 import { CHAPTER_STATUS_LABEL } from "../constants/chapterStatus";
 import { useGenerationStream } from "../hooks/useGenerationStream";
-import { useAppStore } from "../store";
+import { chapterDraftKey, useAppStore, type ChapterDraftBase } from "../store";
 
 interface Props {
   bookId: string;
@@ -16,13 +16,17 @@ interface Props {
 type MetaField = "title" | "outline";
 
 export default function ChapterEditor({ bookId, chapterId }: Props) {
-  return <ChapterDraft key={`${bookId}:${chapterId ?? "none"}`} chapterId={chapterId} />;
+  const draftKey = chapterDraftKey(bookId, chapterId ?? "none");
+  return <ChapterDraft key={draftKey} chapterId={chapterId} draftKey={draftKey} />;
 }
 
-function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
+function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draftKey: string }) {
   const [chapter, setChapter] = useState<Chapter | null>(null);
-  const [body, setBody] = useState("");
-  const [contentVersion, setContentVersion] = useState<string | null>(null);
+  const [base, setBase] = useState<ChapterDraftBase | null>(null);
+  const localDraft = useAppStore((s) => s.chapterDrafts[draftKey]);
+  const setChapterDraft = useAppStore((s) => s.setChapterDraft);
+  const body = localDraft?.body ?? base?.body ?? "";
+  const contentVersion = base?.version ?? null;
   const [contentConflict, setContentConflict] = useState(false);
   const [confirmingContent, setConfirmingContent] = useState(false);
   const [reloadingContent, setReloadingContent] = useState(false);
@@ -41,6 +45,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   const unconfirmedBody = useRef<string | null>(null);
   const { running: generating, isRunning, start, cancel } = useGenerationStream(chapterId);
   const { message, modal } = App.useApp();
+  const reloadDialog = useRef<ReturnType<typeof modal.confirm> | null>(null);
   const refreshTree = useAppStore((s) => s.refreshTree);
 
   useEffect(() => {
@@ -56,9 +61,20 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
       ])
         .then(([data, content]) => {
           if (scope.current !== owner || request.signal.aborted) return;
+          const draft = useAppStore.getState().chapterDrafts[draftKey];
+          const remoteBase = { body: content.body, version: content.version };
+          const changed =
+            draft &&
+            draft.body !== remoteBase.body &&
+            (draft.base.version === null
+              ? draft.base.body !== remoteBase.body
+              : draft.base.version !== remoteBase.version);
           setChapter(data);
-          setBody(content.body);
-          setContentVersion(content.version);
+          setBase(changed ? draft.base : remoteBase);
+          setContentConflict(Boolean(changed));
+          if (draft && !changed) {
+            setChapterDraft(draftKey, { body: draft.body, base: remoteBase });
+          }
           setLoadFailed(false);
         })
         .catch((err: unknown) => {
@@ -71,10 +87,11 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
     return () => {
       scope.current += 1;
       request.abort();
+      reloadDialog.current?.destroy();
       bodySave.current = false;
       pendingMetadata.clear();
     };
-  }, [chapterId, message, loadAttempt]);
+  }, [chapterId, draftKey, message, loadAttempt, setChapterDraft]);
 
   if (!chapterId || chapter?.id !== chapterId) {
     return (
@@ -120,6 +137,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
       bodySave.current ||
       contentRead.current ||
       isRunning() ||
+      !base ||
       !contentVersion ||
       contentConflict
     )
@@ -131,7 +149,10 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
     try {
       const saved = await api.saveContent(chapter.id, body, contentVersion);
       if (scope.current !== owner) return;
-      setContentVersion(saved.version);
+      const savedBase = { body: saved.body, version: saved.version };
+      const currentBody = useAppStore.getState().chapterDrafts[draftKey]?.body ?? base.body;
+      setBase(savedBase);
+      setChapterDraft(draftKey, { body: currentBody, base: savedBase });
       // 保存确认只更新服务端元信息,保留请求期间继续输入的草稿。
       setChapter((draft) =>
         draft?.id === saved.chapter_id
@@ -173,8 +194,10 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
         setContentConflict(true);
         return;
       }
-      if (reload) setBody(content.body);
-      setContentVersion(content.version);
+      const loadedBase = { body: content.body, version: content.version };
+      const draft = useAppStore.getState().chapterDrafts[draftKey];
+      setBase(loadedBase);
+      setChapterDraft(draftKey, reload || !draft ? null : { body: draft.body, base: loadedBase });
       setContentConflict(false);
       unconfirmedBody.current = null;
       setChapter((draft) =>
@@ -197,7 +220,7 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
   };
 
   const reloadContent = () => {
-    modal.confirm({
+    reloadDialog.current = modal.confirm({
       title: "重新加载服务器正文？",
       content: "这会替换当前编辑区的草稿。请先复制需要保留的文字，再重新加载并合并修改。",
       okText: "替换并重新加载",
@@ -232,9 +255,9 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
         },
         onDone: () => {
           const confirmedBody = generatedBody.trim();
-          if (confirmedBody) setBody(confirmedBody);
+          if (confirmedBody) setChapterDraft(draftKey, null);
           unconfirmedBody.current = confirmedBody;
-          setContentVersion(null);
+          setBase({ body: confirmedBody || body, version: null });
           setGenerationPreview(null);
           refreshTree();
           void readContent(false);
@@ -268,6 +291,11 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
           <Tag color={chapter.status === "done" ? "success" : "default"}>
             {CHAPTER_STATUS_LABEL[chapter.status] ?? chapter.status}
           </Tag>
+          {localDraft && (
+            <Tag color="warning" title="切换页面后仍在本窗口保留，保存后才会写入服务器">
+              未保存草稿
+            </Tag>
+          )}
           {generating ? (
             <Button danger icon={<StopOutlined />} onClick={stop}>
               停止
@@ -338,7 +366,9 @@ function ChapterDraft({ chapterId }: Pick<Props, "chapterId">) {
         className={`nf-editor__body${generating ? " nf-editor__body--live" : ""}`}
         value={displayedBody}
         disabled={generating || reloadingContent}
-        onChange={(e) => setBody(e.target.value)}
+        onChange={(e) => {
+          if (base) setChapterDraft(draftKey, { body: e.target.value, base });
+        }}
         autoSize={{ minRows: 18 }}
         placeholder="点击“生成正文”让 AI 基于大纲与记忆写作,或直接手写。"
       />

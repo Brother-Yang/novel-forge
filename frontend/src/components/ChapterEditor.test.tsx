@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chapter, ChapterContent, ChapterContentSaved } from "../api/types";
 import { api } from "../api";
 import { ApiError, sseFetch } from "../api/client";
+import { useAppStore } from "../store";
 import ChapterEditor from "./ChapterEditor";
 
 vi.mock("../api", () => ({
@@ -48,6 +49,7 @@ function editor(chapterId = "a") {
 }
 
 beforeEach(() => {
+  useAppStore.getState().clearChapterDrafts();
   vi.resetAllMocks();
   vi.mocked(api.getChapter).mockResolvedValue(chapter);
   vi.mocked(api.getContent).mockResolvedValue({
@@ -66,6 +68,46 @@ beforeEach(() => {
 });
 
 describe("ChapterEditor 编辑安全", () => {
+  it("重新进入章节时恢复本地草稿，继续用草稿最初读到的版本保存", async () => {
+    const first = render(editor());
+    const body = await screen.findByPlaceholderText(bodyPlaceholder);
+    fireEvent.change(body, { target: { value: "留在本窗口的草稿" } });
+    expect(screen.getByText("未保存草稿")).toBeInTheDocument();
+    first.unmount();
+
+    vi.mocked(api.saveContent).mockResolvedValueOnce({
+      chapter_id: "a",
+      body: "留在本窗口的草稿",
+      version: savedVersion,
+      status: "done",
+      word_count: 8,
+    });
+    render(editor());
+    expect(await screen.findByPlaceholderText(bodyPlaceholder)).toHaveValue("留在本窗口的草稿");
+    fireEvent.click(screen.getByRole("button", { name: /保存$/ }));
+    await waitFor(() => expect(screen.queryByText("未保存草稿")).not.toBeInTheDocument());
+    expect(api.saveContent).toHaveBeenCalledWith("a", "留在本窗口的草稿", originalVersion);
+  });
+
+  it("重新进入章节时发现服务器新版本，保留原草稿并阻止覆盖", async () => {
+    const first = render(editor());
+    fireEvent.change(await screen.findByPlaceholderText(bodyPlaceholder), {
+      target: { value: "我的本地草稿" },
+    });
+    first.unmount();
+
+    vi.mocked(api.getContent).mockResolvedValueOnce({
+      chapter_id: "a",
+      body: "另一窗口保存的正文",
+      version: savedVersion,
+    });
+    render(editor());
+    expect(await screen.findByPlaceholderText(bodyPlaceholder)).toHaveValue("我的本地草稿");
+    expect(screen.getByText("服务器正文已有新版本，本地草稿已保留")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /保存$/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /生成正文/ })).toBeDisabled();
+  });
+
   it.each(["error", "stop"])("已有生成预览时%s仍保留原编辑草稿", async (ending) => {
     const stream = deferred<void>();
     vi.mocked(sseFetch).mockReturnValueOnce(stream.promise);
