@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Card, Input, Space, Tag } from "antd";
 import { SaveOutlined, ThunderboltOutlined, StopOutlined } from "@ant-design/icons";
 import { api, sseEndpoints } from "../api";
@@ -24,7 +24,10 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [base, setBase] = useState<ChapterDraftBase | null>(null);
   const localDraft = useAppStore((s) => s.chapterDrafts[draftKey]);
+  const pendingSave = useAppStore((s) => s.chapterSaves[draftKey]);
+  const savingBody = Boolean(pendingSave);
   const setChapterDraft = useAppStore((s) => s.setChapterDraft);
+  const confirmChapterDraft = useAppStore((s) => s.confirmChapterDraft);
   const body = localDraft?.body ?? base?.body ?? "";
   const contentVersion = base?.version ?? null;
   const [contentConflict, setContentConflict] = useState(false);
@@ -32,12 +35,10 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
   const [reloadingContent, setReloadingContent] = useState(false);
   const [confirmationFailed, setConfirmationFailed] = useState(false);
   const [generationPreview, setGenerationPreview] = useState<string | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadFailure, setLoadFailure] = useState<"missing" | "request" | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
-  const [savingBody, setSavingBody] = useState(false);
   const [savingFields, setSavingFields] = useState<MetaField[]>([]);
   const scope = useRef(0);
-  const bodySave = useRef(false);
   const metaSaves = useRef(new Set<MetaField>());
   const requestRef = useRef<AbortController | null>(null);
   const generationVersion = useRef(0);
@@ -47,67 +48,161 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
   const { message, modal } = App.useApp();
   const reloadDialog = useRef<ReturnType<typeof modal.confirm> | null>(null);
   const refreshTree = useAppStore((s) => s.refreshTree);
+  const markMissing = useCallback(
+    (error: unknown) => {
+      if (!(error instanceof ApiError) || error.status !== 404) return false;
+      requestRef.current?.abort();
+      useAppStore.getState().markChapterDraftsMissing([draftKey]);
+      setChapter(null);
+      setLoadFailure("missing");
+      refreshTree();
+      return true;
+    },
+    [draftKey, refreshTree]
+  );
 
   useEffect(() => {
     const owner = ++scope.current;
     const request = new AbortController();
     requestRef.current = request;
     const pendingMetadata = metaSaves.current;
-    if (chapterId) {
-      // 两部分均成功后才开放编辑，避免把尚未读取的正文当成空稿提交。
-      void Promise.all([
-        api.getChapter(chapterId, request.signal),
-        api.getContent(chapterId, request.signal),
-      ])
-        .then(([data, content]) => {
-          if (scope.current !== owner || request.signal.aborted) return;
-          const draft = useAppStore.getState().chapterDrafts[draftKey];
-          const remoteBase = { body: content.body, version: content.version };
-          const changed =
-            draft &&
-            draft.body !== remoteBase.body &&
-            (draft.base.version === null
-              ? draft.base.body !== remoteBase.body
-              : draft.base.version !== remoteBase.version);
-          setChapter(data);
-          setBase(changed ? draft.base : remoteBase);
-          setContentConflict(Boolean(changed));
-          if (draft && !changed) {
-            setChapterDraft(draftKey, { body: draft.body, base: remoteBase });
+    async function loadChapter(id: string) {
+      try {
+        const pending = useAppStore.getState().chapterSaves[draftKey];
+        if (pending) {
+          // 即使上一次保存没有返回，已删除的章节也要能恢复本地草稿。
+          await api.getChapter(id, request.signal);
+          try {
+            await pending.result;
+          } catch (err: unknown) {
+            if (!request.signal.aborted)
+              message.error(err instanceof Error ? err.message : "正文保存失败");
           }
-          setLoadFailed(false);
-        })
-        .catch((err: unknown) => {
-          if (scope.current !== owner || request.signal.aborted) return;
-          request.abort();
-          setLoadFailed(true);
+          if (request.signal.aborted) return;
+        }
+        // 两部分均成功后才开放编辑，避免把尚未读取的正文当成空稿提交。
+        const [data, content] = await Promise.all([
+          api.getChapter(id, request.signal),
+          api.getContent(id, request.signal),
+        ]);
+        if (scope.current !== owner || request.signal.aborted) return;
+        const draft = useAppStore.getState().chapterDrafts[draftKey];
+        if (draft?.verification === "missing") return;
+        const remoteBase = { body: content.body, version: content.version };
+        const changed =
+          draft &&
+          draft.body !== remoteBase.body &&
+          (draft.base.version === null
+            ? draft.base.body !== remoteBase.body
+            : draft.base.version !== remoteBase.version);
+        setChapter(data);
+        setBase(changed ? draft.base : remoteBase);
+        setContentConflict(Boolean(changed));
+        if (draft && !changed) {
+          confirmChapterDraft(draftKey, remoteBase);
+        }
+        setLoadFailure(null);
+      } catch (err: unknown) {
+        if (scope.current !== owner || request.signal.aborted) return;
+        request.abort();
+        if (!markMissing(err)) {
+          setLoadFailure("request");
           message.error(err instanceof Error ? err.message : "章节加载失败");
-        });
+        }
+      }
     }
+    if (chapterId) void loadChapter(chapterId);
     return () => {
       scope.current += 1;
       request.abort();
       reloadDialog.current?.destroy();
-      bodySave.current = false;
       pendingMetadata.clear();
     };
-  }, [chapterId, draftKey, message, loadAttempt, setChapterDraft]);
+  }, [chapterId, draftKey, message, loadAttempt, markMissing, confirmChapterDraft]);
 
-  if (!chapterId || chapter?.id !== chapterId) {
+  const copyDraft = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success("已复制正文");
+    } catch {
+      message.info("无法自动复制，请选中正文手动复制");
+    }
+  };
+
+  const missing = loadFailure === "missing" || localDraft?.verification === "missing";
+  if (!chapterId || chapter?.id !== chapterId || missing) {
+    const loadingNote = !chapterId
+      ? "从左侧选择一个章节"
+      : missing
+        ? "章节已不存在"
+        : loadFailure
+          ? "章节加载失败"
+          : savingBody
+            ? "正在确认上一次保存…"
+            : "正在加载章节...";
+    const recoveryBody = localDraft?.body ?? (missing ? undefined : pendingSave?.body);
+    const retry = loadFailure === "request" && (
+      <Button
+        onClick={() => {
+          setLoadFailure(null);
+          setLoadAttempt((value) => value + 1);
+        }}
+      >
+        重新加载章节
+      </Button>
+    );
+
+    if (chapterId && recoveryBody !== undefined) {
+      return (
+        <div className="nf-editor">
+          <Alert
+            type={loadFailure ? "warning" : "info"}
+            showIcon
+            message={loadingNote}
+            description={missing ? "正文草稿仍在本窗口。可以复制后粘贴到其他章节。" : undefined}
+          />
+          <Input.TextArea
+            aria-label="本地正文草稿"
+            className="nf-editor__body"
+            value={recoveryBody}
+            autoSize={{ minRows: 6, maxRows: 18 }}
+            readOnly
+          />
+          <Space>
+            <Button onClick={() => void copyDraft(recoveryBody)}>复制正文</Button>
+            {missing && (
+              <Button
+                danger
+                onClick={() => {
+                  reloadDialog.current = modal.confirm({
+                    title: "丢弃本窗口的正文草稿？",
+                    content: "草稿清除后无法恢复，请先复制需要保留的内容。",
+                    okText: "丢弃草稿",
+                    cancelText: "保留草稿",
+                    okButtonProps: { danger: true },
+                    onOk: () => {
+                      requestRef.current?.abort();
+                      setChapter(null);
+                      setLoadFailure("missing");
+                      setChapterDraft(draftKey, null);
+                    },
+                  });
+                }}
+              >
+                丢弃本地草稿
+              </Button>
+            )}
+            {retry}
+          </Space>
+        </div>
+      );
+    }
+
     return (
       <div className="nf-empty nf-empty--fill">
         <span className="nf-empty__glyph">卷</span>
-        <p>{!chapterId ? "从左侧选择一个章节" : loadFailed ? "章节加载失败" : "正在加载章节..."}</p>
-        {chapterId && loadFailed && (
-          <Button
-            onClick={() => {
-              setLoadFailed(false);
-              setLoadAttempt((value) => value + 1);
-            }}
-          >
-            重新加载章节
-          </Button>
-        )}
+        <p>{loadingNote}</p>
+        {retry}
       </div>
     );
   }
@@ -122,7 +217,7 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
       // 本地字段已经是草稿，不用整条服务器响应覆盖其他正在编辑的字段。
       if (scope.current === owner) refreshTree();
     } catch (err: unknown) {
-      if (scope.current === owner)
+      if (scope.current === owner && !markMissing(err))
         message.error(err instanceof Error ? err.message : "章节信息保存失败");
     } finally {
       if (scope.current === owner) {
@@ -134,7 +229,7 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
 
   const saveBody = async () => {
     if (
-      bodySave.current ||
+      useAppStore.getState().chapterSaves[draftKey] ||
       contentRead.current ||
       isRunning() ||
       !base ||
@@ -143,16 +238,22 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
     )
       return;
     const owner = scope.current;
-    generationVersion.current += 1;
-    bodySave.current = true;
-    setSavingBody(true);
     try {
-      const saved = await api.saveContent(chapter.id, body, contentVersion);
-      if (scope.current !== owner) return;
-      const savedBase = { body: saved.body, version: saved.version };
-      const currentBody = useAppStore.getState().chapterDrafts[draftKey]?.body ?? base.body;
-      setBase(savedBase);
-      setChapterDraft(draftKey, { body: currentBody, base: savedBase });
+      const result = useAppStore
+        .getState()
+        .startChapterSave(draftKey, { body, base, title: chapter.title }, () =>
+          api.saveContent(chapter.id, body, contentVersion)
+        );
+      if (!result) return;
+      generationVersion.current += 1;
+      const saved = await result;
+      if (
+        scope.current !== owner ||
+        requestRef.current?.signal.aborted ||
+        useAppStore.getState().chapterDrafts[draftKey]?.verification === "missing"
+      )
+        return;
+      setBase({ body: saved.body, version: saved.version });
       // 保存确认只更新服务端元信息,保留请求期间继续输入的草稿。
       setChapter((draft) =>
         draft?.id === saved.chapter_id
@@ -163,13 +264,9 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
       refreshTree();
     } catch (err: unknown) {
       if (scope.current === owner) {
+        if (markMissing(err)) return;
         if (err instanceof ApiError && err.status === 409) setContentConflict(true);
         message.error(err instanceof Error ? err.message : "正文保存失败");
-      }
-    } finally {
-      if (scope.current === owner) {
-        bodySave.current = false;
-        setSavingBody(false);
       }
     }
   };
@@ -189,15 +286,20 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
         api.getChapter(chapter.id, requestRef.current?.signal),
         api.getContent(chapter.id, requestRef.current?.signal),
       ]);
-      if (scope.current !== owner || generationVersion.current !== version) return;
+      if (
+        scope.current !== owner ||
+        generationVersion.current !== version ||
+        useAppStore.getState().chapterDrafts[draftKey]?.verification === "missing"
+      )
+        return;
       if (!reload && content.body !== unconfirmedBody.current) {
         setContentConflict(true);
         return;
       }
       const loadedBase = { body: content.body, version: content.version };
-      const draft = useAppStore.getState().chapterDrafts[draftKey];
       setBase(loadedBase);
-      setChapterDraft(draftKey, reload || !draft ? null : { body: draft.body, base: loadedBase });
+      if (reload) setChapterDraft(draftKey, null);
+      else confirmChapterDraft(draftKey, loadedBase);
       setContentConflict(false);
       unconfirmedBody.current = null;
       setChapter((draft) =>
@@ -207,6 +309,7 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
       );
     } catch (err: unknown) {
       if (scope.current === owner && generationVersion.current === version) {
+        if (markMissing(err)) return;
         setConfirmationFailed(true);
         message.error(err instanceof Error ? err.message : "正文版本确认失败");
       }
@@ -232,7 +335,7 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
   const generate = () => {
     if (
       isRunning() ||
-      bodySave.current ||
+      useAppStore.getState().chapterSaves[draftKey] ||
       metaSaves.current.size > 0 ||
       contentRead.current ||
       contentConflict ||
@@ -254,6 +357,7 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
           if (generatedBody.trim()) setGenerationPreview(generatedBody);
         },
         onDone: () => {
+          if (useAppStore.getState().chapterDrafts[draftKey]?.verification === "missing") return;
           const confirmedBody = generatedBody.trim();
           if (confirmedBody) setChapterDraft(draftKey, null);
           unconfirmedBody.current = confirmedBody;
@@ -264,7 +368,7 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
         },
         onError: (err) => {
           setGenerationPreview(null);
-          message.error(err instanceof Error ? err.message : "生成失败");
+          if (!markMissing(err)) message.error(err instanceof Error ? err.message : "生成失败");
         },
       }
     );
@@ -367,7 +471,7 @@ function ChapterDraft({ chapterId, draftKey }: Pick<Props, "chapterId"> & { draf
         value={displayedBody}
         disabled={generating || reloadingContent}
         onChange={(e) => {
-          if (base) setChapterDraft(draftKey, { body: e.target.value, base });
+          if (base) setChapterDraft(draftKey, { body: e.target.value, base, title: chapter.title });
         }}
         autoSize={{ minRows: 18 }}
         placeholder="点击“生成正文”让 AI 基于大纲与记忆写作,或直接手写。"

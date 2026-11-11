@@ -249,11 +249,7 @@ test("会话过期时隐藏新书表单，重登保留输入并等待手动提�
   expect(submissions).toBe(2);
 });
 
-test("切换面板、章节和路由保留草稿，重返时检测服务器正文冲突", async ({
-  page,
-  context,
-  runtime,
-}) => {
+test("保存中切换页面、正文冲突和远端删章后可恢复本地草稿", async ({ page, context, runtime }) => {
   await login(page, runtime);
   const post = (path, data) =>
     context.request.post(`${runtime.origin}/api${path}`, {
@@ -276,7 +272,47 @@ test("切换面板、章节和路由保留草稿，重返时检测服务器正�
   const tree = page.locator(".nf-catalog");
   const selectFirst = () => tree.getByText(/^有草稿的章节/).click();
   const body = page.getByPlaceholder(/点击“生成正文”/);
+  const contentUrl = `${runtime.origin}/api/chapters/${chapter.id}/content`;
   await selectFirst();
+
+  async function holdSaveResponse() {
+    const release = Promise.withResolvers();
+    let submittedStatus;
+    const delaySaveConfirmation = async (route) => {
+      if (route.request().method() !== "PUT") return route.fallback();
+      const saved = await route.fetch();
+      submittedStatus = saved.status();
+      await release.promise;
+      await route.fulfill({ response: saved });
+    };
+    await page.route(contentUrl, delaySaveConfirmation);
+    return {
+      committed: () => expect.poll(() => submittedStatus).toBe(200),
+      release: async () => {
+        release.resolve();
+        await page.unroute(contentUrl, delaySaveConfirmation);
+      },
+    };
+  }
+
+  await test.step("保存已提交但响应未返回时，保留改回原文的编辑", async () => {
+    const save = await holdSaveResponse();
+    try {
+      await body.fill("保存中的第一稿");
+      await page.getByRole("button", { name: /保\s*存$/ }).click();
+      await save.committed();
+      await body.fill("");
+      await page.getByRole("menuitem", { name: /剧情/ }).click();
+      await page.getByRole("menuitem", { name: /章节/ }).click();
+      await expect(page.getByRole("textbox", { name: "本地正文草稿" })).toHaveValue("");
+      await expect(page.getByText("正在确认上一次保存…")).toBeVisible();
+    } finally {
+      await save.release();
+    }
+    await expect(body).toHaveValue("");
+    await expect(page.getByRole("button", { name: /保\s*存$/ })).toBeEnabled();
+  });
+
   await body.fill("作者未保存的续写");
   await page.getByRole("menuitem", { name: /剧情/ }).click();
   await expect(page.getByText("剧情进展", { exact: true })).toBeVisible();
@@ -303,6 +339,61 @@ test("切换面板、章节和路由保留草稿，重返时检测服务器正�
     page.getByText("服务器正文已有新版本，本地草稿已保留", { exact: true })
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /保\s*存$/ })).toBeDisabled();
+
+  await test.step("另一窗口删章后，迟到的保存确认不清除可恢复正文", async () => {
+    await page.getByRole("button", { name: "重新加载正文", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "替换并重新加载" }).click();
+    await expect(body).toHaveValue("另一窗口保存的新稿");
+    await body.fill("作者未保存的续写");
+    const save = await holdSaveResponse();
+    const recovered = page.getByRole("textbox", { name: "本地正文草稿" });
+    try {
+      await page.getByRole("button", { name: /保\s*存$/ }).click();
+      await save.committed();
+      await page.goBack();
+      await expect(page.getByRole("heading", { name: "我的小说" })).toBeVisible();
+      await expect(
+        await context.request.delete(`${runtime.origin}/api/chapters/${chapter.id}`, {
+          headers: { Origin: runtime.origin },
+        })
+      ).toBeOK();
+      await page.goForward();
+      await tree.getByRole("button", { name: "恢复《有草稿的章节》的草稿" }).click();
+      await expect(page.getByText("章节已不存在", { exact: true })).toBeVisible();
+      await expect(recovered).toHaveValue("作者未保存的续写");
+
+      const confirmation = page.waitForResponse(
+        (response) => response.url() === contentUrl && response.request().method() === "PUT"
+      );
+      await save.release();
+      await (await confirmation).finished();
+    } finally {
+      await save.release();
+    }
+    await expect(recovered).toHaveValue("作者未保存的续写");
+    const allowsLeaving = () =>
+      page.evaluate(() =>
+        globalThis.dispatchEvent(new globalThis.Event("beforeunload", { cancelable: true }))
+      );
+    expect(await allowsLeaving()).toBe(false);
+
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.getByRole("button", { name: "复制正文" }).click();
+    await expect(page.getByText("已复制正文", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => globalThis.navigator.clipboard.readText())).toBe(
+      "作者未保存的续写"
+    );
+
+    const discard = page.getByRole("button", { name: "丢弃本地草稿" });
+    await discard.click();
+    await page.getByRole("dialog").getByRole("button", { name: "保留草稿" }).click();
+    await expect(recovered).toHaveValue("作者未保存的续写");
+    await discard.click();
+    await page.getByRole("dialog").getByRole("button", { name: "丢弃草稿" }).click();
+    await expect(recovered).toBeHidden();
+    await expect(tree.getByText("待恢复的正文草稿", { exact: true })).toBeHidden();
+    await expect.poll(allowsLeaving).toBe(true);
+  });
 });
 
 test("轨迹向前翻页保持阅读位置，接收新事件并在任务结束后补拉", async ({ page, runtime }) => {

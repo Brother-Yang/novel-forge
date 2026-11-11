@@ -108,6 +108,132 @@ describe("ChapterEditor 编辑安全", () => {
     expect(screen.getByRole("button", { name: /生成正文/ })).toBeDisabled();
   });
 
+  it.each([
+    { reason: "继续编辑", draft: "保存中写的第二稿", remoteEdit: false },
+    { reason: "改回旧稿", draft: "原正文", remoteEdit: false },
+    { reason: "外窗另存", draft: "保存中写的第二稿", remoteEdit: true },
+  ])("保存中切出并返回，$reason 时保留草稿并核验确认版本", async ({ draft, remoteEdit }) => {
+    const pending = deferred<ChapterContentSaved>();
+    vi.mocked(api.saveContent).mockReturnValueOnce(pending.promise);
+    const first = render(editor());
+    const body = await screen.findByPlaceholderText(bodyPlaceholder);
+    fireEvent.change(body, { target: { value: "已提交的第一稿" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存$/ }));
+    expect(api.saveContent).toHaveBeenCalledWith("a", "已提交的第一稿", originalVersion);
+    fireEvent.change(body, { target: { value: draft } });
+    first.unmount();
+
+    render(editor());
+    expect(await screen.findByRole("textbox", { name: "本地正文草稿" })).toHaveValue(draft);
+    expect(screen.getByRole("textbox", { name: "本地正文草稿" })).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "复制正文" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /保存$/ })).not.toBeInTheDocument();
+    expect(api.getContent).toHaveBeenCalledTimes(1);
+
+    vi.mocked(api.getContent).mockResolvedValueOnce({
+      chapter_id: "a",
+      body: remoteEdit ? "另一个窗口的新稿" : "已提交的第一稿",
+      version: remoteEdit ? "c".repeat(64) : savedVersion,
+    });
+    await act(async () =>
+      pending.resolve({
+        chapter_id: "a",
+        body: "已提交的第一稿",
+        version: savedVersion,
+        status: "done",
+        word_count: 7,
+      })
+    );
+    expect(await screen.findByPlaceholderText(bodyPlaceholder)).toHaveValue(draft);
+    const save = screen.getByRole("button", { name: /保存$/ });
+    if (remoteEdit) {
+      expect(save).toBeDisabled();
+      expect(screen.getByText("服务器正文已有新版本，本地草稿已保留")).toBeInTheDocument();
+      expect(api.saveContent).toHaveBeenCalledTimes(1);
+    } else {
+      expect(save).toBeEnabled();
+      fireEvent.click(save);
+      await waitFor(() =>
+        expect(api.saveContent).toHaveBeenLastCalledWith("a", draft, savedVersion)
+      );
+    }
+  });
+
+  it.each([true, false])(
+    "已删除章节的草稿只在明确丢弃后清除（先收到回执=%s）",
+    async (savedFirst) => {
+      const pending = deferred<ChapterContentSaved>();
+      vi.mocked(api.saveContent).mockReturnValueOnce(pending.promise);
+      const first = render(editor());
+      fireEvent.change(await screen.findByPlaceholderText(bodyPlaceholder), {
+        target: { value: "服务器删章前的草稿" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /保存$/ }));
+      first.unmount();
+
+      vi.mocked(api.getChapter).mockRejectedValueOnce(new ApiError(404, "章节不存在"));
+      render(editor());
+      expect(await screen.findByText("章节已不存在")).toBeInTheDocument();
+      const reply = () =>
+        act(async () =>
+          pending.resolve({
+            chapter_id: "a",
+            body: "服务器删章前的草稿",
+            version: savedVersion,
+            status: "done",
+            word_count: 9,
+          })
+        );
+      if (savedFirst) await reply();
+      expect(screen.getByRole("textbox", { name: "本地正文草稿" })).toHaveValue(
+        "服务器删章前的草稿"
+      );
+      fireEvent.click(screen.getByRole("button", { name: "丢弃本地草稿" }));
+      fireEvent.click(await screen.findByRole("button", { name: "丢弃草稿" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("textbox", { name: "本地正文草稿" })).toBeNull()
+      );
+      if (!savedFirst) await reply();
+      expect(useAppStore.getState().chapterDrafts).toEqual({});
+    }
+  );
+
+  it.each([true, false])(
+    "保存回执失败后反复改回旧稿，直到服务器确认才清除（曾提交=%s）",
+    async (committed) => {
+      const pending = deferred<ChapterContentSaved>();
+      vi.mocked(api.saveContent).mockReturnValueOnce(pending.promise);
+      const first = render(editor());
+      const body = await screen.findByPlaceholderText(bodyPlaceholder);
+      const edit = (value: string) => fireEvent.change(body, { target: { value } });
+      edit("请求提交的正文");
+      fireEvent.click(screen.getByRole("button", { name: /保存$/ }));
+      edit("原正文");
+      await act(async () => pending.reject(new TypeError("保存连接中断")));
+      expect(await screen.findByText("保存连接中断")).toBeInTheDocument();
+      expect(useAppStore.getState().chapterDrafts["book:a"]?.body).toBe("原正文");
+      edit("暂时修改");
+      edit("原正文");
+      expect(useAppStore.getState().chapterDrafts["book:a"]?.body).toBe("原正文");
+      first.unmount();
+
+      vi.mocked(api.getContent).mockResolvedValueOnce({
+        chapter_id: "a",
+        body: committed ? "请求提交的正文" : "原正文",
+        version: committed ? savedVersion : originalVersion,
+      });
+      render(editor());
+      expect(await screen.findByPlaceholderText(bodyPlaceholder)).toHaveValue("原正文");
+      if (committed) {
+        expect(screen.getByText("服务器正文已有新版本，本地草稿已保留")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /保存$/ })).toBeDisabled();
+      } else {
+        expect(screen.getByRole("button", { name: /保存$/ })).toBeEnabled();
+        expect(useAppStore.getState().chapterDrafts["book:a"]).toBeUndefined();
+      }
+    }
+  );
+
   it.each(["error", "stop"])("已有生成预览时%s仍保留原编辑草稿", async (ending) => {
     const stream = deferred<void>();
     vi.mocked(sseFetch).mockReturnValueOnce(stream.promise);

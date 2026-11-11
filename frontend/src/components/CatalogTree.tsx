@@ -2,6 +2,7 @@ import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Dropdown, Space, Tree, Typography } from "antd";
 import type { TreeDataNode, TreeProps } from "antd";
 import { PlusOutlined, FileAddOutlined, MoreOutlined } from "@ant-design/icons";
+import { useShallow } from "zustand/react/shallow";
 import { api } from "../api";
 import type { BookTree } from "../api/types";
 import { chapterDraftKey, useAppStore } from "../store";
@@ -17,11 +18,30 @@ interface Props {
 
 // key 规则:卷 "v-<id>",章 "c-<id>",未归卷根 "loose"
 export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }: Props) {
-  const [snapshot, setSnapshot] = useState<{ bookId: string; tree: BookTree } | null>(null);
-  const tree = snapshot?.bookId === bookId ? snapshot.tree : null;
+  const [snapshot, setSnapshot] = useState<{
+    bookId: string;
+    tree: BookTree;
+    chapterIds: Set<string>;
+  } | null>(null);
+  const current = snapshot?.bookId === bookId ? snapshot : null;
+  const tree = current?.tree ?? null;
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
   const directoryUnavailable = !tree || Boolean(loadError);
+  const recoverable = useAppStore(
+    useShallow((state) => {
+      const result: Record<string, string> = {};
+      if (!current || loadError) return result;
+      const prefix = chapterDraftKey(bookId, "");
+      for (const [key, draft] of Object.entries(state.chapterDrafts)) {
+        if (!draft || !key.startsWith(prefix)) continue;
+        const id = key.slice(prefix.length);
+        if (!current.chapterIds.has(id)) result[id] = draft.title || "本地正文草稿";
+      }
+      return result;
+    })
+  );
+  const recoveryEntries = Object.entries(recoverable);
   const [collapsedKeys, setCollapsedKeys] = useState<string[]>([]);
   const pending = useRef(false);
   const scope = useRef(0);
@@ -42,11 +62,24 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
   const load = useCallback(() => {
     const request = ++requestVersion.current;
     const owner = scope.current;
+    const prefix = chapterDraftKey(bookId, "");
+    const draftKeys = Object.keys(useAppStore.getState().chapterDrafts).filter((key) =>
+      key.startsWith(prefix)
+    );
     return api
       .getTree(bookId)
       .then((data) => {
         if (scope.current !== owner || request !== requestVersion.current) return;
-        setSnapshot({ bookId, tree: data });
+        const chapterIds = new Set([
+          ...data.loose_chapters.map((chapter) => chapter.id),
+          ...data.volumes.flatMap((volume) => volume.chapters.map((chapter) => chapter.id)),
+        ]);
+        useAppStore
+          .getState()
+          .markChapterDraftsMissing(
+            draftKeys.filter((key) => !chapterIds.has(key.slice(prefix.length)))
+          );
+        setSnapshot({ bookId, tree: data, chapterIds });
         setLoadError("");
       })
       .catch((err: unknown) => {
@@ -288,6 +321,21 @@ export default function CatalogTree({ bookId, selectedChapter, onSelectChapter }
             <Button size="small" onClick={() => void load()}>
               重试
             </Button>
+          }
+        />
+      )}
+      {recoveryEntries.length > 0 && (
+        <Alert
+          type="warning"
+          message="待恢复的正文草稿"
+          description={
+            <Space direction="vertical" size={0}>
+              {recoveryEntries.map(([id, title]) => (
+                <Button key={id} type="link" onClick={() => onSelectChapter(id)}>
+                  恢复《{title}》的草稿
+                </Button>
+              ))}
+            </Space>
           }
         />
       )}
