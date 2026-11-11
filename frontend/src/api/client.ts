@@ -32,54 +32,114 @@ export interface SSEHandlers {
 }
 
 /**
- * 通过 POST + fetch ReadableStream 消费 SSE(EventSource 只支持 GET)。
- * 解析 `event:` 与 `data:` 行,支持多行 data。
+ * 通过 POST + fetch ReadableStream 消费生成接口的 SSE。
+ * 按行保留跨块 CRLF 状态；done/error 结束生成，未收到终止事件的 EOF 视为中断。
  */
 export async function sseFetch(path: string, body: unknown, handlers: SSEHandlers): Promise<void> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let cancellation: Promise<PromiseSettledResult<void>> | undefined;
+  let failed = false;
+  let failure: unknown;
+
+  // 立即给 cancel 的拒绝结果注册处理器，避免 abort 事件中的异步清理产生未处理拒绝。
+  const cancelReader = () => {
+    if (reader && !cancellation) {
+      cancellation = Promise.allSettled([reader.cancel()]).then(([result]) => result);
+    }
+  };
+
   try {
+    handlers.signal?.throwIfAborted();
     const res = await fetch(`${BASE}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify(body ?? {}),
       signal: handlers.signal,
     });
-    if (!res.ok || !res.body) {
-      throw new Error(`SSE ${res.status}`);
+    reader = res.body?.getReader();
+    if (!res.ok || !reader) throw new Error(`SSE ${res.status}`);
+    if (
+      res.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== "text/event-stream"
+    ) {
+      throw new Error("SSE 响应类型错误");
     }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+    handlers.signal?.addEventListener("abort", cancelReader, { once: true });
+    handlers.signal?.throwIfAborted();
 
-    const dispatch = (raw: string) => {
-      if (!raw.trim()) return;
-      let event = "message";
-      const dataLines: string[] = [];
-      for (const line of raw.split("\n")) {
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    const decoder = new TextDecoder();
+    let line = "";
+    let skipLF = false;
+    let event = "";
+    let dataLines: string[] = [];
+    let terminal = false;
+
+    const processLine = () => {
+      if (line === "") {
+        const type = event || "message";
+        const data = dataLines.join("\n");
+        const hasData = dataLines.length > 0;
+        event = "";
+        dataLines = [];
+        if (hasData) {
+          handlers.signal?.throwIfAborted();
+          handlers.onEvent(type, data);
+          terminal = type === "done" || type === "error";
+        }
+        return;
       }
-      handlers.onEvent(event, dataLines.join("\n"));
+      if (line.startsWith(":")) return;
+      const colon = line.indexOf(":");
+      const field = colon === -1 ? line : line.slice(0, colon);
+      let value = colon === -1 ? "" : line.slice(colon + 1);
+      // SSE 只去掉冒号后的一个 ASCII 空格，正文的其余空白属于数据。
+      if (value.startsWith(" ")) value = value.slice(1);
+      if (field === "event") event = value;
+      else if (field === "data") dataLines.push(value);
     };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (value) buffer += decoder.decode(value, { stream: true });
-      if (done) buffer += decoder.decode();
-      // sse-starlette 使用 CRLF(\r\n\r\n) 分隔事件,统一成 \n\n 再拆
-      buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-
-      let sep: number;
-      while ((sep = buffer.indexOf("\n\n")) !== -1) {
-        const raw = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
-        dispatch(raw);
+    const consume = (text: string) => {
+      for (const char of text) {
+        if (terminal) break;
+        handlers.signal?.throwIfAborted();
+        if (skipLF) {
+          skipLF = false;
+          if (char === "\n") continue;
+        }
+        if (char === "\r" || char === "\n") {
+          processLine();
+          line = "";
+          skipLF = char === "\r";
+        } else {
+          line += char;
+        }
       }
-      if (done) {
-        dispatch(buffer);
-        break;
+    };
+
+    while (!terminal) {
+      handlers.signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      handlers.signal?.throwIfAborted();
+      consume(decoder.decode(value, { stream: !done }));
+      if (done && !terminal) {
+        // 未用空行结束的尾部事件按 SSE 规范丢弃，不能把断流误报为生成成功。
+        throw new Error("生成连接已中断，未收到结束事件");
       }
     }
   } catch (err) {
-    handlers.onError?.(err);
+    failed = true;
+    failure = err;
+  } finally {
+    handlers.signal?.removeEventListener("abort", cancelReader);
+    cancelReader();
+    if (cancellation) {
+      const result = await cancellation;
+      // 已失败的 reader 再 cancel 会拒绝，保留真正的读取/回调错误。
+      if (result.status === "rejected" && !failed) {
+        failed = true;
+        failure = result.reason;
+      }
+    }
+    reader?.releaseLock();
   }
+  if (failed) handlers.onError?.(failure);
 }

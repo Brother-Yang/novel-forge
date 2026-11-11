@@ -21,7 +21,6 @@
 
 | 编号 | 优先级 | 待解决问题与入口 | 验收条件 |
 | --- | --- | --- | --- |
-| OPT-011 | P2 | SSE 在 CRLF 跨网络块时错误拆事件，`trimStart()` 吞掉正文前导空格。入口：`frontend/src/api/client.ts`。 | 覆盖 CR/LF 任意分块、UTF-8 跨块、多行 data、原始空格、结束/取消/中断；显示内容与服务端一致。 |
 | OPT-012 | P2 | 当前目录树已移除拖拽排序/移卷，顶栏新建的未归卷章节无法通过界面移卷。入口：`frontend/src/components/CatalogTree.tsx`。 | 恢复排序和移卷；正确持久化顺序与归属，失败可见且不丢章节，补用户操作回归测试。 |
 | OPT-013 | P2 | 工作区请求失败静默吞错并持续转圈；目录新增/重命名、卡片名称保存等仍有未处理的请求错误；目录旧加载响应可能覆盖删除后的刷新结果。入口：`frontend/src/pages/BookWorkspace.tsx`、`components/CatalogTree.tsx`、`CharacterPanel.tsx`、`WorldbuildingPanel.tsx`。 | 加载失败有错误和重试入口；所有剩余 CRUD 失败可见，不产生未处理 Promise 拒绝或误报成功；过期加载结果不覆盖新目录。 |
 | OPT-014 | P3 | 所有路由及 Markdown 编辑器静态加载；评估时主 JS 约 2.07 MB、gzip 约 687 KB。入口：`frontend/src/router/index.tsx`、人物/设定面板。 | 按路由/重组件延迟加载，比较构建产物确认首页不提前下载编辑器，加载与失败体验完整。 |
