@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Literal
+from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 # 分卷细纲每次最多 20 章；长篇通过增加卷数扩展，字数是规划目标而非模型产出保证。
 NOVEL_VOLUME_MAX = 40
@@ -21,6 +21,19 @@ class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PatchModel(BaseModel):
+    """Omitted fields stay unchanged; only explicitly nullable fields accept null."""
+
+    nullable_fields: ClassVar[frozenset[str]] = frozenset()
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def reject_unexpected_nulls(cls, value: object, info: ValidationInfo) -> object:
+        if value is None and info.field_name not in cls.nullable_fields:
+            raise ValueError("不能为 null；不修改时请省略该字段")
+        return value
+
+
 # ---------- Book ----------
 class BookCreate(BaseModel):
     title: str
@@ -36,7 +49,7 @@ class BookCreate(BaseModel):
     )
 
 
-class BookUpdate(BaseModel):
+class BookUpdate(PatchModel):
     title: str | None = None
     intro: str | None = None
     brief: str | None = None
@@ -70,7 +83,7 @@ class VolumeCreate(BaseModel):
     summary: str = ""
 
 
-class VolumeUpdate(BaseModel):
+class VolumeUpdate(PatchModel):
     title: str | None = None
     order_index: int | None = None
     summary: str | None = None
@@ -93,7 +106,9 @@ class ChapterCreate(BaseModel):
     outline: str = ""
 
 
-class ChapterUpdate(BaseModel):
+class ChapterUpdate(PatchModel):
+    nullable_fields = frozenset({"volume_id"})
+
     title: str | None = None
     volume_id: str | None = None
     order_index: int | None = None
@@ -167,7 +182,7 @@ class CharacterCreate(BaseModel):
     order_index: int = 0
 
 
-class CharacterUpdate(BaseModel):
+class CharacterUpdate(PatchModel):
     name: str | None = None
     md_content: str | None = None
     state_json: str | None = None
@@ -192,7 +207,7 @@ class WorldbuildingCreate(BaseModel):
     md_content: str = ""
 
 
-class WorldbuildingUpdate(BaseModel):
+class WorldbuildingUpdate(PatchModel):
     category: str | None = None
     title: str | None = None
     md_content: str | None = None
