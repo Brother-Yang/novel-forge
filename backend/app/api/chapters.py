@@ -8,6 +8,16 @@ from ..database import get_db
 router = APIRouter()
 
 
+def _validate_volume(db: Session, volume_id: str | None, book_id: str) -> None:
+    if volume_id is None:
+        return
+    volume = db.get(models.Volume, volume_id)
+    if not volume:
+        raise HTTPException(404, "卷不存在")
+    if volume.book_id != book_id:
+        raise HTTPException(400, "卷与章节必须属于同一本书")
+
+
 @router.get("/books/{book_id}/chapters", response_model=list[schemas.ChapterOut])
 def list_chapters(
     book_id: str,
@@ -37,6 +47,7 @@ def get_chapter(chapter_id: str, db: Session = Depends(get_db)):
 def create_chapter(payload: schemas.ChapterCreate, db: Session = Depends(get_db)):
     if not db.get(models.Book, payload.book_id):
         raise HTTPException(404, "书籍不存在")
+    _validate_volume(db, payload.volume_id, payload.book_id)
     chapter = models.Chapter(**payload.model_dump())
     db.add(chapter)
     db.commit()
@@ -51,6 +62,8 @@ def update_chapter(
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter:
         raise HTTPException(404, "章节不存在")
+    if "volume_id" in payload.model_fields_set:
+        _validate_volume(db, payload.volume_id, chapter.book_id)
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(chapter, k, v)
     db.commit()
@@ -74,11 +87,24 @@ def reorder_chapters(payload: schemas.ReorderRequest, db: Session = Depends(get_
 
     volume_id 按传入值设置(None 表示移到未归卷区),前端每次拖拽都会带上目标卷。
     """
+    chapter_ids = [item.id for item in payload.items]
+    if len(chapter_ids) != len(set(chapter_ids)):
+        raise HTTPException(400, "排序列表不能包含重复章节")
+    chapters: list[models.Chapter] = []
+    book_id: str | None = None
+    # 先完整校验,避免后续查询触发 autoflush,使无效批次部分落库。
     for item in payload.items:
         chapter = db.get(models.Chapter, item.id)
-        if chapter:
-            chapter.order_index = item.order_index
-            chapter.volume_id = item.volume_id
+        if not chapter:
+            raise HTTPException(404, "章节不存在")
+        if book_id is not None and chapter.book_id != book_id:
+            raise HTTPException(400, "排序章节必须属于同一本书")
+        book_id = chapter.book_id
+        _validate_volume(db, item.volume_id, chapter.book_id)
+        chapters.append(chapter)
+    for item, chapter in zip(payload.items, chapters, strict=True):
+        chapter.order_index = item.order_index
+        chapter.volume_id = item.volume_id
     db.commit()
     return {"ok": True}
 
@@ -105,8 +131,11 @@ def update_chapter_content(
         chapter.content.body = payload.body
     else:
         db.add(models.ChapterContent(chapter_id=chapter_id, body=payload.body))
-    chapter.word_count = len(payload.body)
     if payload.body.strip():
+        chapter.word_count = len(payload.body)
         chapter.status = "done"
+    else:
+        chapter.word_count = 0
+        chapter.status = "outline" if chapter.outline.strip() else "empty"
     db.commit()
     return schemas.ChapterContentOut(chapter_id=chapter_id, body=payload.body)

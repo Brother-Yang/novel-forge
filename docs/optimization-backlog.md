@@ -11,13 +11,11 @@
 | OPT-001 | P2 | 设定新增/修改/删除、手工修改正文或删除章节后，SQL 与向量记忆不同步。入口：`backend/app/api/worldbuilding.py`、`chapters.py`、`memory/context.py`、`memory/vector_store.py`。 | 新内容可检索；旧内容更新或删除后不再召回；索引失败可重试，正文不丢失。 |
 | OPT-002 | P2 | 章摘要、嵌入或卷摘要失败后只有日志，正文已完成，普通续写不会补齐记忆。入口：`backend/app/agents/pipeline.py`、`memory/context.py`。 | 为记忆失败提供可观测、可重试的状态；修复记忆时不重写已完成正文。 |
 | OPT-003 | P2 | SQLite 默认未开启外键，删书后设定、剧情线程、任务、轨迹和向量映射等可能残留；运行中的任务与删书缺少协调。入口：`backend/app/database.py`、`models.py`、`api/books.py`、`tasks/book_generation.py`。 | 全部连接启用正确约束；删除后无孤儿数据、无继续写入任务；处理已有孤儿数据并验证迁移兼容性。 |
-| OPT-004 | P2 | 章节创建/修改/排序未校验卷是否属于同一本书，导出只按卷筛选章节，可能串书。入口：`backend/app/api/chapters.py`、`export.py`。 | 拒绝不存在或跨书的卷关联；无效批量排序不部分写入；导出不混入其他书籍章节。 |
 | OPT-005 | P2 | 生成阶段通过“已有任意数据”判定完成。世界观只提交一条、或卷大纲已提交但剧情线程未提交时崩溃，恢复后会跳过未完成部分。入口：`backend/app/agents/pipeline.py`、`tasks/novel_generation.py`。 | 在阶段内不同提交点模拟崩溃，恢复后补齐缺失内容且不重复已有内容。 |
 | OPT-006 | P2 | 模型输出的卷/章纲结构与数量缺少完整校验，部分解析成功仍可能留下不完整计划。入口：`backend/app/agents/pipeline.py`。 | 无结构、缺项和数量不足时有明确错误及恢复方式；不得把少量已解析结果当作整个阶段完成。 |
 | OPT-007 | P2 | 长篇规模被静默截断：规划最多 12 卷、每卷 20 章，默认 2500 字/章时 100 万、200 万目标均只规划 60 万字。入口：`backend/app/agents/planner.py`。 | 按目标扩展分阶段计划，或明确拒绝超容量目标并说明上限；覆盖百万字及以上规模的纯函数测试。 |
 | OPT-008 | P2 | RAG 章摘要检索不限制时间位置，重写早期章节时可能引用后续剧情；人物状态和剧情线程缺少自动推进/关闭流程。入口：`backend/app/memory/context.py`、`agents/pipeline.py`、`models.py`。 | 重写时仅召回允许的历史；正文事实可以更新人物/线程状态，更新失败可追踪，支持修订后重建。 |
 | OPT-009 | P2 | 任务执行登记仅在进程内，启动恢复没有跨进程任务认领；多 worker 可能重复执行同一任务，手工生成与后台任务也缺少统一互斥。入口：`backend/app/tasks/book_generation.py`、`api/generate.py`。 | 明确单进程部署约束，或实现数据库级认领/租约；并发请求和多 worker 测试不重复生成或覆盖正文。 |
-| OPT-010 | P2 | 用户手工清空已完成正文后，章节元数据仍可能显示 `done`。入口：`backend/app/api/chapters.py:update_chapter_content`。 | 空白正文保存后状态与实际内容一致；目录和任务进度不显示虚假完成，正常非空保存不受影响。 |
 
 ## 前端交互与性能
 

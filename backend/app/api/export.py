@@ -30,7 +30,10 @@ def _ordered_chapters(db: Session, book_id: str) -> Iterator[tuple[str | None, m
     for vol in volumes:
         chapters = db.scalars(
             select(models.Chapter)
-            .where(models.Chapter.volume_id == vol.id)
+            .where(
+                models.Chapter.book_id == book_id,
+                models.Chapter.volume_id == vol.id,
+            )
             .order_by(models.Chapter.order_index)
         ).all()
         for ch in chapters:
