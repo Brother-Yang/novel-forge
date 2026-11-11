@@ -37,7 +37,7 @@ from .guardrails import (
     step_budget_exceeded,
     tool_call_budget_exceeded,
 )
-from .tools import ToolError, ToolRegistry
+from .tool_registry import ToolError, ToolRegistry
 
 logger = logging.getLogger(__name__)
 

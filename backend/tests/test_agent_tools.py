@@ -43,10 +43,14 @@ def _forbid_llm() -> None:
 # ---------- 只有完整结构才幂等跳过 ----------
 async def test_write_worldbuilding_skips_if_complete(db, monkeypatch):
     book = _book(db)
-    db.add_all([
-        models.Worldbuilding(book_id=book.id, title=f"已有设定{i}", md_content="设定正文")
-        for i in range(4)
-    ])
+    db.add_all(
+        [
+            models.Worldbuilding(
+                book_id=book.id, title=f"已有设定{i}", md_content="设定正文"
+            )
+            for i in range(4)
+        ]
+    )
     db.commit()
     monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
     result = await tools.tool_write_worldbuilding(db, book.id, {})
@@ -56,10 +60,14 @@ async def test_write_worldbuilding_skips_if_complete(db, monkeypatch):
 
 async def test_create_characters_skips_if_complete(db, monkeypatch):
     book = _book(db)
-    db.add_all([
-        models.Character(book_id=book.id, name=f"已有人物{i}", md_content="旧人物卡")
-        for i in range(3)
-    ])
+    db.add_all(
+        [
+            models.Character(
+                book_id=book.id, name=f"已有人物{i}", md_content="旧人物卡"
+            )
+            for i in range(3)
+        ]
+    )
     db.commit()
     monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
     result = await tools.tool_create_characters(db, book.id, {"count": 3})
@@ -82,7 +90,11 @@ async def test_create_chapter_outlines_skips_if_volume_is_complete(db, monkeypat
     volume = models.Volume(book_id=book.id, title="第一卷")
     db.add(volume)
     db.commit()
-    db.add(models.Chapter(book_id=book.id, volume_id=volume.id, title="第1章", outline="旧细纲"))
+    db.add(
+        models.Chapter(
+            book_id=book.id, volume_id=volume.id, title="第1章", outline="旧细纲"
+        )
+    )
     db.commit()
     monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
     result = await tools.tool_create_chapter_outlines(
@@ -123,19 +135,27 @@ async def test_write_chapter_rejects_chapter_from_other_book(db):
     db.refresh(chapter_b)
 
     with pytest.raises(tools.ToolError):
-        await tools.tool_write_chapter(db, book_a.id, {"chapter_id": chapter_b.id, "words": 2000})
+        await tools.tool_write_chapter(
+            db, book_a.id, {"chapter_id": chapter_b.id, "words": 2000}
+        )
 
 
 async def test_write_chapter_rejects_non_integer_chapter_id(db):
     book = _book(db)
     with pytest.raises(tools.ToolError):
-        await tools.tool_write_chapter(db, book.id, {"chapter_id": "abc", "words": 2000})
+        await tools.tool_write_chapter(
+            db, book.id, {"chapter_id": "abc", "words": 2000}
+        )
 
 
 # ---------- 高风险操作护栏:改写已完成章节需先经 review_content 批准 ----------
-async def test_write_chapter_blocks_rewriting_done_chapter_without_approval(db, monkeypatch):
+async def test_write_chapter_blocks_rewriting_done_chapter_without_approval(
+    db, monkeypatch
+):
     book = _book(db)
-    chapter = models.Chapter(book_id=book.id, title="第1章", status="done", word_count=500)
+    chapter = models.Chapter(
+        book_id=book.id, title="第1章", status="done", word_count=500
+    )
     chapter.content = models.ChapterContent(body="已有完成正文")
     db.add(chapter)
     db.commit()
@@ -143,13 +163,21 @@ async def test_write_chapter_blocks_rewriting_done_chapter_without_approval(db, 
     monkeypatch.setattr(pipeline, "get_llm", _forbid_llm)
 
     with pytest.raises(tools.ToolError, match="review_content"):
-        await tools.tool_write_chapter(db, book.id, {"chapter_id": chapter.id, "words": 2000})
+        await tools.tool_write_chapter(
+            db, book.id, {"chapter_id": chapter.id, "words": 2000}
+        )
 
 
-async def test_write_chapter_allows_rewrite_once_after_revision_approved(db, monkeypatch):
+async def test_write_chapter_allows_rewrite_once_after_revision_approved(
+    db, monkeypatch
+):
     book = _book(db)
     chapter = models.Chapter(
-        book_id=book.id, title="第1章", status="done", word_count=500, revision_approved=True
+        book_id=book.id,
+        title="第1章",
+        status="done",
+        word_count=500,
+        revision_approved=True,
     )
     chapter.content = models.ChapterContent(body="已有完成正文")
     db.add(chapter)
@@ -168,7 +196,9 @@ async def test_write_chapter_allows_rewrite_once_after_revision_approved(db, mon
         pipeline.memory_sync, "process_chapter_memory", AsyncMock(return_value=True)
     )
 
-    result = await tools.tool_write_chapter(db, book.id, {"chapter_id": chapter.id, "words": 2000})
+    result = await tools.tool_write_chapter(
+        db, book.id, {"chapter_id": chapter.id, "words": 2000}
+    )
     assert result["ok"] is True
     db.refresh(chapter)
     # 消费一次批准后立即复位,不能无限期重写
@@ -295,11 +325,15 @@ class _FakeReviewLLM:
         super().__init__()
         self._reply = reply
 
-    async def chat(self, prompt: str, system: str = "", temperature: float = 0.8) -> str:
+    async def chat(
+        self, prompt: str, system: str = "", temperature: float = 0.8
+    ) -> str:
         return self._reply
 
 
-async def test_review_content_needs_revision_approves_rewrite_of_done_chapter(db, monkeypatch):
+async def test_review_content_needs_revision_approves_rewrite_of_done_chapter(
+    db, monkeypatch
+):
     book = _book(db)
     chapter = models.Chapter(
         book_id=book.id, title="第1章", status="done", word_count=500
@@ -323,7 +357,9 @@ async def test_review_content_needs_revision_approves_rewrite_of_done_chapter(db
 
 async def test_review_content_no_revision_does_not_approve(db, monkeypatch):
     book = _book(db)
-    chapter = models.Chapter(book_id=book.id, title="第1章", status="done", word_count=500)
+    chapter = models.Chapter(
+        book_id=book.id, title="第1章", status="done", word_count=500
+    )
     db.add(chapter)
     db.commit()
     db.refresh(chapter)
@@ -356,14 +392,16 @@ async def test_replan_volume_requires_non_empty_reason(db):
     db.commit()
     db.refresh(volume)
     with pytest.raises(tools.ToolError):
-        await tools.tool_replan_volume(db, book.id, {"volume_id": volume.id, "reason": "  "})
+        await tools.tool_replan_volume(
+            db, book.id, {"volume_id": volume.id, "reason": "  "}
+        )
 
 
 # ---------- dispatch:未知工具名应转成 ToolError ----------
 async def test_dispatch_unknown_tool_raises(db):
     book = _book(db)
     with pytest.raises(tools.ToolError):
-        await tools.dispatch(db, book.id, "no_such_tool", {})
+        await tools.registry.dispatch(db, book.id, "no_such_tool", {})
 
 
 async def test_dispatch_finish_book_routes_correctly(db):
@@ -372,5 +410,7 @@ async def test_dispatch_finish_book_routes_correctly(db):
     chapter.content = models.ChapterContent(body="结局正文")
     db.add(chapter)
     db.commit()
-    result = await tools.dispatch(db, book.id, "finish_book", {"reason": "写完了"})
+    result = await tools.registry.dispatch(
+        db, book.id, "finish_book", {"reason": "写完了"}
+    )
     assert result == {"ok": True, "reason": "写完了"}

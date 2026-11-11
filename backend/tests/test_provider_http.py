@@ -20,7 +20,7 @@ from app import llm, models
 from app.agents import pipeline, runner
 from app.agents.errors import public_failure
 from app.agents.guardrails import GuardrailLimits
-from app.agents.tools import ToolRegistry
+from app.agents.tool_registry import ToolRegistry
 from app.config import Settings
 from app.db_base import Base
 from app.limits import WindowBudget

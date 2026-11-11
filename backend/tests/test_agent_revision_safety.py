@@ -159,3 +159,29 @@ async def test_author_save_invalidates_approval_for_reviewed_body(
     assert any("请先调用 review_content" in data for data in observations)
     if timing == "during_review":
         assert any("评审期间正文已修改" in data for data in observations)
+
+
+async def test_review_cannot_grant_approval_after_tool_budget_is_exhausted(
+    manuscript: tuple[Engine, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, book_id, chapter_id = manuscript
+    monkeypatch.setattr(settings, "agent_max_tool_calls", 0)
+    model = ScriptedRevisionModel(
+        [
+            _call("get_book_state"),
+            _call("review_content", target_type="chapter", target_id=chapter_id),
+        ]
+    )
+    _use_model(monkeypatch, model)
+    with Session(engine) as db:
+        events = [event async for event in orchestrator.run_agent(db, book_id)]
+        chapter = db.get(models.Chapter, chapter_id)
+        assert chapter is not None and chapter.content is not None
+        assert chapter.revision_approved is False
+        assert chapter.content.body == "作者原本的正文"
+    assert model.reviews == model.writes == 0
+    assert events[-1][0] == "error" and "最大工具调用次数" in events[-1][1]
+    assert any(kind == "decision" and "get_book_state" in data for kind, data in events)
+    assert not any(
+        kind == "decision" and "review_content" in data for kind, data in events
+    )

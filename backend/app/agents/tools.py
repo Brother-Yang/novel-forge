@@ -12,8 +12,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
 
 from sqlalchemy.orm import Session
 
@@ -26,10 +25,7 @@ from .chapter_versions import content_version
 from .completion import require_book_complete
 from .errors import GenerationError
 from .state import CHAPTER_WINDOW_LIMIT, BookNotFound, load_state
-
-
-class ToolError(Exception):
-    """工具参数非法或目标不存在/不属于本书;应作为观察结果回传给模型。"""
+from .tool_registry import Tool, ToolError, ToolRegistry
 
 
 async def _consume_pipeline(gen: AsyncIterator[tuple[str, str]]) -> dict[str, object]:
@@ -131,7 +127,9 @@ async def tool_create_chapter_outlines(
             f"chapter_count 必须在 1..{planner.CHAPTERS_PER_VOLUME_MAX} 之间，请增加卷数分批规划"
         )
     return await _consume_pipeline(
-        pipeline.gen_chapter_outlines(db, volume_id, chapter_count, recovery=stages.Recovery())
+        pipeline.gen_chapter_outlines(
+            db, volume_id, chapter_count, recovery=stages.Recovery()
+        )
     )
 
 
@@ -142,7 +140,9 @@ async def tool_write_chapter(
     chapter = db.get(models.Chapter, chapter_id)
     if not chapter or chapter.book_id != book_id:
         raise ToolError(f"chapter_id={chapter_id} 不存在或不属于本书")
-    words = _clamp_int(args.get("words"), 2500, 1000, schemas.CHAPTER_GENERATION_WORDS_MAX)
+    words = _clamp_int(
+        args.get("words"), 2500, 1000, schemas.CHAPTER_GENERATION_WORDS_MAX
+    )
     is_ending_raw = args.get("is_ending")
     is_ending = bool(is_ending_raw) if is_ending_raw is not None else None
     result = await _consume_pipeline(
@@ -169,7 +169,9 @@ async def tool_replan_volume(
     reason = str(args.get("reason") or "").strip()
     if not reason:
         raise ToolError("reason 不能为空,需说明剧情具体如何偏离原大纲")
-    return await _consume_pipeline(pipeline.replan_volume_chapters(db, volume_id, reason))
+    return await _consume_pipeline(
+        pipeline.replan_volume_chapters(db, volume_id, reason)
+    )
 
 
 # ---------- 质检反思(新增能力) ----------
@@ -251,63 +253,6 @@ async def tool_finish_book(
 
 
 # ---------- Tool Registry(架构文档里的 Tool 模块) ----------
-ToolHandler = Callable[[Session, str, dict[str, object]], Awaitable[dict[str, object]]]
-
-
-@dataclass(frozen=True)
-class Tool:
-    """一个可供 Agent 调用的工具:OpenAI function-calling schema + 处理函数。
-
-    read_only 只做元数据标注(当前工具里只有 get_book_state 为 True),不接
-    审批逻辑——为 Guardrails 未来扩展"高风险操作审批"预留位置。
-    """
-
-    name: str
-    description: str
-    parameters: dict[str, object]
-    handler: ToolHandler
-    read_only: bool = False
-
-    def schema(self) -> dict[str, object]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
-
-
-class ToolRegistry:
-    """所有工具统一注册、统一分发,调用方不应该写
-
-        if name == "write_chapter": ...
-        elif name == "create_outline": ...
-
-    这类硬编码分支,而是 registry.get(name)/registry.dispatch(...)。
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._tools: dict[str, Tool] = {}
-
-    def register(self, tool: Tool) -> None:
-        self._tools[tool.name] = tool
-
-    def get(self, name: str) -> Tool | None:
-        return self._tools.get(name)
-
-    def schemas(self) -> list[dict[str, object]]:
-        return [t.schema() for t in self._tools.values()]
-
-    async def dispatch(
-        self, db: Session, book_id: str, name: str, args: dict[str, object]
-    ) -> dict[str, object]:
-        tool = self.get(name)
-        if tool is None:
-            raise ToolError(f"未知工具:{name}")
-        return await tool.handler(db, book_id, args)
 
 
 registry = ToolRegistry()
@@ -470,7 +415,6 @@ registry.register(
             "required": ["target_type", "target_id"],
         },
         handler=tool_review_content,
-        read_only=True,
     )
 )
 registry.register(
@@ -487,15 +431,3 @@ registry.register(
         handler=tool_finish_book,
     )
 )
-
-
-# ---------- 向后兼容的模块级接口 ----------
-# orchestrator.py/runner.py 与既有测试都是通过这两个名字使用工具层的,保持
-# 签名不变;内部实现改为委托给上面的 ToolRegistry。
-TOOLS: list[dict[str, object]] = registry.schemas()
-
-
-async def dispatch(
-    db: Session, book_id: str, name: str, args: dict[str, object]
-) -> dict[str, object]:
-    return await registry.dispatch(db, book_id, name, args)
